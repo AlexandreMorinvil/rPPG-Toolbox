@@ -34,7 +34,7 @@ class YOLO5Face(object):
         self.model = Model(cfg=model_config_path, ch=3, nc=None).to(self.device)
         ckpt = os.path.join(package_dir, "ckpts", "Y5sF_WFRGB.pth")
 
-        checkpoint = torch.load(ckpt, map_location=self.device)
+        checkpoint = torch.load(ckpt, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint)
         self.model.float().eval()
 

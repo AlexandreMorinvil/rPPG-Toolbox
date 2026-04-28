@@ -80,6 +80,12 @@ def train_and_test(config, data_loader_dict):
     elif config.MODEL.NAME == 'PhysFormer':
         model_trainer = trainer.PhysFormerTrainer.PhysFormerTrainer(config, data_loader_dict)
     elif config.MODEL.NAME == 'PhysMamba':
+        if not getattr(trainer, 'PHYSMAMBA_AVAILABLE', False):
+            raise ImportError(
+                "PhysMamba requires the optional 'mamba-ssm' and 'causal-conv1d' packages, "
+                "which are not available on Windows. Original import error: "
+                f"{getattr(trainer, 'PHYSMAMBA_IMPORT_ERROR', 'unknown')}"
+            )
         model_trainer = trainer.PhysMambaTrainer.PhysMambaTrainer(config, data_loader_dict)
     elif config.MODEL.NAME == 'RhythmFormer':
         model_trainer = trainer.RhythmFormerTrainer.RhythmFormerTrainer(config, data_loader_dict)
@@ -108,6 +114,12 @@ def test(config, data_loader_dict):
     elif config.MODEL.NAME == 'PhysFormer':
         model_trainer = trainer.PhysFormerTrainer.PhysFormerTrainer(config, data_loader_dict)
     elif config.MODEL.NAME == 'PhysMamba':
+        if not getattr(trainer, 'PHYSMAMBA_AVAILABLE', False):
+            raise ImportError(
+                "PhysMamba requires the optional 'mamba-ssm' and 'causal-conv1d' packages, "
+                "which are not available on Windows. Original import error: "
+                f"{getattr(trainer, 'PHYSMAMBA_IMPORT_ERROR', 'unknown')}"
+            )
         model_trainer = trainer.PhysMambaTrainer.PhysMambaTrainer(config, data_loader_dict)
     elif config.MODEL.NAME == 'RhythmFormer':
         model_trainer = trainer.RhythmFormerTrainer.RhythmFormerTrainer(config, data_loader_dict)

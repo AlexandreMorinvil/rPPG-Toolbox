@@ -1,22 +1,39 @@
-h5py==2.10.0
-yacs==0.1.8
-scipy==1.5.2
-pandas==1.1.5
-scikit_image==0.17.2
-numpy==1.22.0
-matplotlib==3.1.2
-opencv_python==4.5.2.54
-PyYAML==6.0
-scikit_learn==1.0.2
-tensorboardX==2.4.1
-tqdm==4.64.0
-mat73==0.59
-ipykernel==6.26.0
-ipywidgets==8.1.1
-fsspec==2024.10.0
-timm==1.0.11
-causal-conv1d==1.0.0
-protobuf==3.20.3
-neurokit2==0.2.10
-thop==0.1.1.post2209072238
-mamba-ssm==2.2.2
+# --- rPPG-Toolbox dependencies (Python 3.12 compatible) ---
+# Last reviewed: 2026-04 against Python 3.12.x.
+# PyTorch is NOT pinned here; install it separately so you can pick the
+# correct CUDA flavor (see setup.sh / README). Recommended: torch>=2.4,<2.6
+# with CUDA 12.4, e.g.:
+#   pip install torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
+#       --index-url https://download.pytorch.org/whl/cu124
+
+# --- Core scientific stack (Python 3.12 wheels available) ---
+numpy>=1.26,<2.0          # 1.26 line keeps NumPy 1.x ABI compatibility
+scipy>=1.13,<1.15
+pandas>=2.2,<2.3
+h5py>=3.11
+scikit-image>=0.24
+scikit-learn>=1.4
+matplotlib>=3.8
+opencv-python>=4.9
+
+# --- Toolbox utilities ---
+yacs>=0.1.8
+PyYAML>=6.0.1
+tqdm>=4.66
+tensorboardX>=2.6.2.2
+mat73>=0.65
+fsspec>=2024.10.0
+neurokit2>=0.2.10
+thop>=0.1.1.post2209072238  # FLOPs counter; unmaintained but works on 3.12
+timm>=1.0.11
+protobuf>=4.25,<6
+
+# --- Notebook tooling (optional but expected by tools/) ---
+ipykernel>=6.29
+ipywidgets>=8.1
+
+# --- Optional: PhysMamba support ---
+# `causal-conv1d` and `mamba-ssm` do NOT have Windows wheels and need
+# Linux + CUDA + nvcc to build from source. The toolbox lazy-imports
+# PhysMamba so everything else works without them. Install on Linux only:
+#   pip install "causal-conv1d>=1.4.0" "mamba-ssm>=2.2.2"

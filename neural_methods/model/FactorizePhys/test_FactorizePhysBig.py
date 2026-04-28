@@ -102,7 +102,7 @@ class TestFactorizePhysBig(object):
         if self.visualize:
             self.net = nn.DataParallel(FactorizePhysBig(frames=self.frames, md_config=md_config,
                                 device=self.device, in_channels=self.in_channels, debug=self.debug), device_ids=[0]).to(self.device)
-            self.net.load_state_dict(torch.load(str(self.ckpt_path), map_location=self.device))
+            self.net.load_state_dict(torch.load(str(self.ckpt_path), map_location=self.device, weights_only=False))
         else:
             self.net = FactorizePhysBig(frames=self.frames, md_config=md_config,
                                 device=self.device, in_channels=self.in_channels, debug=self.debug).to(self.device)
