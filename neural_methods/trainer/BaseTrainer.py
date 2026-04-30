@@ -5,6 +5,8 @@ from matplotlib.ticker import ScalarFormatter, MaxNLocator
 import os
 import pickle
 
+from neural_methods import wandb_logger
+
 
 class BaseTrainer:
     @staticmethod
@@ -85,6 +87,9 @@ class BaseTrainer:
 
         loss_plot_filename = os.path.join(output_dir, filename_id + '_losses.pdf')
         plt.savefig(loss_plot_filename, dpi=300)
+        # Also save a PNG sibling so it can be embedded as a wandb image.
+        loss_plot_png = os.path.join(output_dir, filename_id + '_losses.png')
+        plt.savefig(loss_plot_png, dpi=150, bbox_inches='tight')
         plt.close()
 
         # Create a separate plot for learning rates
@@ -103,6 +108,22 @@ class BaseTrainer:
 
         lr_plot_filename = os.path.join(output_dir, filename_id + '_learning_rates.pdf')
         plt.savefig(lr_plot_filename, bbox_inches='tight', dpi=300)
+        lr_plot_png = os.path.join(output_dir, filename_id + '_learning_rates.png')
+        plt.savefig(lr_plot_png, bbox_inches='tight', dpi=150)
         plt.close()
 
         print('Saving plots of losses and learning rates to:', output_dir)
+
+        # ---- wandb integration -------------------------------------------------
+        # Replay the per-epoch curves so the wandb run shows train/valid loss
+        # vs epoch, and per-step learning rates.
+        if wandb_logger.is_enabled():
+            for epoch_idx, tl in enumerate(train_loss):
+                metrics = {"train/epoch_loss": float(tl), "epoch": epoch_idx}
+                if epoch_idx < len(valid_loss):
+                    metrics["valid/epoch_loss"] = float(valid_loss[epoch_idx])
+                wandb_logger.log(metrics)
+            for step_idx, lr in enumerate(lrs):
+                wandb_logger.log({"train/lr": float(lr), "scheduler_step": step_idx})
+            wandb_logger.log_image("plots/losses", loss_plot_png)
+            wandb_logger.log_image("plots/learning_rate", lr_plot_png)

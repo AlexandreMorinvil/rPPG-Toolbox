@@ -378,6 +378,25 @@ _C.NUM_OF_GPU_TRAIN = 1
 _C.LOG = CN()
 _C.LOG.PATH = "runs/exp"
 
+# -----------------------------------------------------------------------------
+# Weights & Biases (wandb) settings
+# -----------------------------------------------------------------------------
+# All fields are optional; ENABLED=False makes the integration a no-op so the
+# pipeline runs identically to the original toolbox when wandb is not desired.
+_C.WANDB = CN()
+_C.WANDB.ENABLED = False                # turn the integration on/off
+_C.WANDB.PROJECT = "rPPG-Toolbox"       # wandb project name
+_C.WANDB.ENTITY = ""                    # wandb entity (team/user); empty -> default
+_C.WANDB.RUN_NAME = ""                  # run name; empty -> auto-derived
+_C.WANDB.GROUP = ""                     # optional group (useful for cross-validation folds)
+_C.WANDB.JOB_TYPE = ""                  # optional job_type (e.g. "train", "test")
+_C.WANDB.TAGS = []                      # list of string tags
+_C.WANDB.NOTES = ""                     # free-form notes
+_C.WANDB.MODE = "online"                # "online" | "offline" | "disabled"
+_C.WANDB.WATCH_MODEL = False            # call wandb.watch on the model (gradients/params)
+_C.WANDB.LOG_BATCH_LOSS = True          # log per-batch loss + lr during training
+_C.WANDB.LOG_FREQ = 50                  # batch-loss log frequency (in batches)
+
 
 def _update_config_from_file(config, cfg_file):
     config.defrost()
@@ -596,6 +615,17 @@ def update_config(config, args):
         config.UNSUPERVISED.OUTPUT_SAVE_DIR = os.path.join(config.LOG.PATH, config.UNSUPERVISED.DATA.EXP_DATA_NAME, 'saved_outputs')
     else:
         raise ValueError('TOOLBOX_MODE only supports train_and_test, only_test, or unsupervised_method!')
+
+    # Derive a default wandb run name if the user did not provide one.
+    if config.WANDB.ENABLED and not config.WANDB.RUN_NAME:
+        if config.TOOLBOX_MODE == 'train_and_test':
+            config.WANDB.RUN_NAME = config.TRAIN.MODEL_FILE_NAME or config.TRAIN.DATA.EXP_DATA_NAME
+        elif config.TOOLBOX_MODE == 'only_test':
+            model_root = os.path.splitext(os.path.basename(config.INFERENCE.MODEL_PATH))[0]
+            config.WANDB.RUN_NAME = (model_root + "_" + config.TEST.DATA.DATASET) if model_root else config.TEST.DATA.EXP_DATA_NAME
+        elif config.TOOLBOX_MODE == 'unsupervised_method':
+            methods = "+".join(config.UNSUPERVISED.METHOD) if config.UNSUPERVISED.METHOD else "unsupervised"
+            config.WANDB.RUN_NAME = methods + "_" + config.UNSUPERVISED.DATA.EXP_DATA_NAME
 
     config.freeze()
     return

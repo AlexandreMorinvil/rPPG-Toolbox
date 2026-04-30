@@ -4,6 +4,7 @@ import torch
 from evaluation.post_process import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
+from neural_methods import wandb_logger
 
 def read_label(dataset):
     """Read manually corrected labels."""
@@ -111,11 +112,14 @@ def calculate_metrics(predictions, labels, config):
         SNR_all = np.array(SNR_all)
         MACC_all = np.array(MACC_all)
         num_test_samples = len(predict_hr_fft_all)
+        results = {"test/num_samples": int(num_test_samples)}
         for metric in config.TEST.METRICS:
             if metric == "MAE":
                 MAE_FFT = np.mean(np.abs(predict_hr_fft_all - gt_hr_fft_all))
                 standard_error = np.std(np.abs(predict_hr_fft_all - gt_hr_fft_all)) / np.sqrt(num_test_samples)
                 print("FFT MAE (FFT Label): {0} +/- {1}".format(MAE_FFT, standard_error))
+                results["test/FFT/MAE"] = float(MAE_FFT)
+                results["test/FFT/MAE_SE"] = float(standard_error)
             elif metric == "RMSE":
                 # Calculate the squared errors, then RMSE, in order to allow
                 # for a more robust and intuitive standard error that won't
@@ -124,23 +128,33 @@ def calculate_metrics(predictions, labels, config):
                 RMSE_FFT = np.sqrt(np.mean(squared_errors))
                 standard_error = np.sqrt(np.std(squared_errors) / np.sqrt(num_test_samples))
                 print("FFT RMSE (FFT Label): {0} +/- {1}".format(RMSE_FFT, standard_error))
+                results["test/FFT/RMSE"] = float(RMSE_FFT)
+                results["test/FFT/RMSE_SE"] = float(standard_error)
             elif metric == "MAPE":
                 MAPE_FFT = np.mean(np.abs((predict_hr_fft_all - gt_hr_fft_all) / gt_hr_fft_all)) * 100
                 standard_error = np.std(np.abs((predict_hr_fft_all - gt_hr_fft_all) / gt_hr_fft_all)) / np.sqrt(num_test_samples) * 100
                 print("FFT MAPE (FFT Label): {0} +/- {1}".format(MAPE_FFT, standard_error))
+                results["test/FFT/MAPE"] = float(MAPE_FFT)
+                results["test/FFT/MAPE_SE"] = float(standard_error)
             elif metric == "Pearson":
                 Pearson_FFT = np.corrcoef(predict_hr_fft_all, gt_hr_fft_all)
                 correlation_coefficient = Pearson_FFT[0][1]
                 standard_error = np.sqrt((1 - correlation_coefficient**2) / (num_test_samples - 2))
                 print("FFT Pearson (FFT Label): {0} +/- {1}".format(correlation_coefficient, standard_error))
+                results["test/FFT/Pearson"] = float(correlation_coefficient)
+                results["test/FFT/Pearson_SE"] = float(standard_error)
             elif metric == "SNR":
                 SNR_FFT = np.mean(SNR_all)
                 standard_error = np.std(SNR_all) / np.sqrt(num_test_samples)
                 print("FFT SNR (FFT Label): {0} +/- {1} (dB)".format(SNR_FFT, standard_error))
+                results["test/FFT/SNR_dB"] = float(SNR_FFT)
+                results["test/FFT/SNR_dB_SE"] = float(standard_error)
             elif metric == "MACC":
                 MACC_avg = np.mean(MACC_all)
                 standard_error = np.std(MACC_all) / np.sqrt(num_test_samples)
                 print("FFT MACC (FFT Label): {0} +/- {1}".format(MACC_avg, standard_error))
+                results["test/FFT/MACC"] = float(MACC_avg)
+                results["test/FFT/MACC_SE"] = float(standard_error)
             elif "AU" in metric:
                 pass
             elif "BA" in metric:  
@@ -157,6 +171,13 @@ def calculate_metrics(predictions, labels, config):
                     show_legend=True, figure_size=(5, 5),
                     the_title=f'{filename_id}_FFT_BlandAltman_DifferencePlot',
                     file_name=f'{filename_id}_FFT_BlandAltman_DifferencePlot.pdf')
+                # Forward Bland-Altman summary stats to wandb.
+                try:
+                    ba_stats = compare.return_stats()
+                    for k, v in ba_stats.items():
+                        results[f"test/FFT/BA/{k}"] = float(v)
+                except Exception:
+                    pass
             else:
                 raise ValueError("Wrong Test Metric Type")
     elif config.INFERENCE.EVALUATION_METHOD == "peak detection":
@@ -165,11 +186,14 @@ def calculate_metrics(predictions, labels, config):
         SNR_all = np.array(SNR_all)
         MACC_all = np.array(MACC_all)
         num_test_samples = len(predict_hr_peak_all)
+        results = {"test/num_samples": int(num_test_samples)}
         for metric in config.TEST.METRICS:
             if metric == "MAE":
                 MAE_PEAK = np.mean(np.abs(predict_hr_peak_all - gt_hr_peak_all))
                 standard_error = np.std(np.abs(predict_hr_peak_all - gt_hr_peak_all)) / np.sqrt(num_test_samples)
                 print("Peak MAE (Peak Label): {0} +/- {1}".format(MAE_PEAK, standard_error))
+                results["test/Peak/MAE"] = float(MAE_PEAK)
+                results["test/Peak/MAE_SE"] = float(standard_error)
             elif metric == "RMSE":
                 # Calculate the squared errors, then RMSE, in order to allow
                 # for a more robust and intuitive standard error that won't
@@ -178,23 +202,33 @@ def calculate_metrics(predictions, labels, config):
                 RMSE_PEAK = np.sqrt(np.mean(squared_errors))
                 standard_error = np.sqrt(np.std(squared_errors) / np.sqrt(num_test_samples))
                 print("PEAK RMSE (Peak Label): {0} +/- {1}".format(RMSE_PEAK, standard_error))
+                results["test/Peak/RMSE"] = float(RMSE_PEAK)
+                results["test/Peak/RMSE_SE"] = float(standard_error)
             elif metric == "MAPE":
                 MAPE_PEAK = np.mean(np.abs((predict_hr_peak_all - gt_hr_peak_all) / gt_hr_peak_all)) * 100
                 standard_error = np.std(np.abs((predict_hr_peak_all - gt_hr_peak_all) / gt_hr_peak_all)) / np.sqrt(num_test_samples) * 100
                 print("PEAK MAPE (Peak Label): {0} +/- {1}".format(MAPE_PEAK, standard_error))
+                results["test/Peak/MAPE"] = float(MAPE_PEAK)
+                results["test/Peak/MAPE_SE"] = float(standard_error)
             elif metric == "Pearson":
                 Pearson_PEAK = np.corrcoef(predict_hr_peak_all, gt_hr_peak_all)
                 correlation_coefficient = Pearson_PEAK[0][1]
                 standard_error = np.sqrt((1 - correlation_coefficient**2) / (num_test_samples - 2))
                 print("PEAK Pearson (Peak Label): {0} +/- {1}".format(correlation_coefficient, standard_error))
+                results["test/Peak/Pearson"] = float(correlation_coefficient)
+                results["test/Peak/Pearson_SE"] = float(standard_error)
             elif metric == "SNR":
                 SNR_PEAK = np.mean(SNR_all)
                 standard_error = np.std(SNR_all) / np.sqrt(num_test_samples)
                 print("PEAK SNR (PEAK Label): {0} +/- {1} (dB)".format(SNR_PEAK, standard_error))
+                results["test/Peak/SNR_dB"] = float(SNR_PEAK)
+                results["test/Peak/SNR_dB_SE"] = float(standard_error)
             elif metric == "MACC":
                 MACC_avg = np.mean(MACC_all)
                 standard_error = np.std(MACC_all) / np.sqrt(num_test_samples)
                 print("PEAK MACC (PEAK Label): {0} +/- {1}".format(MACC_avg, standard_error))
+                results["test/Peak/MACC"] = float(MACC_avg)
+                results["test/Peak/MACC_SE"] = float(standard_error)
             elif "AU" in metric:
                 pass
             elif "BA" in metric:
@@ -211,7 +245,19 @@ def calculate_metrics(predictions, labels, config):
                     show_legend=True, figure_size=(5, 5),
                     the_title=f'{filename_id}_Peak_BlandAltman_DifferencePlot',
                     file_name=f'{filename_id}_Peak_BlandAltman_DifferencePlot.pdf')
+                try:
+                    ba_stats = compare.return_stats()
+                    for k, v in ba_stats.items():
+                        results[f"test/Peak/BA/{k}"] = float(v)
+                except Exception:
+                    pass
             else:
                 raise ValueError("Wrong Test Metric Type")
     else:
         raise ValueError("Inference evaluation method name wrong!")
+
+    # Push final test metrics to wandb (no-op when disabled).
+    if wandb_logger.is_enabled():
+        wandb_logger.log_summary(results)
+        wandb_logger.log(results)
+    return results

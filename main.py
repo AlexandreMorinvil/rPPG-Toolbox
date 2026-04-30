@@ -9,6 +9,7 @@ import torch
 from config import get_config
 from dataset import data_loader
 from neural_methods import trainer
+from neural_methods import wandb_logger
 from unsupervised_methods.unsupervised_predictor import unsupervised_predict
 from torch.utils.data import DataLoader
 
@@ -347,11 +348,17 @@ if __name__ == "__main__":
     else:
         raise ValueError("Unsupported toolbox_mode! Currently support train_and_test or only_test or unsupervised_method.")
 
-    if config.TOOLBOX_MODE == "train_and_test":
-        train_and_test(config, data_loader_dict)
-    elif config.TOOLBOX_MODE == "only_test":
-        test(config, data_loader_dict)
-    elif config.TOOLBOX_MODE == "unsupervised_method":
-        unsupervised_method_inference(config, data_loader_dict)
-    else:
-        print("TOOLBOX_MODE only support train_and_test or only_test !", end='\n\n')
+    # Initialise Weights & Biases once per process. No-op when WANDB.ENABLED is False.
+    wandb_logger.init(config, extra_config={"random_seed": RANDOM_SEED})
+
+    try:
+        if config.TOOLBOX_MODE == "train_and_test":
+            train_and_test(config, data_loader_dict)
+        elif config.TOOLBOX_MODE == "only_test":
+            test(config, data_loader_dict)
+        elif config.TOOLBOX_MODE == "unsupervised_method":
+            unsupervised_method_inference(config, data_loader_dict)
+        else:
+            print("TOOLBOX_MODE only support train_and_test or only_test !", end='\n\n')
+    finally:
+        wandb_logger.finish()

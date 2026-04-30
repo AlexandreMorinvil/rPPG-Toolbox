@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import math
 from scipy.stats import gaussian_kde
 
+from neural_methods import wandb_logger
+
 class BlandAltman():
 
     def __init__(self,gold_std,new_measure,config,averaged=False):
@@ -114,7 +116,13 @@ class BlandAltman():
         plt.xlim(measure_lower_lim, measure_upper_lim)
         plt.ylim(measure_lower_lim, measure_upper_lim)
         plt.savefig(os.path.join(self.save_path, file_name),bbox_inches='tight', dpi=300)
+        # PNG sibling for wandb (PDFs do not preview in the dashboard).
+        png_name = os.path.splitext(file_name)[0] + '.png'
+        png_path = os.path.join(self.save_path, png_name)
+        plt.savefig(png_path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
         print(f"Saved {file_name} to {self.save_path}.")
+        wandb_logger.log_image(f"bland_altman/{os.path.splitext(file_name)[0]}", png_path)
 
     def difference_plot(self,x_label='Difference between rPPG HR and ECG HR [bpm]',
                         y_label='Average of rPPG HR and ECG HR [bpm]',averaged=False,
@@ -145,4 +153,9 @@ class BlandAltman():
             ax.legend()
         ax.grid()
         plt.savefig(os.path.join(self.save_path, file_name),bbox_inches='tight', dpi=100)
+        png_name = os.path.splitext(file_name)[0] + '.png'
+        png_path = os.path.join(self.save_path, png_name)
+        plt.savefig(png_path, bbox_inches='tight', dpi=150)
+        plt.close(fig)
         print(f"Saved {file_name} to {self.save_path}.")
+        wandb_logger.log_image(f"bland_altman/{os.path.splitext(file_name)[0]}", png_path)
