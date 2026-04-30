@@ -85,6 +85,7 @@ class PhysnetTrainer(BaseTrainer):
                 self.scheduler.step()
                 self.optimizer.zero_grad()
                 tbar.set_postfix(loss=loss.item())
+                self._wandb_log_batch(loss, epoch, idx)
 
             # Append the mean training loss for the epoch
             mean_training_losses.append(np.mean(train_loss))

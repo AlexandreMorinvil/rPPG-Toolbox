@@ -93,6 +93,7 @@ class PhysMambaTrainer(BaseTrainer):
                 self.optimizer.step()
                 self.scheduler.step()
                 tbar.set_postfix(loss=loss.item())
+                self._wandb_log_batch(loss, epoch, idx)
             
             self.save_model(epoch)
             if not self.config.TEST.USE_LAST_EPOCH: 

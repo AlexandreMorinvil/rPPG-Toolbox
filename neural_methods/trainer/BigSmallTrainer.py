@@ -257,6 +257,14 @@ class BigSmallTrainer(BaseTrainer):
 
                  
                 tbar.set_postfix({"loss:": loss.item(), "lr:": self.optimizer.param_groups[0]["lr"]})
+                self._wandb_log_batch(
+                    loss, epoch, idx,
+                    extra={
+                        "train/batch_au_loss": float(au_loss.item()),
+                        "train/batch_bvp_loss": float(bvp_loss.item()),
+                        "train/batch_resp_loss": float(resp_loss.item()),
+                    },
+                )
 
             # APPEND EPOCH LOSS LIST TO TRAINING LOSS DICTIONARY
             train_loss_dict[epoch] = train_loss

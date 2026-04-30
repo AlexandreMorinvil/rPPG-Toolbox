@@ -28,6 +28,38 @@ class BaseTrainer:
     def test(self):
         pass
 
+    def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
+        """Forward a per-batch metric to wandb honouring config.WANDB.* settings.
+
+        Safe to call from every trainer's batch loop: a no-op when wandb is
+        disabled, when WANDB.LOG_BATCH_LOSS is False, or when the configured
+        WANDB.LOG_FREQ skips the current step.
+        """
+        cfg = getattr(self, "config", None)
+        wandb_cfg = getattr(cfg, "WANDB", None) if cfg is not None else None
+        if wandb_cfg is None or not getattr(wandb_cfg, "LOG_BATCH_LOSS", False):
+            return
+        every = int(getattr(wandb_cfg, "LOG_FREQ", 50) or 0)
+        if lr is None:
+            opt = getattr(self, "optimizer", None)
+            if opt is not None and getattr(opt, "param_groups", None):
+                try:
+                    lr = opt.param_groups[0].get("lr")
+                except Exception:
+                    lr = None
+        try:
+            loss_val = loss.item() if hasattr(loss, "item") else float(loss)
+        except Exception:
+            return
+        wandb_logger.log_train_step(
+            loss=loss_val,
+            lr=lr,
+            epoch=epoch,
+            batch_idx=batch_idx,
+            every=every,
+            extra=extra,
+        )
+
     def save_test_outputs(self, predictions, labels, config):
     
         output_dir = config.TEST.OUTPUT_SAVE_DIR

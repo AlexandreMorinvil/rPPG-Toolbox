@@ -152,6 +152,8 @@ class FactorizePhysTrainer(BaseTrainer):
                     tbar.set_postfix({"appx_error": appx_error.item()}, loss=loss.item())
                 else:
                     tbar.set_postfix(loss=loss.item())
+                extra = {"train/batch_appx_error": float(appx_error.item())} if self.use_fsam else None
+                self._wandb_log_batch(loss, epoch, idx, extra=extra)
 
             # Append the mean training loss for the epoch
             mean_training_losses.append(np.mean(train_loss))

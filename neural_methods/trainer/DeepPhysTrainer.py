@@ -86,6 +86,7 @@ class DeepPhysTrainer(BaseTrainer):
                     running_loss = 0.0
                 train_loss.append(loss.item())
                 tbar.set_postfix({"loss": loss.item(), "lr": self.optimizer.param_groups[0]["lr"]})
+                self._wandb_log_batch(loss, epoch, idx)
 
             # Append the mean training loss for the epoch
             mean_training_losses.append(np.mean(train_loss))

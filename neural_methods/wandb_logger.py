@@ -32,6 +32,7 @@ _wandb = None              # the ``wandb`` module, or None if disabled/unavailab
 _run = None                # the active wandb Run object, or None
 _enabled = False           # mirrors config.WANDB.ENABLED & dependency presence
 _warned_log_failure = False
+_global_step = 0           # monotonically-increasing optimiser-step counter
 
 
 def is_enabled() -> bool:
@@ -115,9 +116,12 @@ def init(config, extra_config: Optional[Dict[str, Any]] = None) -> None:
         try:
             _wandb.define_metric("epoch")
             _wandb.define_metric("scheduler_step")
+            _wandb.define_metric("global_step")
             _wandb.define_metric("train/epoch_loss", step_metric="epoch", summary="min")
             _wandb.define_metric("valid/epoch_loss", step_metric="epoch", summary="min")
             _wandb.define_metric("train/lr", step_metric="scheduler_step")
+            _wandb.define_metric("train/batch_loss", step_metric="global_step")
+            _wandb.define_metric("train/batch_lr", step_metric="global_step")
         except Exception:
             pass
     except Exception as exc:  # pragma: no cover - depends on network/auth
@@ -204,6 +208,44 @@ def define_metric(name: str, step_metric: str = "epoch",
         _warn_once(f"[wandb] define_metric failed: {exc!r}")
 
 
+def log_train_step(loss: float, lr: Optional[float], epoch: int,
+                   batch_idx: int, every: int = 50,
+                   extra: Optional[Dict[str, Any]] = None) -> None:
+    """Log a per-batch training step.
+
+    Maintains an internal monotonically-increasing ``global_step`` so the
+    caller does not have to. ``every`` controls log frequency in batches; set
+    to 0 or a negative value to disable batch-level logging entirely. Always
+    a no-op when wandb is not enabled.
+    """
+    global _global_step
+    _global_step += 1
+    if not is_enabled() or every is None or every <= 0:
+        return
+    if (_global_step % every) != 0:
+        return
+    payload: Dict[str, Any] = {
+        "train/batch_loss": float(loss),
+        "epoch": int(epoch),
+        "batch": int(batch_idx),
+        "global_step": int(_global_step),
+    }
+    if lr is not None:
+        try:
+            payload["train/batch_lr"] = float(lr)
+        except (TypeError, ValueError):
+            pass
+    if extra:
+        payload.update(extra)
+    log(payload)
+
+
+def reset_step_counter() -> None:
+    """Reset the internal global-step counter (useful between runs in tests)."""
+    global _global_step
+    _global_step = 0
+
+
 def finish() -> None:
     """Close the active run, if any. Safe to call multiple times."""
     global _run, _enabled
@@ -232,6 +274,8 @@ __all__ = [
     "log_image",
     "log_summary",
     "define_metric",
+    "log_train_step",
+    "reset_step_counter",
     "finish",
     "is_enabled",
 ]

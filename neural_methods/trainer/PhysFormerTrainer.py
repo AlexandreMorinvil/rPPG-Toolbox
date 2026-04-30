@@ -154,6 +154,15 @@ class PhysFormerTrainer(BaseTrainer):
                         f'lr:0.0001, sharp:{gra_sharp:.3f}, a:{a:.3f}, NegPearson:{np.mean(loss_rPPG_avg[-2000:]):.4f}, '
                         f'\nb:{b:.3f}, kl:{np.mean(loss_kl_avg_test[-2000:]):.3f}, fre_CEloss:{np.mean(loss_peak_avg[-2000:]):.3f}, '
                         f'hr_mae:{np.mean(loss_hr_mae[-2000:]):.3f}')
+                self._wandb_log_batch(
+                    loss, epoch, idx,
+                    extra={
+                        "train/batch_loss_rPPG": float(loss_rPPG.data),
+                        "train/batch_loss_fre": float(fre_loss.data),
+                        "train/batch_loss_kl": float(kl_loss.data),
+                        "train/batch_hr_mae": float(train_mae),
+                    },
+                )
                     
             # Append the current learning rate to the list
             lrs.append(self.scheduler.get_last_lr())
