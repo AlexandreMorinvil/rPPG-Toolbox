@@ -66,10 +66,17 @@ class BaseLoader(Dataset):
         self.do_preprocess = config_data.DO_PREPROCESS
         self.config_data = config_data
 
-        if self.do_preprocess:
-            from dataset.data_loader.face_detector.YOLO5Face import YOLO5Face
-            if 'Y5F' in self.config_data.PREPROCESS.CROP_FACE.BACKEND:
-                self.Y5FObj = YOLO5Face(self.config_data.PREPROCESS.CROP_FACE.BACKEND, device)
+        # NOTE: YOLO5Face is intentionally NOT instantiated here.
+        # Preprocessing is dispatched to worker processes via multiprocessing
+        # with the 'spawn' start method (Windows default). Pickling a CUDA
+        # model from the parent and shipping it to spawned children leaves
+        # CUDA tensors in an inconsistent state, causing every inference call
+        # in the worker to silently return no detections ("ERROR: No Face
+        # Detected" on every video). The detector is now created lazily
+        # inside face_detection(), which runs in the worker process and
+        # therefore gets a fresh, valid CUDA context.
+        self._face_det_device = device
+        self.Y5FObj = None
 
         assert (config_data.BEGIN < config_data.END)
         assert (config_data.BEGIN > 0 or config_data.BEGIN == 0)
@@ -214,9 +221,14 @@ class BaseLoader(Dataset):
             begin(float): index of begining during train/val split.
             end(float): index of ending during train/val split.
         """
-        data_dirs_split = self.split_raw_data(data_dirs, begin, end)  # partition dataset 
+        data_dirs_split = self.split_raw_data(data_dirs, begin, end)  # partition dataset
         # send data directories to be processed
-        file_list_dict = self.multi_process_manager(data_dirs_split, config_preprocess) 
+        # NUM_WORKERS is configurable per-split via config (default 4). Tune down if
+        # host RAM is limited: each worker buffers a full video (~1.5-2 GiB raw uint8
+        # for UBFC-rPPG) and instantiates its own face detector model.
+        num_workers = getattr(config_preprocess, 'NUM_WORKERS', 4)
+        file_list_dict = self.multi_process_manager(
+            data_dirs_split, config_preprocess, multi_process_quota=num_workers)
         self.build_file_list(file_list_dict)  # build file list
         self.load_preprocessed_data()  # load all data and corresponding labels (sorted for consistency)
         print("Total Number of raw files preprocessed:", len(data_dirs_split), end='\n\n')
@@ -311,6 +323,15 @@ class BaseLoader(Dataset):
         elif "Y5F" in backend:
             # Use a YOLO5Face trained on WiderFace dataset
             # This utilizes both the CPU and GPU
+
+            # Lazy per-process instantiation. See note in __init__: under
+            # multiprocessing 'spawn', a Y5FObj created in the parent and
+            # pickled into a child process produces a non-functional CUDA
+            # model. Instantiating here ensures each worker builds its own
+            # detector inside its own CUDA context.
+            if self.Y5FObj is None:
+                from dataset.data_loader.face_detector.YOLO5Face import YOLO5Face
+                self.Y5FObj = YOLO5Face(backend, self._face_det_device)
 
             res = self.Y5FObj.detect_face(frame[:, :, :3].astype(np.uint8))
 
