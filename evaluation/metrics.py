@@ -45,6 +45,14 @@ def _reform_data_from_dict(data, flatten=True):
 
 def calculate_metrics(predictions, labels, config):
     """Calculate rPPG Metrics (MAE, RMSE, MAPE, Pearson Coef.)."""
+    if config.TEST.DATA.DATASET == "vHRM":
+        from evaluation.vhrm_metrics import calculate_vhrm_metrics
+        results = calculate_vhrm_metrics(predictions, labels, config)
+        if wandb_logger.is_enabled():
+            wandb_logger.log_summary(results)
+            wandb_logger.log(results)
+        return results
+
     predict_hr_fft_all = list()
     gt_hr_fft_all = list()
     predict_hr_peak_all = list()

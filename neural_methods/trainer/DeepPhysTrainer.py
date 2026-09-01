@@ -153,7 +153,11 @@ class DeepPhysTrainer(BaseTrainer):
         if self.config.TOOLBOX_MODE == "only_test":
             if not os.path.exists(self.config.INFERENCE.MODEL_PATH):
                 raise ValueError("Inference model path error! Please check INFERENCE.MODEL_PATH in your yaml.")
-            self.model.load_state_dict(torch.load(self.config.INFERENCE.MODEL_PATH, weights_only=False))
+            self.model.load_state_dict(torch.load(
+                self.config.INFERENCE.MODEL_PATH,
+                map_location=self.device,
+                weights_only=False,
+            ))
             print("Testing uses pretrained model!")
         else:
             if self.config.TEST.USE_LAST_EPOCH:
@@ -180,7 +184,14 @@ class DeepPhysTrainer(BaseTrainer):
                 N, D, C, H, W = data_test.shape
                 data_test = data_test.view(N * D, C, H, W)
                 labels_test = labels_test.view(-1, 1)
-                pred_ppg_test = self.model(data_test)
+                frame_batch_size = self.config.INFERENCE.FRAME_BATCH_SIZE
+                if frame_batch_size > 0:
+                    pred_ppg_test = torch.cat([
+                        self.model(frame_batch)
+                        for frame_batch in torch.split(data_test, frame_batch_size)
+                    ])
+                else:
+                    pred_ppg_test = self.model(data_test)
 
                 if self.config.TEST.OUTPUT_SAVE_DIR:
                     labels_test = labels_test.cpu()

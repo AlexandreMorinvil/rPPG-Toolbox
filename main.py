@@ -285,6 +285,8 @@ if __name__ == "__main__":
             test_loader = data_loader.LADHLoader.LADHLoader
         elif config.TEST.DATA.DATASET == "SUMS":
             test_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TEST.DATA.DATASET == "vHRM":
+            test_loader = data_loader.VHRMLoader.VHRMLoader
         else:
             raise ValueError("Unsupported dataset! Currently supporting UBFC-rPPG, PURE, MMPD, \
                              SCAMPS, BP4D+ (Normal and BigSmall preprocessing), UBFC-PHYS and iBVP.")
@@ -302,7 +304,7 @@ if __name__ == "__main__":
                 device=config.DEVICE)
             data_loader_dict["test"] = DataLoader(
                 dataset=test_data,
-                num_workers=16,
+                num_workers=config.INFERENCE.DATA_LOADER_WORKERS,
                 batch_size=config.INFERENCE.BATCH_SIZE,
                 shuffle=False,
                 worker_init_fn=seed_worker,
