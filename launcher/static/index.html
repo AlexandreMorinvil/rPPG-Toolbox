@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="launcher-token" content="__LAUNCHER_TOKEN__">
+  <title>rPPG-Toolbox Launcher</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">rPPG-Toolbox <span>Launcher</span></div>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="editor">New run</button>
+      <button type="button" class="tab" data-tab="jobs">Jobs <span id="jobsBadge" class="badge hidden">0</span></button>
+      <button type="button" class="tab" data-tab="cache">Preprocessed data</button>
+      <button type="button" class="tab" data-tab="results">Results</button>
+      <button type="button" class="tab" data-tab="settings">Settings</button>
+    </nav>
+    <div id="gpuStrip" class="gpu-strip"></div>
+  </header>
+
+  <main>
+    <!-- ============================== Editor ============================== -->
+    <section id="tab-editor" class="tab-panel active">
+      <div class="toolbar">
+        <label>Start from
+          <select id="configSelect"></select>
+        </label>
+        <button type="button" id="loadConfig">Load</button>
+        <span class="sep"></span>
+        <label>Blank
+          <select id="blankMode"></select>
+        </label>
+        <button type="button" id="newBlank">New</button>
+        <span class="sep"></span>
+        <div class="segmented" role="radiogroup" aria-label="Backend">
+          <label><input type="radio" name="backend" value="docker"> Docker</label>
+          <label><input type="radio" name="backend" value="local"> Local Python</label>
+        </div>
+        <button type="button" id="convertPaths" title="Translate data/cache/output paths for the selected backend">Convert paths</button>
+        <span class="grow"></span>
+        <label class="check"><input type="checkbox" id="linkPreprocess" checked> Validation/test follow training preprocessing</label>
+        <label class="check"><input type="checkbox" id="showAdvanced"> Advanced fields</label>
+      </div>
+      <div id="sourceInfo" class="source-info"></div>
+      <div id="modelBanner" class="banner hidden"></div>
+      <div class="editor-layout">
+        <nav id="sectionNav" class="section-nav"></nav>
+        <form id="configForm" class="config-form" autocomplete="off" novalidate></form>
+        <aside class="validation-panel">
+          <h3>Validation</h3>
+          <div id="validationSummary" class="validation-summary">Load or create a config.</div>
+          <div id="validationList" class="validation-list"></div>
+          <div class="actions">
+            <button type="button" id="previewYaml">Preview YAML</button>
+            <button type="button" id="saveConfig">Save config…</button>
+            <button type="button" id="launchRun" class="primary">Launch…</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- =============================== Jobs =============================== -->
+    <section id="tab-jobs" class="tab-panel">
+      <div class="split">
+        <aside class="list-panel">
+          <div class="list-tools">
+            <select id="jobFilter">
+              <option value="all">All jobs</option>
+              <option value="active">Queued / running</option>
+              <option value="finished">Finished</option>
+            </select>
+          </div>
+          <div id="jobList" class="item-list"></div>
+        </aside>
+        <div id="jobDetail" class="detail-panel"><p class="muted">Select a job.</p></div>
+      </div>
+    </section>
+
+    <!-- ============================ Preprocessed ============================ -->
+    <section id="tab-cache" class="tab-panel">
+      <div class="split">
+        <aside class="list-panel">
+          <div class="list-tools column">
+            <select id="cacheList"></select>
+            <input id="sampleFilter" type="search" placeholder="Filter subject or file name">
+            <div id="sampleCount" class="muted small"></div>
+          </div>
+          <div id="sampleList" class="item-list compact"></div>
+        </aside>
+        <div class="detail-panel">
+          <div id="cacheEmpty" class="muted">Choose a file list and a sample. Folders scanned: <span id="cacheRoots"></span></div>
+          <div id="cacheViewer" class="hidden">
+            <div class="viewer-grid">
+              <div>
+                <div class="frame-box"><canvas id="frameCanvas" width="288" height="288"></canvas></div>
+                <div class="player">
+                  <button type="button" id="playToggle">Play</button>
+                  <input type="range" id="frameSlider" min="0" max="0" value="0">
+                  <span id="frameLabel">0 / 0</span>
+                </div>
+                <div class="player">
+                  <label>Channels <select id="channelGroup"></select></label>
+                  <label>Speed <select id="playFps"><option>5</option><option>10</option><option selected>15</option><option>30</option></select> fps</label>
+                  <label>Frame rate (Hz) <input id="sampleFs" type="number" min="1" max="1000" value="30"></label>
+                  <label class="check"><input type="checkbox" id="labelDiff"> Label is differenced</label>
+                </div>
+              </div>
+              <div id="sampleInfo" class="info-table"></div>
+            </div>
+            <h4>Label</h4>
+            <canvas id="labelChart" class="chart"></canvas>
+            <div id="labelExtra"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== Results ============================== -->
+    <section id="tab-results" class="tab-panel">
+      <div class="split">
+        <aside class="list-panel">
+          <div class="list-tools column">
+            <input id="resultFilter" type="search" placeholder="Filter experiments">
+            <button type="button" id="refreshResults">Refresh</button>
+          </div>
+          <div id="resultList" class="item-list"></div>
+        </aside>
+        <div id="resultDetail" class="detail-panel"><p class="muted">Select an experiment. Folders scanned: <span id="resultRoots"></span></p></div>
+      </div>
+    </section>
+
+    <!-- ============================== Settings ============================== -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="settings-grid">
+        <fieldset>
+          <legend>Local Python environment</legend>
+          <label>Python executable <input id="setPython" type="text"></label>
+          <div class="row"><button type="button" id="testLocal">Test environment</button><span id="localResult" class="muted"></span></div>
+        </fieldset>
+        <fieldset>
+          <legend>Docker (.env in the toolbox root)</legend>
+          <div id="envFields"></div>
+          <div id="mountTable" class="info-table"></div>
+          <div class="row">
+            <button type="button" id="testDocker">Test Docker</button>
+            <button type="button" id="testDockerGpu">GPU check in container</button>
+            <span id="dockerResult" class="muted"></span>
+          </div>
+          <p class="muted small">The W&amp;B API key is never shown or edited here. <span id="wandbKeyState"></span></p>
+        </fieldset>
+        <fieldset>
+          <legend>Jobs</legend>
+          <label>Default when a GPU is busy
+            <select id="setPolicy">
+              <option value="queue">Queue the new run</option>
+              <option value="parallel">Start in parallel</option>
+            </select>
+          </label>
+          <label>Maximum simultaneous jobs <input id="setMaxJobs" type="number" min="1" max="16"></label>
+          <label>Default backend
+            <select id="setBackend"><option value="docker">Docker</option><option value="local">Local Python</option></select>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Folders to browse</legend>
+          <label>Extra results folders (one per line)<textarea id="setResultsRoots" rows="3"></textarea></label>
+          <label>Extra preprocessed-data folders (one per line)<textarea id="setCacheRoots" rows="3"></textarea></label>
+          <p class="muted small">RUNS_PATH/CACHE_PATH from .env and the toolbox's runs/ and PreprocessedData/ are always included.</p>
+        </fieldset>
+        <div class="row"><button type="button" id="saveSettings" class="primary">Save settings</button><span id="settingsResult" class="muted"></span></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="modal-head"><h3 id="modalTitle"></h3><button type="button" id="modalClose" aria-label="Close">×</button></div>
+      <div id="modalBody" class="modal-body"></div>
+      <div id="modalFoot" class="modal-foot"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="chartTip" class="chart-tip hidden"></div>
+  <script src="/static/charts.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

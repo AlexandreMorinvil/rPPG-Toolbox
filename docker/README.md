@@ -14,6 +14,10 @@ Included standalone configs:
 These preserve the previous experiment settings, with container paths. They do
 not inherit configs from outside the repository.
 
+To edit configs with validation, launch and follow runs, and browse caches and
+results from a browser, see the [launcher](../launcher/README.md)
+(`python -m launcher`).
+
 ## Target computer requirements
 
 - An x86-64 computer with an NVIDIA GPU and a current driver supporting CUDA

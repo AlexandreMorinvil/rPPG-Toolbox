@@ -26,4 +26,5 @@ test.yaml
 /preprocessed_data/
 /model_outputs/
 /wandb/
+/launcher_data/
 /*.tar
