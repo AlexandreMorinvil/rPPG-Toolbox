@@ -13,9 +13,10 @@ import scipy.signal
 from evaluation.post_process import _calculate_SNR, _calculate_fft_hr, _calculate_peak_hr, _detrend
 
 
-def _reform(data):
+def _reform(data, flatten=True):
     tensors = [value for _, value in sorted(data.items())]
-    return np.reshape(np.concatenate([tensor.cpu().numpy() for tensor in tensors]), (-1,))
+    combined = np.concatenate([tensor.cpu().numpy() for tensor in tensors], axis=0)
+    return np.reshape(combined, (-1,)) if flatten else combined
 
 
 def _parse_recording_id(recording_id):
@@ -35,6 +36,18 @@ def _estimate_hr(prediction, fs, method, prediction_is_diff):
     raise ValueError(f"Unsupported vHRM evaluation method: {method}")
 
 
+def _pulse_interval_metrics(waveform, fs):
+    minimum_distance = max(1, int(fs * 60 / 200))
+    prominence = max(np.std(waveform) * 0.1, np.finfo(np.float64).eps)
+    peaks, _ = scipy.signal.find_peaks(
+        waveform, distance=minimum_distance, prominence=prominence)
+    intervals_ms = np.diff(peaks) / fs * 1000
+    mean_rr = float(np.mean(intervals_ms)) if intervals_ms.size else np.nan
+    rmssd = float(np.sqrt(np.mean(np.square(np.diff(intervals_ms))))) \
+        if intervals_ms.size >= 2 else np.nan
+    return mean_rr, rmssd
+
+
 def _summary(frame, group_columns):
     def summarize(group):
         error = group["predicted_hr_bpm"] - group["ground_truth_hr_bpm"]
@@ -52,6 +65,12 @@ def _summary(frame, group_columns):
             "mean_snr_db": group["snr_db"].mean(),
             "mean_ground_truth_hr_bpm": group["ground_truth_hr_bpm"].mean(),
             "mean_predicted_hr_bpm": group["predicted_hr_bpm"].mean(),
+            "hrv_windows": group[["ground_truth_hrv_ms", "predicted_hrv_rmssd_ms"]].dropna().shape[0],
+            "hrv_mae_ms": (
+                group["predicted_hrv_rmssd_ms"] - group["ground_truth_hrv_ms"]
+            ).abs().mean(),
+            "mean_ground_truth_hrv_ms": group["ground_truth_hrv_ms"].mean(),
+            "mean_predicted_hrv_rmssd_ms": group["predicted_hrv_rmssd_ms"].mean(),
         })
 
     if group_columns:
@@ -106,7 +125,9 @@ def calculate_vhrm_metrics(predictions, labels, config):
 
     for recording_id in sorted(predictions):
         prediction = _reform(predictions[recording_id])
-        ground_truth = _reform(labels[recording_id])
+        ground_truth = _reform(labels[recording_id], flatten=False)
+        if ground_truth.ndim == 1:
+            ground_truth = ground_truth[:, None]
         participant, segment_index, movement, view = _parse_recording_id(recording_id)
         window_size = configured_window if use_windows else len(prediction)
         for window_index, start in enumerate(range(0, len(prediction), window_size)):
@@ -115,7 +136,12 @@ def calculate_vhrm_metrics(predictions, labels, config):
                 continue
             predicted_hr, waveform = _estimate_hr(
                 prediction[start:end], fs, config.INFERENCE.EVALUATION_METHOD, prediction_is_diff)
-            measured_hr = float(np.nanmean(ground_truth[start:end]))
+            measured_hr = float(np.nanmean(ground_truth[start:end, 0]))
+            predicted_mean_ibi, predicted_hrv = _pulse_interval_metrics(waveform, fs)
+            measured_hrv = float(np.nanmean(ground_truth[start:end, 1])) \
+                if ground_truth.shape[1] > 1 and np.any(np.isfinite(ground_truth[start:end, 1])) else np.nan
+            measured_respiration_rate = float(np.nanmean(ground_truth[start:end, 2])) \
+                if ground_truth.shape[1] > 2 and np.any(np.isfinite(ground_truth[start:end, 2])) else np.nan
             rows.append({
                 "recording_id": recording_id,
                 "participant": participant,
@@ -130,6 +156,10 @@ def calculate_vhrm_metrics(predictions, labels, config):
                 "error_bpm": predicted_hr - measured_hr,
                 "absolute_error_bpm": abs(predicted_hr - measured_hr),
                 "snr_db": float(_calculate_SNR(waveform, measured_hr, fs=fs)),
+                "ground_truth_hrv_ms": measured_hrv,
+                "predicted_hrv_rmssd_ms": predicted_hrv,
+                "ground_truth_respiration_rate_bpm": measured_respiration_rate,
+                "predicted_mean_ibi_ms": predicted_mean_ibi,
             })
 
     windows = pd.DataFrame(rows)

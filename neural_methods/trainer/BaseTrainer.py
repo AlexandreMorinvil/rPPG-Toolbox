@@ -81,6 +81,8 @@ class BaseTrainer:
         data['labels'] = labels
         data['label_type'] = config.TEST.DATA.PREPROCESS.LABEL_TYPE
         data['fs'] = config.TEST.DATA.FS
+        if config.TEST.DATA.DATASET == 'vHRM':
+            data['label_columns'] = ['heart_rate_bpm', 'HRV', 'respiration_rate_bpm']
 
         with open(output_path, 'wb') as handle: # save out frame dict pickle file
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)

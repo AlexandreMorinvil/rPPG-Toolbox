@@ -68,6 +68,8 @@ class DeepPhysTrainer(BaseTrainer):
                     self.device), batch[1].to(self.device)
                 N, D, C, H, W = data.shape
                 data = data.view(N * D, C, H, W)
+                if labels.ndim > 2:
+                    labels = labels[..., 0]
                 labels = labels.view(-1, 1)
                 self.optimizer.zero_grad()
                 pred_ppg = self.model(data)
@@ -127,6 +129,8 @@ class DeepPhysTrainer(BaseTrainer):
                     self.device), valid_batch[1].to(self.device)
                 N, D, C, H, W = data_valid.shape
                 data_valid = data_valid.view(N * D, C, H, W)
+                if labels_valid.ndim > 2:
+                    labels_valid = labels_valid[..., 0]
                 labels_valid = labels_valid.view(-1, 1)
                 pred_ppg_valid = self.model(data_valid)
                 loss = self.criterion(pred_ppg_valid, labels_valid)
@@ -183,7 +187,6 @@ class DeepPhysTrainer(BaseTrainer):
                     self.config.DEVICE), test_batch[1].to(self.config.DEVICE)
                 N, D, C, H, W = data_test.shape
                 data_test = data_test.view(N * D, C, H, W)
-                labels_test = labels_test.view(-1, 1)
                 frame_batch_size = self.config.INFERENCE.FRAME_BATCH_SIZE
                 if frame_batch_size > 0:
                     pred_ppg_test = torch.cat([
@@ -204,7 +207,7 @@ class DeepPhysTrainer(BaseTrainer):
                         predictions[subj_index] = dict()
                         labels[subj_index] = dict()
                     predictions[subj_index][sort_index] = pred_ppg_test[idx * self.chunk_len:(idx + 1) * self.chunk_len]
-                    labels[subj_index][sort_index] = labels_test[idx * self.chunk_len:(idx + 1) * self.chunk_len]
+                    labels[subj_index][sort_index] = labels_test[idx]
         
         print('')
         calculate_metrics(predictions, labels, self.config)
