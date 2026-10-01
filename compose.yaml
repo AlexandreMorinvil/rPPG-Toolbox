@@ -1,0 +1,47 @@
+services:
+  toolbox:
+    image: ${TOOLBOX_IMAGE:-vhrm2-rppg:toolbox-cu124}
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    shm_size: ${DOCKER_SHM_SIZE:-8gb}
+    environment:
+      WANDB_DIR: /runs
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+    command:
+      - --config_file
+      - ${CONFIG_FILE:-/opt/vhrm2/configs/train/UBFC-rPPG_DATASET2_DeepPhys.docker.yaml}
+    volumes:
+      - type: bind
+        source: ${DATA_ROOT:-./data}
+        target: /data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CHECKPOINT_ROOT:-./final_model_release}
+        target: /checkpoints
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CACHE_PATH:-./preprocessed_data}
+        target: /cache
+      - type: bind
+        source: ${RUNS_PATH:-./runs}
+        target: /runs
+      - type: bind
+        source: ./docker/configs
+        target: /opt/vhrm2/configs
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_DEVICE_ID:-0}']
+              capabilities: [gpu]

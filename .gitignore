@@ -19,3 +19,11 @@ neural_methods/trainer/PhysnetTrainer_backup.py
 debug_utils_physnet.py
 test.yaml
 *.out
+.env
+.env.*
+!docker/.env.example
+/data/
+/preprocessed_data/
+/model_outputs/
+/wandb/
+/*.tar

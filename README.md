@@ -19,6 +19,23 @@ rPPG-Toolbox not only benchmarks the **existing state-of-the-art neural and unsu
 ![Overview of the toolbox](./figures/toolbox_overview.png)
 
 
+# Docker Training and Evaluation
+
+The [Docker guide](docker/README.md) provides a repository-contained NVIDIA GPU
+setup for training and evaluation. Clone this repository, configure host paths
+using [docker/.env.example](docker/.env.example), and run from the repository root:
+
+```powershell
+docker compose build toolbox
+docker compose run --rm toolbox
+```
+
+Portable experiment YAMLs live in [docker/configs](docker/configs). No parent
+workspace is required. The default runs DeepPhys training on UBFC-rPPG DATASET_2;
+the same image also supports compatible evaluation configs. Datasets and private
+W&B credentials are supplied separately and are not committed to Git.
+
+
 # :notebook: Algorithms
 rPPG-Toolbox currently supports the following algorithms: 
 

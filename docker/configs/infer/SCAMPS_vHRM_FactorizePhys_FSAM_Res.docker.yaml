@@ -1,0 +1,78 @@
+BASE: ['']
+TOOLBOX_MODE: only_test
+TEST:
+  METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR', 'BA']
+  USE_LAST_EPOCH: True
+  DATA:
+    FS: 30
+    DATASET: vHRM
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: /data/vHRM
+    CACHED_PATH: /cache/vHRM
+    EXP_DATA_NAME: FactorizePhys_SCAMPS_Front_30fps
+    BEGIN: 0.0
+    END: 1.0
+    VHRM:
+      VIEWS: ['Front']
+      SIGNAL_COLUMN: heart_rate_bpm
+      PREDICTION_IS_DIFF: False
+      VIDEO_DECODER: auto
+      FFMPEG_PATH: ffmpeg
+      FFPROBE_PATH: ffprobe
+      INCREMENTAL_PREPROCESS: True
+      ADOPT_LEGACY_CACHE: True
+      MANIFEST_FILENAME: preprocessing_manifest.json
+      CACHE_DTYPE: float16
+      SHOW_VIDEO_PROGRESS: True
+    PREPROCESS:
+      DATA_TYPE: ['Raw']
+      DATA_AUG: ['None']
+      LABEL_TYPE: Raw
+      DO_CHUNK: True
+      CHUNK_LENGTH: 160
+      NUM_WORKERS: 1
+      CROP_FACE:
+        DO_CROP_FACE: True
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: True
+        LARGE_BOX_COEF: 1.0
+        DETECTION:
+          DO_DYNAMIC_DETECTION: True
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: False
+      RESIZE:
+        H: 72
+        W: 72
+DEVICE: cuda:0
+NUM_OF_GPU_TRAIN: 1
+LOG:
+  PATH: /runs/vHRM_FactorizePhys_SCAMPS
+MODEL:
+  DROP_RATE: 0.1
+  NAME: FactorizePhys
+  MODEL_DIR: PreTrainedModels
+  FactorizePhys:
+    CHANNELS: 3
+    FRAME_NUM: 160
+    TYPE: Standard
+    MD_FSAM: False
+    MD_TYPE: NMF
+    MD_TRANSFORM: T_KAB
+    MD_R: 1
+    MD_S: 1
+    MD_STEPS: 4
+    MD_RESIDUAL: True
+    MD_INFERENCE: True
+INFERENCE:
+  BATCH_SIZE: 2
+  DATA_LOADER_WORKERS: 2
+  FRAME_BATCH_SIZE: 512
+  EVALUATION_METHOD: FFT
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: True
+    WINDOW_SIZE: 10
+  MODEL_PATH: /checkpoints/SCAMPS_FactorizePhys_FSAM_Res.pth
+WANDB:
+  ENABLED: False
+  MODE: offline
