@@ -1,5 +1,6 @@
 """Filesystem locations and Docker mount translation."""
 
+import ntpath
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -180,6 +181,10 @@ def config_host_path(value, backend, env=None):
     if os.name == "nt" and looks_like_container_path(value):
         return None, "Paths under /data, /cache, /runs or /checkpoints are Docker container (or Linux) paths; " \
                      "local runs need a host path."
+    drive, tail = ntpath.splitdrive(value)
+    if (os.name == "nt" or drive) and ":" in tail:
+        return None, "Invalid Windows path: ':' is only allowed in the leading drive prefix " \
+                     "(for example C:\\Datasets_Preprocessed). Remove any duplicated drive prefix."
     return resolve_host(value), None
 
 

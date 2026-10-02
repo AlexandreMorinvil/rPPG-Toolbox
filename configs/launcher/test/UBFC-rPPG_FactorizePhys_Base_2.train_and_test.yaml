@@ -1,0 +1,23 @@
+# Corrected rerun of job 20261002-163905-ed74d0; reuse the existing caches.
+BASE: ['UBFC-rPPG_FactorizePhys_Base.docker.yaml']
+LOG:
+  PATH: C:\Run\UBFC-rPPG_FactorizePhys_Base_2
+MODEL:
+  RESUME: ''
+TRAIN:
+  EPOCHS: 20
+  SAVE_RESUME: true
+  DATA:
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    DO_PREPROCESS: false
+VALID:
+  DATA:
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    DO_PREPROCESS: false
+TEST:
+  DATA:
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    DO_PREPROCESS: false
+WANDB:
+  RUN_NAME: FactorizePhys_2
+  NOTES: This is a test
