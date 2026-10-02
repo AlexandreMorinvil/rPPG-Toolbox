@@ -158,6 +158,11 @@ class BaseTrainer:
                     metrics["valid/epoch_loss"] = float(valid_loss[epoch_idx])
                 wandb_logger.log(metrics)
             for step_idx, lr in enumerate(lrs):
+                # get_last_lr() returns one value per optimizer parameter group.
+                # Match batch logging by reporting the first group's scalar LR;
+                # the saved plot above still includes every parameter group.
+                if isinstance(lr, (list, tuple)):
+                    lr = lr[0]
                 wandb_logger.log({"train/lr": float(lr), "scheduler_step": step_idx})
             wandb_logger.log_image("plots/losses", loss_plot_png)
             wandb_logger.log_image("plots/learning_rate", lr_plot_png)

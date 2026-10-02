@@ -1,0 +1,130 @@
+BASE: ['']
+TOOLBOX_MODE: train_and_test
+MODEL:
+  NAME: FactorizePhys
+  DROP_RATE: 0.1
+  FactorizePhys:
+    FRAME_NUM: 160
+    CHANNELS: 3
+    TYPE: Standard
+    MD_FSAM: false
+    MD_TYPE: NMF
+LOG:
+  PATH: C:\Run\UBFC-rPPG_FactorizePhys_Base
+DEVICE: cuda:0
+TRAIN:
+  EPOCHS: 10
+  BATCH_SIZE: 4
+  LR: 0.001
+  MODEL_FILE_NAME: UBFC-rPPG_FactorizePhys_Base
+  PLOT_LOSSES_AND_LR: true
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:\Datasets\UBFC_dataset\DATASET_2
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    EXP_DATA_NAME: FactorizePhys_Base
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.0
+    END: 0.7
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [Raw]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+VALID:
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:\Datasets\UBFC_dataset\DATASET_2
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    EXP_DATA_NAME: FactorizePhys_Base
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.7
+    END: 0.8
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [Raw]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+TEST:
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:\Datasets\UBFC_dataset\DATASET_2
+    CACHED_PATH: C:\Datasets_Preprocessed\UBFC-rPPG
+    EXP_DATA_NAME: FactorizePhys_Base
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.8
+    END: 1.0
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [Raw]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+  METRICS: [MAE, RMSE, MAPE, MACC, Pearson, SNR, BA]
+  USE_LAST_EPOCH: false
+INFERENCE:
+  BATCH_SIZE: 4
+  DATA_LOADER_WORKERS: 0
+  EVALUATION_METHOD: FFT
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: false
+    WINDOW_SIZE: 30
+WANDB:
+  ENABLED: true
+  MODE: online
+  PROJECT: vHRM
+  ENTITY: ''
+  RUN_NAME: FactorizePhys
+  GROUP: Test
+  JOB_TYPE: Training and test
+  TAGS: [test]
+  NOTES: This is my first test
+  LOG_BATCH_LOSS: true
+  LOG_FREQ: 50
