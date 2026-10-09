@@ -31,6 +31,7 @@ _C.TRAIN.OPTIMIZER.BETAS = (0.9, 0.999)
 _C.TRAIN.OPTIMIZER.MOMENTUM = 0.9
 _C.TRAIN.MODEL_FILE_NAME = ''
 _C.TRAIN.PLOT_LOSSES_AND_LR = True
+_C.TRAIN.SAVE_RESUME = True
 # Train.Data settings
 _C.TRAIN.DATA = CN()
 _C.TRAIN.DATA.INFO = CN()
@@ -438,6 +439,10 @@ def update_config(config, args):
     # update flag from config file
     _update_config_from_file(config, args.config_file)
     config.defrost()
+    if config.MODEL.RESUME and config.TOOLBOX_MODE == 'train_and_test':
+        # Resume must reuse the original clips/file lists, not rebuild a cache.
+        for split in (config.TRAIN, config.VALID, config.TEST):
+            split.DATA.DO_PREPROCESS = False
     
     # UPDATE TRAIN PATHS
     if config.TRAIN.DATA.FILE_LIST_PATH == default_TRAIN_FILE_LIST_PATH:

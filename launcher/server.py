@@ -1,5 +1,6 @@
 """HTTP server: static UI plus a token-protected JSON API."""
 
+import ipaddress
 import json
 import math
 import mimetypes
@@ -95,10 +96,13 @@ class LauncherServer(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets a second launcher silently share the port.
     allow_reuse_address = os.name != "nt"
 
-    def __init__(self, address, allowed_hosts):
+    def __init__(self, address, allowed_hosts, allow_ip_hosts=False):
         super().__init__(address, Handler)
         self.token = secrets.token_urlsafe(24)
         self.allowed_hosts = allowed_hosts
+        # When True, any IP-literal Host header is accepted (LAN mode). DNS-rebinding attacks need a
+        # domain name in the Host header, so IP literals stay safe.
+        self.allow_ip_hosts = allow_ip_hosts
         self.manager = jobs.JobManager()
         self.env_tests = {}
         self.env_lock = threading.Lock()
@@ -128,7 +132,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(body, "application/json; charset=utf-8", status)
 
     def _host_ok(self):
-        return self.headers.get("Host", "") in self.server.allowed_hosts
+        host = self.headers.get("Host", "")
+        if host in self.server.allowed_hosts:
+            return True
+        if not self.server.allow_ip_hosts:
+            return False
+        name, sep, port = host.rpartition(":")
+        if not sep or port != str(self.server.server_port):
+            return False
+        try:
+            ipaddress.ip_address(name.strip("[]"))
+        except ValueError:
+            return False
+        return True
 
     def _token_ok(self, params):
         supplied = self.headers.get("X-Launcher-Token") or params.get("t", [""])[0]
@@ -273,6 +289,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(manager.config_text(job_id).encode("utf-8"), "text/plain; charset=utf-8")
             elif method == "POST" and action == "cancel":
                 self._json({"job": manager.cancel(job_id)})
+            elif method == "POST" and action == "pause":
+                self._json({"job": manager.pause(job_id)})
+            elif method == "POST" and action == "resume":
+                self._json(manager.resume_config(job_id))
             elif method == "POST" and action == "remove":
                 manager.remove(job_id)
                 self._json({"ok": True})

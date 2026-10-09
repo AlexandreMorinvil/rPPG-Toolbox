@@ -96,7 +96,10 @@ class FactorizePhysTrainer(BaseTrainer):
         mean_valid_losses = []
         mean_appx_error = []
         lrs = []
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(
+            data_loader, train_loss=mean_training_losses, valid_loss=mean_valid_losses,
+            lrs=lrs, appx_error=mean_appx_error
+        ):
             print('')
             print(f"====Training Epoch: {epoch}====")
             running_loss = 0.0

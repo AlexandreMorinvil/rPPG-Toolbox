@@ -375,6 +375,23 @@ Note 1: Preprocessing requires only once; thus turn it off on the yaml file when
 Note 2: The example yaml setting will allow 80% of SCAMPS to train and 20% of SCAMPS to valid. 
 After training, it will use the best model(with the least validation loss) to test on UBFC-rPPG.
 
+## Pausing and recovering training
+
+All neural trainers now save full resume checkpoints by default with
+`TRAIN.SAVE_RESUME: true`. In the launcher, use **Pause after epoch** to finish and save
+the current epoch/validation before releasing the GPU, or **Stop now** for immediate
+termination. Paused, stopped and failed jobs with a checkpoint offer **Resume training**.
+An unfinished epoch is replayed; completed epochs are not retrained. A crash during
+post-training plotting/testing can be recovered with **Retry plots / test**.
+
+For YAML-based recovery, set `MODEL.RESUME` to the saved `<prefix>_resume.pt` checkpoint
+and keep the original model, epoch budget, batch size and training/validation data.
+Preprocessing is automatically skipped. The file contains optimizer, scheduler, model
+selection, histories and RNG state as well as weights; existing epoch `.pth` weights
+are still used for inference and cannot fully resume old runs. Load only trusted
+checkpoints. See the [launcher recovery guide](launcher/README.md#pause-stop-and-resume-training)
+for workflow details, limits and Docker rebuild requirements.
+
 # :zap: Inference With Unsupervised Methods 
 
 STEP 1: Download the UBFC-rPPG via [link](https://sites.google.com/view/ybenezeth/ubfcrppg)

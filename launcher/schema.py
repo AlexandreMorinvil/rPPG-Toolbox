@@ -92,6 +92,9 @@ def _training_fields():
          "Checkpoints are saved as <prefix>_Epoch<N>.pth.", pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
          required=True, when=when)
     _add("TRAIN.PLOT_LOSSES_AND_LR", "bool", True, "Save loss/LR plots", s, when=when)
+    _add("TRAIN.SAVE_RESUME", "bool", True, "Save resumable training state", s,
+         "Atomically saves full state before training and after each completed epoch + validation. "
+         "Enables pause and crash recovery; an unfinished epoch is replayed.", when=when)
     _add("TRAIN.OPTIMIZER.EPS", "float", 1e-4, "Optimizer epsilon", s, "Used by some trainers only.",
          min=0.0, max=1.0, when=when, advanced=True)
     _add("TRAIN.OPTIMIZER.BETAS", "floatpair", [0.9, 0.999], "Optimizer betas", s, "Used by some trainers only.",
@@ -252,8 +255,10 @@ def _model_fields():
     _add("MODEL.MODEL_DIR", "str", "PreTrainedModels", "Checkpoint subfolder", s,
          "Relative to <output folder>/<training cache name>.", pattern=r"^[A-Za-z0-9._-]+$", when=neural,
          advanced=True)
-    _add("MODEL.RESUME", "str", "", "Resume checkpoint", s, "Not used by the current trainers.", when=neural,
-         advanced=True)
+    _add("MODEL.RESUME", "path", "", "Resume training checkpoint", s,
+         "Trusted *_resume.pt file with model, optimizer, scheduler and RNG state. "
+         "Keep the original epoch budget, batch size and data splits. Epoch weight .pth files cannot resume training.",
+         when={"modes": ["train_and_test"]}, path={"kind": "file", "role": "checkpoint", "ext": ".pt"})
     _add("MODEL.PHYSNET.FRAME_NUM", "int", 64, "PhysNet frames", s, "Must equal the clip length.",
          min=1, max=100000, when=model_when("Physnet"))
     _add("MODEL.iBVPNet.FRAME_NUM", "int", 160, "iBVPNet frames", s, "Must equal the clip length.",

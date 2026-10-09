@@ -6,6 +6,7 @@ import os
 import pickle
 
 from neural_methods import wandb_logger
+from neural_methods.training_checkpoint import training_epochs
 
 
 class BaseTrainer:
@@ -27,6 +28,10 @@ class BaseTrainer:
 
     def test(self):
         pass
+
+    def training_epochs(self, data_loader, **histories):
+        """Shared epoch-boundary checkpoint/pause/resume lifecycle."""
+        return training_epochs(self, data_loader, histories)
 
     def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
         """Forward a per-batch metric to wandb honouring config.WANDB.* settings.

@@ -441,6 +441,14 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if not values.get("TEST.METRICS"):
             report.warn("No test metrics selected; the test phase will not report results.", "TEST.METRICS")
     if mode == "train_and_test":
+        if values.get("MODEL.RESUME"):
+            host = _check_path(schema.FIELD_MAP["MODEL.RESUME"], values["MODEL.RESUME"], backend, report, env)
+            if host is not None and not host.is_file():
+                report.error(f"Resume checkpoint not found: {host}", "MODEL.RESUME")
+            if not values.get("TRAIN.SAVE_RESUME", True):
+                report.error("Resuming requires resumable training state to be enabled.", "TRAIN.SAVE_RESUME")
+            report.note("Resume restores the last completed epoch. Unfinished epochs are replayed; "
+                        "only load trusted local checkpoints.", "MODEL.RESUME")
         aug_used = any(values[f"{s}.PREPROCESS.DATA_AUG"] != ["None"] for s in ("TRAIN.DATA", "VALID.DATA",
                                                                                   "TEST.DATA"))
         if aug_used and not MOTION_NAME_PATTERN.match(values["TRAIN.MODEL_FILE_NAME"] or ""):

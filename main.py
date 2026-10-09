@@ -10,6 +10,7 @@ from config import get_config
 from dataset import data_loader
 from neural_methods import trainer
 from neural_methods import wandb_logger
+from neural_methods.training_checkpoint import TrainingPaused, PAUSED_EXIT_CODE
 from unsupervised_methods.unsupervised_predictor import unsupervised_predict
 from torch.utils.data import DataLoader
 
@@ -362,5 +363,7 @@ if __name__ == "__main__":
             unsupervised_method_inference(config, data_loader_dict)
         else:
             print("TOOLBOX_MODE only support train_and_test or only_test !", end='\n\n')
+    except TrainingPaused:
+        raise SystemExit(PAUSED_EXIT_CODE)
     finally:
         wandb_logger.finish()

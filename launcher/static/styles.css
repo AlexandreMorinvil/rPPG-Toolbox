@@ -178,6 +178,7 @@ main { flex: 1; min-height: 0; }
 .status.succeeded { color: var(--ok); }
 .status.failed, .status.interrupted { color: var(--err); }
 .status.running { color: var(--accent); }
+.status.paused, .status.pausing { color: var(--warn); }
 .clip { display: inline-block; max-width: 100%; white-space: pre-wrap; }
 .grid-table { border-collapse: collapse; width: 100%; font-size: 12px; }
 .grid-table th, .grid-table td { border-bottom: 1px solid var(--line); padding: 5px 8px; text-align: left; }

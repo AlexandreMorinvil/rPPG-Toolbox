@@ -59,7 +59,7 @@ class PhysMambaTrainer(BaseTrainer):
         if data_loader["train"] is None:
             raise ValueError("No data for train")
 
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(data_loader):
             print('')
             print(f"====Training Epoch: {epoch}====")
             self.model.train()

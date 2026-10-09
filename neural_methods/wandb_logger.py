@@ -40,6 +40,17 @@ def is_enabled() -> bool:
     return _enabled and _run is not None
 
 
+def training_step() -> int:
+    """Optimizer-step axis saved in full training checkpoints."""
+    return _global_step
+
+
+def restore_training_step(step: int) -> None:
+    """Continue metric axes in a new W&B run without storing login secrets."""
+    global _global_step
+    _global_step = int(step)
+
+
 def _cfg_to_dict(cfg) -> Dict[str, Any]:
     """Convert a yacs CfgNode (or any mapping-ish object) to a plain dict."""
     try:

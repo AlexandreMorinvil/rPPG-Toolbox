@@ -240,6 +240,7 @@ async function newBlank(mode) {
 
 function setValues(values, extras, backend, label, source) {
   S.values = values;
+  S.resumeFrom = null;
   S.extras = extras || {};
   S.source = source;
   setBackend(backend, false);
@@ -626,10 +627,10 @@ async function browseDialog(field) {
 }
 
 // ------------------------------------------------------------------ launch
-async function launchDialog() {
+async function launchDialog(initial = {}) {
   if (!S.values) return;
   if (S.validation?.errors.length) { toast('Fix the validation errors first.', 'error'); return; }
-  S.preflight = { answers: {}, secrets: {}, name: '', result: null, busy: false };
+  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', result: null, busy: false };
   openModal('Pre-launch checks', h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, 'Checking environment…')),
     [{ label: 'Cancel', onClick: closeModal }, { label: 'Re-check', id: 'pfRecheck', onClick: () => refreshPreflight() },
       { label: 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
@@ -701,7 +702,7 @@ async function doLaunch() {
   if (!pf?.result?.can_launch) return;
   $('pfLaunch').disabled = true;
   try {
-    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, source: S.source } });
+    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, source: S.source, resume_from: S.resumeFrom } });
     closeModal();
     S.selectedJob = result.job.id;
     S.log = null;
@@ -714,7 +715,7 @@ async function doLaunch() {
 }
 
 // -------------------------------------------------------------------- jobs
-const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' };
+const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', pausing: 'Finishing epoch before pause', paused: 'Paused (GPU released)' };
 
 function jobFraction(job) {
   const p = job.progress || {};
@@ -739,7 +740,7 @@ async function pollJobs() {
     S.jobs = data.jobs;
     S.gpus = data.gpus;
   } catch (error) { return; }
-  const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'stopping'].includes(j.status)).length;
+  const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
   $('jobsBadge').textContent = active;
   $('jobsBadge').classList.toggle('hidden', !active);
   $('gpuStrip').replaceChildren(...S.gpus.map(g => h('span', { class: 'gpu', title: g.name },
@@ -753,7 +754,7 @@ async function pollJobs() {
 function renderJobList() {
   const filter = $('jobFilter').value;
   const list = $('jobList');
-  const jobs = S.jobs.filter(j => filter === 'all' || (filter === 'active') === ['queued', 'starting', 'running', 'stopping'].includes(j.status));
+  const jobs = S.jobs.filter(j => filter === 'all' || (filter === 'active') === ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status));
   if (!S.selectedJob && jobs.length) S.selectedJob = jobs[0].id;
   list.replaceChildren(...jobs.map(job => {
     const fraction = jobFraction(job);
@@ -784,11 +785,13 @@ function updateJobDetail(force = false) {
   }
   const p = job.progress || {};
   const actions = [];
-  if (['queued', 'running', 'starting'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop'));
+  if (job.can_pause) actions.push(h('button', { type: 'button', onclick: () => pauseJob(job) }, 'Pause after epoch'));
+  if (job.can_resume) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => resumeJob(job) }, job.recovery?.training_complete ? 'Retry plots / test' : 'Resume training'));
+  if (['queued', 'running', 'starting', 'pausing'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop now'));
   actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, 'View config'));
   actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
   if ((job.outputs || {}).log_path_host) actions.push(h('button', { type: 'button', onclick: () => openResultsForJob(job) }, 'Results'));
-  if (!['queued', 'running', 'starting', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
+  if (!['queued', 'running', 'starting', 'pausing', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
   $('jdHead').replaceChildren(
     h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, job.name),
       h('div', { class: 'muted' }, `${job.mode} · ${job.model || ''} · ${[job.datasets?.train, job.datasets?.test].filter(Boolean).join(' → ')} · ${job.backend}${job.gpu !== null && job.gpu !== undefined ? ' · GPU ' + job.gpu : ''} · created ${fmtDate(job.created)}`)),
@@ -802,6 +805,9 @@ function updateJobDetail(force = false) {
     bar ? ['Current step', `${bar.desc || 'progress'}: ${bar.n}/${bar.total}${bar.eta ? ' · ETA ' + bar.eta : ''}`] : null,
     p.best_epoch !== null && p.best_epoch !== undefined ? ['Best epoch', String(p.best_epoch)] : null,
     ['Elapsed', elapsed(job) || '–'],
+    job.status === 'pausing' ? ['Pause', 'Waiting for the current epoch and validation to finish; Stop now discards the unfinished epoch.'] : null,
+    job.recovery ? ['Recovery', `${job.recovery.next_epoch} / ${job.recovery.epochs_total} epochs committed${job.recovery.training_complete ? ' — training complete' : ''}`] : null,
+    job.resume_from ? ['Resumed from', job.resume_from] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
     p.last_line ? ['Last line', h('code', { class: 'clip' }, p.last_line)] : null,
@@ -864,7 +870,7 @@ async function pollLog() {
         if ($('logFollow')?.checked) pre.scrollTop = pre.scrollHeight;
       }
     }
-    if (job && !['queued', 'starting', 'running', 'stopping'].includes(job.status) && data.next >= data.size) log.done = true;
+    if (job && !['queued', 'starting', 'running', 'pausing', 'stopping'].includes(job.status) && data.next >= data.size) log.done = true;
   } catch (error) {
     /* job removed or log not yet available */
   } finally {
@@ -873,8 +879,24 @@ async function pollLog() {
 }
 
 async function cancelJob(job) {
-  if (!confirm(`Stop "${job.name}"?`)) return;
+  if (!confirm(`Stop "${job.name}" immediately? Any unfinished epoch is discarded. A full-state checkpoint, if available, can resume from the last completed epoch.`)) return;
   try { await api(`/api/jobs/${job.id}/cancel`, { method: 'POST', body: {} }); pollJobs(); } catch (error) { toast(error.message, 'error'); }
+}
+
+async function pauseJob(job) {
+  if (!confirm(`Pause "${job.name}" after the current epoch and validation? The checkpoint is saved and the GPU is released. This can take the rest of the epoch.`)) return;
+  try { await api(`/api/jobs/${job.id}/pause`, { method: 'POST', body: {} }); pollJobs(); } catch (error) { toast(error.message, 'error'); }
+}
+
+async function resumeJob(job) {
+  try {
+    const data = await api(`/api/jobs/${job.id}/resume`, { method: 'POST', body: {} });
+    setValues(data.values, data.extras, data.backend, `Resume "${job.name}" from its last committed epoch`, data.path);
+    S.resumeFrom = data.resume_from;
+    S.validation = null;
+    showTab('editor');
+    await launchDialog(data);
+  } catch (error) { toast(error.message, 'error'); }
 }
 
 async function removeJob(job) {

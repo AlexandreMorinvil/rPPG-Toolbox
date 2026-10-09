@@ -92,7 +92,8 @@ class PhysFormerTrainer(BaseTrainer):
         mean_valid_losses = []
         lrs = []
 
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(data_loader, train_loss=mean_training_losses,
+                          valid_loss=mean_valid_losses, lrs=lrs):
             print('')
             print(f"====Training Epoch: {epoch}====")
             loss_rPPG_avg = []
