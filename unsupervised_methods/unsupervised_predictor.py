@@ -1,4 +1,6 @@
 """Unsupervised learning methods including POS, GREEN, CHROME, ICA, LGI and PBV."""
+import os
+
 import numpy as np
 from evaluation.post_process import *
 from unsupervised_methods.methods.CHROME_DEHAAN import *
@@ -11,6 +13,26 @@ from unsupervised_methods.methods.OMIT import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
 
+
+def _unsupervised_bvp(method_name, frames, fs):
+    """Run one unsupervised method on RGB frames (T, H, W, 3)."""
+    if method_name == "POS":
+        return POS_WANG(frames, fs)
+    if method_name == "CHROM":
+        return CHROME_DEHAAN(frames, fs)
+    if method_name == "ICA":
+        return ICA_POH(frames, fs)
+    if method_name == "GREEN":
+        return GREEN(frames)
+    if method_name == "LGI":
+        return LGI(frames)
+    if method_name == "PBV":
+        return PBV(frames)
+    if method_name == "OMIT":
+        return OMIT(frames)
+    raise ValueError("unsupervised method name wrong!")
+
+
 def unsupervised_predict(config, data_loader, method_name):
     """ Model evaluation on the testing dataset."""
     if data_loader["unsupervised"] is None:
@@ -22,28 +44,22 @@ def unsupervised_predict(config, data_loader, method_name):
     gt_hr_fft_all = []
     SNR_all = []
     MACC_all = []
+    is_vhrm = config.UNSUPERVISED.DATA.DATASET == "vHRM"
+    vhrm_predictions, vhrm_labels = {}, {}
     sbar = tqdm(data_loader["unsupervised"], ncols=80)
     for _, test_batch in enumerate(sbar):
         batch_size = test_batch[0].shape[0]
         for idx in range(batch_size):
             data_input, labels_input = test_batch[0][idx].cpu().numpy(), test_batch[1][idx].cpu().numpy()
+            if is_vhrm:
+                # vHRM is scored against the measured HR per recording (see below).
+                bvp = _unsupervised_bvp(method_name, data_input[..., :3], config.UNSUPERVISED.DATA.FS)
+                recording_id, chunk_id = test_batch[2][idx], int(test_batch[3][idx])
+                vhrm_predictions.setdefault(recording_id, {})[chunk_id] = np.asarray(bvp).reshape(-1)
+                vhrm_labels.setdefault(recording_id, {})[chunk_id] = labels_input.reshape(-1)
+                continue
             data_input = data_input[..., :3]
-            if method_name == "POS":
-                BVP = POS_WANG(data_input, config.UNSUPERVISED.DATA.FS)
-            elif method_name == "CHROM":
-                BVP = CHROME_DEHAAN(data_input, config.UNSUPERVISED.DATA.FS)
-            elif method_name == "ICA":
-                BVP = ICA_POH(data_input, config.UNSUPERVISED.DATA.FS)
-            elif method_name == "GREEN":
-                BVP = GREEN(data_input)
-            elif method_name == "LGI":
-                BVP = LGI(data_input)
-            elif method_name == "PBV":
-                BVP = PBV(data_input)
-            elif method_name == "OMIT":
-                BVP = OMIT(data_input)
-            else:
-                raise ValueError("unsupervised method name wrong!")
+            BVP = _unsupervised_bvp(method_name, data_input, config.UNSUPERVISED.DATA.FS)
 
             video_frame_size = test_batch[0].shape[1]
             if config.INFERENCE.EVALUATION_WINDOW.USE_SMALLER_WINDOW:
@@ -78,6 +94,15 @@ def unsupervised_predict(config, data_loader, method_name):
                 else:
                     raise ValueError("Inference evaluation method name wrong!")
     print("Used Unsupervised Method: " + method_name)
+
+    if is_vhrm:
+        from evaluation.vhrm_metrics import calculate_vhrm_metrics
+        return calculate_vhrm_metrics(
+            vhrm_predictions, vhrm_labels, config,
+            data_config=config.UNSUPERVISED.DATA,
+            output_dir=os.path.join(config.UNSUPERVISED.OUTPUT_SAVE_DIR, method_name),
+            prediction_is_diff=False,
+            prefix=f"unsupervised/vHRM/{method_name}")
 
     # Filename ID to be used in any results files (e.g., Bland-Altman plots) that get saved
     if config.TOOLBOX_MODE == 'unsupervised_method':

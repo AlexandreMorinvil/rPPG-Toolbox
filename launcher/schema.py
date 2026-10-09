@@ -12,10 +12,10 @@ MODELS = [
 ]
 TRAIN_DATASETS = [
     "UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "BP4DPlusBigSmall",
-    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS",
+    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS", "vHRM",
 ]
-TEST_DATASETS = TRAIN_DATASETS + ["vHRM"]
-UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP"]
+TEST_DATASETS = list(TRAIN_DATASETS)
+UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP", "vHRM"]
 DATA_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 LABEL_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 DATA_FORMATS = ["NDCHW", "NCDHW", "NDHWC"]
@@ -92,6 +92,9 @@ def _training_fields():
          "Checkpoints are saved as <prefix>_Epoch<N>.pth.", pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]*$",
          required=True, when=when)
     _add("TRAIN.PLOT_LOSSES_AND_LR", "bool", True, "Save loss/LR plots", s, when=when)
+    _add("TRAIN.DATA_LOADER_WORKERS", "int", 16, "Batch loader workers", s,
+         "DataLoader workers for training, validation and unsupervised batches. Lower it on Windows.",
+         min=0, max=64, when={"modes": ["train_and_test", "unsupervised_method"]}, advanced=True)
     _add("TRAIN.SAVE_RESUME", "bool", True, "Save resumable training state", s,
          "Atomically saves full state before training and after each completed epoch + validation. "
          "Enables pause and crash recovery; an unfinished epoch is replayed.", when=when)
@@ -178,31 +181,62 @@ def _split_fields(prefix, spec):
             when_extra=bigsmall)
         add("PREPROCESS.BIGSMALL.RESIZE.SMALL_H", "int", 9, "Small height", min=1, max=2048, group="BigSmall",
             when_extra=bigsmall)
+    vhrm = {"dataset": [prefix, ["vHRM"]]}
+    add("VHRM.EXPERIMENTS", "list", [], "Experiments",
+        "Sub-folders of the data folder to use, e.g. JZC, baseline. Empty = all.", group="vHRM", when_extra=vhrm)
+    add("VHRM.PARTICIPANTS", "list", [], "Participants",
+        "Participant folders to include, e.g. jzc01, jzc02_baseline. Empty = all.", group="vHRM",
+        when_extra=vhrm)
+    add("VHRM.EXCLUDE_PARTICIPANTS", "list", [], "Excluded participants", "Participant folders to leave out.",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.LABELS", "list", [], "Segment labels", "e.g. Resting, Recovery, Curl. Empty = all.",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.EXCLUDE_LABELS", "list", [], "Excluded segment labels", group="vHRM", when_extra=vhrm)
+    add("VHRM.VIEWS", "list", ["front"], "Camera views", "front, back-left, back-right. Empty = all three.",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.CROP_MODE_BY_VIEW", "yamllist", ["front=face", "back-left=face_or_full", "back-right=face_or_full"],
+        "Image region per view", "view=face | face_or_full | full | roi:x,y,w,h (pixels, or fractions <= 1).",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.PPG_SOURCE", "enum", "synthetic", "Training waveform",
+        "synthetic: the synthetic PPG CSV; rpeak_*: a waveform rebuilt from the ECG R-peaks.",
+        options=["synthetic", "rpeak_sine", "rpeak_gaussian"], group="vHRM", when_extra=vhrm)
+    add("VHRM.RPEAK_PULSE_DELAY_SEC", "float", 0.2, "R-peak to pulse delay (s)", "rpeak_* sources only.",
+        min=0.0, max=1.0, group="vHRM", when_extra=vhrm, advanced=True)
+    add("VHRM.RPEAK_GAUSSIAN_SIGMA", "float", 0.15, "Gaussian pulse width (fraction of RR)",
+        "rpeak_gaussian only.", min=0.01, max=0.5, group="vHRM", when_extra=vhrm, advanced=True)
+    add("VHRM.PPG_DELAY_SEC", "float", 0.0, "Sync correction (s)",
+        "Shifts every signal later relative to the video (tools/vhrm_sync_check.py estimates it).",
+        min=-5.0, max=5.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.LAG_TABLE_PATH", "path", "", "Per-segment lag table",
+        "CSV written by tools/vhrm_sync_check.py; added to the sync correction.",
+        path={"kind": "file", "role": "data", "must_exist": True, "ext": ".csv"}, group="vHRM", when_extra=vhrm)
+    add("VHRM.HR_SOURCE", "enum", "zephyr", "Evaluation heart rate", options=["zephyr", "polar", "synthetic_hr"],
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.REQUIRE_PPG", "bool", prefix in ("TRAIN.DATA", "VALID.DATA"), "Require a training waveform",
+        "Drop clips without valid PPG. Turn off for test sets scored on the measured HR only.",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.LABEL_ALIASES", "list", ["recover=recovery"], "Label aliases", "old=new, e.g. recover=recovery.",
+        group="vHRM", when_extra=vhrm, advanced=True)
+    add("VHRM.VIEW_ALIASES", "list", [], "View aliases", "old=new, e.g. camera-1=back-left.",
+        group="vHRM", when_extra=vhrm, advanced=True)
     if prefix == "TEST.DATA":
-        vhrm = {"dataset": [prefix, ["vHRM"]]}
-        add("VHRM.VIEWS", "list", ["front"], "Camera views", "Camera labels without the Camera_ prefix, e.g. Front.",
-            group="vHRM", when_extra=vhrm, min_items=1)
-        add("VHRM.SIGNAL_COLUMN", "enum", "heart_rate_bpm", "Ground-truth column", options=["heart_rate_bpm"],
-            group="vHRM", when_extra=vhrm)
         add("VHRM.PREDICTION_IS_DIFF", "bool", True, "Model predicts a differenced signal",
-            "True for DiffNormalized-trained models (DeepPhys, Tscan, PhysNet...).", group="vHRM",
-            when_extra=vhrm)
-        add("VHRM.VIDEO_DECODER", "enum", "auto", "Video decoder", options=["auto", "nvdec", "opencv"],
+            "Only used by only_test: train_and_test derives it from the training label transform.",
             group="vHRM", when_extra=vhrm)
-        add("VHRM.FFMPEG_PATH", "str", "ffmpeg", "ffmpeg executable", group="vHRM", when_extra=vhrm,
-            advanced=True)
-        add("VHRM.FFPROBE_PATH", "str", "ffprobe", "ffprobe executable", group="vHRM", when_extra=vhrm,
-            advanced=True)
-        add("VHRM.INCREMENTAL_PREPROCESS", "bool", True, "Incremental preprocessing",
-            "Only new or changed recordings are preprocessed.", group="vHRM", when_extra=vhrm)
-        add("VHRM.ADOPT_LEGACY_CACHE", "bool", True, "Adopt legacy cache", group="vHRM", when_extra=vhrm,
-            advanced=True)
-        add("VHRM.MANIFEST_FILENAME", "str", "preprocessing_manifest.json", "Manifest file name", group="vHRM",
-            when_extra=vhrm, advanced=True, pattern=r"^[A-Za-z0-9._-]+\.json$")
-        add("VHRM.CACHE_DTYPE", "enum", "float16", "Cache precision", options=["float16", "float32"],
-            group="vHRM", when_extra=vhrm)
-        add("VHRM.SHOW_VIDEO_PROGRESS", "bool", True, "Show per-video progress", group="vHRM",
-            when_extra=vhrm)
+    add("VHRM.VIDEO_DECODER", "enum", "auto", "Video decoder", options=["auto", "nvdec", "opencv"],
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.FFMPEG_PATH", "str", "ffmpeg", "ffmpeg executable", group="vHRM", when_extra=vhrm,
+        advanced=True)
+    add("VHRM.FFPROBE_PATH", "str", "ffprobe", "ffprobe executable", group="vHRM", when_extra=vhrm,
+        advanced=True)
+    add("VHRM.INCREMENTAL_PREPROCESS", "bool", True, "Incremental preprocessing",
+        "Only new or changed recordings are preprocessed.", group="vHRM", when_extra=vhrm)
+    add("VHRM.MANIFEST_FILENAME", "str", "preprocessing_manifest.json", "Manifest file name", group="vHRM",
+        when_extra=vhrm, advanced=True, pattern=r"^[A-Za-z0-9._-]+\.json$")
+    add("VHRM.CACHE_DTYPE", "enum", "float16", "Cache precision", options=["float16", "float32"],
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.SHOW_VIDEO_PROGRESS", "bool", True, "Show per-video progress", group="vHRM",
+        when_extra=vhrm)
     add("FILE_LIST_PATH", "str", "", "File list override",
         "Leave empty to use <cache folder>/DataFileLists. A .csv file requires preprocessing off.",
         group="Advanced", advanced=True)
@@ -259,6 +293,11 @@ def _model_fields():
          "Trusted *_resume.pt file with model, optimizer, scheduler and RNG state. "
          "Keep the original epoch budget, batch size and data splits. Epoch weight .pth files cannot resume training.",
          when={"modes": ["train_and_test"]}, path={"kind": "file", "role": "checkpoint", "ext": ".pt"})
+    _add("MODEL.INIT_WEIGHTS", "path", "", "Initial weights (fine-tuning)", s,
+         "Model weights (.pth) loaded before training starts, e.g. a final_model_release checkpoint. "
+         "Ignored when resuming.",
+         when={"modes": ["train_and_test"]}, path={"kind": "file", "role": "checkpoint", "must_exist": True,
+                                                   "ext": ".pth"})
     _add("MODEL.PHYSNET.FRAME_NUM", "int", 64, "PhysNet frames", s, "Must equal the clip length.",
          min=1, max=100000, when=model_when("Physnet"))
     _add("MODEL.iBVPNet.FRAME_NUM", "int", 160, "iBVPNet frames", s, "Must equal the clip length.",

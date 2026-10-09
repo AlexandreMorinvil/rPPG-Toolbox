@@ -412,8 +412,6 @@ function linkPreprocessing(key, value) {
   for (const split of ['VALID.DATA', 'TEST.DATA']) {
     const target = `${split}.${suffix}`;
     if (!(target in S.fieldMap)) continue;
-    if (split === 'TEST.DATA' && S.values['TEST.DATA.DATASET'] === 'vHRM' &&
-        ['PREPROCESS.LABEL_TYPE', 'PREPROCESS.CHUNK_LENGTH', 'PREPROCESS.DO_CHUNK', 'PREPROCESS.NUM_WORKERS'].includes(suffix)) continue;
     S.values[target] = Array.isArray(value) ? [...value] : value;
     changed.push(target);
   }
@@ -435,14 +433,13 @@ function applyModelDefaults(model) {
   const p = S.boot.schema.model_profiles[model];
   const v = S.values;
   for (const split of activeSplits(v)) {
-    const vhrm = v[split + '.DATASET'] === 'vHRM';
     v[split + '.DATA_FORMAT'] = p.format;
     v[split + '.PREPROCESS.DATA_TYPE'] = [...p.types];
     v[split + '.PREPROCESS.RESIZE.H'] = p.size;
     v[split + '.PREPROCESS.RESIZE.W'] = p.size;
-    if (!vhrm) v[split + '.PREPROCESS.LABEL_TYPE'] = p.label;
-    if (!vhrm || p.frame_num) v[split + '.PREPROCESS.CHUNK_LENGTH'] = p.chunk;
-    if (vhrm) v[split + '.VHRM.PREDICTION_IS_DIFF'] = p.label === 'DiffNormalized';
+    v[split + '.PREPROCESS.LABEL_TYPE'] = p.label;
+    v[split + '.PREPROCESS.CHUNK_LENGTH'] = p.chunk;
+    if (split === 'TEST.DATA' && v[split + '.DATASET'] === 'vHRM') v[split + '.VHRM.PREDICTION_IS_DIFF'] = p.label === 'DiffNormalized';
   }
   if (p.frame_num) v[p.frame_num] = p.chunk;
   if (p.channels_key) v[p.channels_key] = 3 * p.types.length;

@@ -5,11 +5,47 @@
 # Written by Ze Liu
 # --------------------------------------------------------'
 
-import os, re
+import hashlib, json, os, re
 import yaml
 from yacs.config import CfgNode as CN
 
 _C = CN()
+
+
+def _vhrm_node(require_ppg=True):
+    """Settings of the vHRM lab dataset (DATASET: vHRM), shared by every split."""
+    node = CN()
+    # Selection. Empty lists mean "everything". Names are matched case-insensitively.
+    node.EXPERIMENTS = []             # sub-folders of DATA_PATH, e.g. ['JZC', 'baseline']
+    node.PARTICIPANTS = []            # participant folder names, e.g. ['jzc01', 'jzc02_baseline']
+    node.EXCLUDE_PARTICIPANTS = []
+    node.LABELS = []                  # segment labels, e.g. ['Resting', 'Recovery']
+    node.EXCLUDE_LABELS = []
+    node.LABEL_ALIASES = ['recover=recovery']
+    node.VIEWS = ['front']            # front | back-left | back-right
+    node.VIEW_ALIASES = []            # e.g. ['camera-1=back-left']
+    # Image region per view: face | face_or_full | full | roi:x,y,w,h (source pixels)
+    node.CROP_MODE_BY_VIEW = ['front=face', 'back-left=face_or_full', 'back-right=face_or_full']
+    # Training waveform: synthetic | rpeak_sine | rpeak_gaussian
+    node.PPG_SOURCE = 'synthetic'
+    node.RPEAK_PULSE_DELAY_SEC = 0.2  # R-peak -> pulse peak delay, rpeak_* sources only
+    node.RPEAK_GAUSSIAN_SIGMA = 0.15  # Gaussian width as a fraction of the local RR interval
+    node.PPG_DELAY_SEC = 0.0          # video/signal sync correction applied to every signal
+    node.LAG_TABLE_PATH = ''          # per-segment sync corrections (tools/vhrm_sync_check.py)
+    node.HR_SOURCE = 'zephyr'         # zephyr | polar | synthetic_hr (evaluation ground truth)
+    node.REQUIRE_PPG = require_ppg    # drop chunks without a valid training waveform
+    # Evaluation and preprocessing machinery.
+    node.SIGNAL_COLUMN = 'heart_rate_bpm'
+    node.PREDICTION_IS_DIFF = True    # overridden from TRAIN LABEL_TYPE in train_and_test
+    node.VIDEO_DECODER = 'auto'
+    node.FFMPEG_PATH = 'ffmpeg'
+    node.FFPROBE_PATH = 'ffprobe'
+    node.INCREMENTAL_PREPROCESS = True
+    node.ADOPT_LEGACY_CACHE = True
+    node.MANIFEST_FILENAME = 'preprocessing_manifest.json'
+    node.CACHE_DTYPE = 'float16'
+    node.SHOW_VIDEO_PROGRESS = True
+    return node
 
 # Base config files
 _C.BASE = ['']
@@ -32,6 +68,8 @@ _C.TRAIN.OPTIMIZER.MOMENTUM = 0.9
 _C.TRAIN.MODEL_FILE_NAME = ''
 _C.TRAIN.PLOT_LOSSES_AND_LR = True
 _C.TRAIN.SAVE_RESUME = True
+# DataLoader workers for train/valid/unsupervised batches (upstream default: 16).
+_C.TRAIN.DATA_LOADER_WORKERS = 16
 # Train.Data settings
 _C.TRAIN.DATA = CN()
 _C.TRAIN.DATA.INFO = CN()
@@ -61,6 +99,7 @@ _C.TRAIN.DATA.END = 1.0
 _C.TRAIN.DATA.FOLD = CN()
 _C.TRAIN.DATA.FOLD.FOLD_NAME = ''
 _C.TRAIN.DATA.FOLD.FOLD_PATH = ''
+_C.TRAIN.DATA.VHRM = _vhrm_node(require_ppg=True)
 # Train Data preprocessing
 _C.TRAIN.DATA.PREPROCESS = CN()
 _C.TRAIN.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -131,6 +170,7 @@ _C.VALID.DATA.END = 1.0
 _C.VALID.DATA.FOLD = CN()
 _C.VALID.DATA.FOLD.FOLD_NAME = ''
 _C.VALID.DATA.FOLD.FOLD_PATH = ''
+_C.VALID.DATA.VHRM = _vhrm_node(require_ppg=True)
 # Valid Data preprocessing
 _C.VALID.DATA.PREPROCESS = CN()
 _C.VALID.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -199,18 +239,7 @@ _C.TEST.DATA.END = 1.0
 _C.TEST.DATA.FOLD = CN()
 _C.TEST.DATA.FOLD.FOLD_NAME = ''
 _C.TEST.DATA.FOLD.FOLD_PATH = ''
-_C.TEST.DATA.VHRM = CN()
-_C.TEST.DATA.VHRM.VIEWS = ['front']
-_C.TEST.DATA.VHRM.SIGNAL_COLUMN = 'heart_rate_bpm'
-_C.TEST.DATA.VHRM.PREDICTION_IS_DIFF = True
-_C.TEST.DATA.VHRM.VIDEO_DECODER = 'auto'
-_C.TEST.DATA.VHRM.FFMPEG_PATH = 'ffmpeg'
-_C.TEST.DATA.VHRM.FFPROBE_PATH = 'ffprobe'
-_C.TEST.DATA.VHRM.INCREMENTAL_PREPROCESS = True
-_C.TEST.DATA.VHRM.ADOPT_LEGACY_CACHE = True
-_C.TEST.DATA.VHRM.MANIFEST_FILENAME = 'preprocessing_manifest.json'
-_C.TEST.DATA.VHRM.CACHE_DTYPE = 'float16'
-_C.TEST.DATA.VHRM.SHOW_VIDEO_PROGRESS = True
+_C.TEST.DATA.VHRM = _vhrm_node(require_ppg=False)
 # Test Data preprocessing
 _C.TEST.DATA.PREPROCESS = CN()
 _C.TEST.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -278,6 +307,7 @@ _C.UNSUPERVISED.DATA.END = 1.0
 _C.UNSUPERVISED.DATA.FOLD = CN()
 _C.UNSUPERVISED.DATA.FOLD.FOLD_NAME = ''
 _C.UNSUPERVISED.DATA.FOLD.FOLD_PATH = ''
+_C.UNSUPERVISED.DATA.VHRM = _vhrm_node(require_ppg=False)
 # Unsupervised Data preprocessing
 _C.UNSUPERVISED.DATA.PREPROCESS = CN()
 _C.UNSUPERVISED.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -309,6 +339,8 @@ _C.MODEL = CN()
 _C.MODEL.NAME = ''
 # Checkpoint to resume, could be overwritten by command line argument
 _C.MODEL.RESUME = ''
+# Weights loaded before training starts (fine-tuning); ignored when resuming
+_C.MODEL.INIT_WEIGHTS = ''
 # Dropout rate
 _C.MODEL.DROP_RATE = 0.0
 _C.MODEL.MODEL_DIR = 'PreTrainedModels'
@@ -428,6 +460,51 @@ def _update_config_from_file(config, cfg_file):
     config.freeze()
 
 
+def _vhrm_exp_data_name(data, generic_name):
+    """Compact cache-folder name for vHRM (Windows paths are limited to 260 characters).
+
+    Only settings that change the cached video clips are included: labels are stored per
+    label setting inside the cache, so splits with different label settings share it.
+    """
+    if data.DATASET != 'vHRM':
+        return generic_name
+    preprocess = data.PREPROCESS
+    crop = preprocess.CROP_FACE
+    settings = {
+        'fs': data.FS, 'data_type': list(preprocess.DATA_TYPE), 'data_aug': list(preprocess.DATA_AUG),
+        'do_chunk': preprocess.DO_CHUNK, 'chunk': preprocess.CHUNK_LENGTH,
+        'resize': [preprocess.RESIZE.W, preprocess.RESIZE.H], 'crop': crop.DO_CROP_FACE,
+        'backend': crop.BACKEND, 'large_box': crop.USE_LARGE_FACE_BOX, 'coef': crop.LARGE_BOX_COEF,
+        'dynamic': crop.DETECTION.DO_DYNAMIC_DETECTION, 'frequency': crop.DETECTION.DYNAMIC_DETECTION_FREQUENCY,
+        'median': crop.DETECTION.USE_MEDIAN_FACE_BOX, 'dtype': data.VHRM.CACHE_DTYPE,
+        'crop_modes': sorted(str(item).strip().lower() for item in data.VHRM.CROP_MODE_BY_VIEW),
+    }
+    digest = hashlib.sha1(json.dumps(settings, sort_keys=True).encode('utf-8')).hexdigest()[:8]
+    types = '+'.join(preprocess.DATA_TYPE)
+    return 'vHRM_{0}x{1}_C{2}_{3}_FS{4}_{5}'.format(
+        preprocess.RESIZE.W, preprocess.RESIZE.H, preprocess.CHUNK_LENGTH, types, data.FS, digest)
+
+
+def _vhrm_selection_suffix(data):
+    """Distinguishes file lists of vHRM splits that share one preprocessing cache."""
+    if data.DATASET != 'vHRM':
+        return ''
+    vhrm = data.VHRM
+    selection = {
+        key: sorted(str(item).strip().lower() for item in getattr(vhrm, key))
+        for key in ('EXPERIMENTS', 'PARTICIPANTS', 'EXCLUDE_PARTICIPANTS', 'LABELS',
+                    'EXCLUDE_LABELS', 'LABEL_ALIASES', 'VIEWS', 'VIEW_ALIASES')
+    }
+    selection.update({
+        'ppg_source': vhrm.PPG_SOURCE, 'rpeak_delay': vhrm.RPEAK_PULSE_DELAY_SEC,
+        'rpeak_sigma': vhrm.RPEAK_GAUSSIAN_SIGMA, 'delay': vhrm.PPG_DELAY_SEC,
+        'lag_table': vhrm.LAG_TABLE_PATH, 'hr_source': vhrm.HR_SOURCE,
+        'require_ppg': vhrm.REQUIRE_PPG,
+    })
+    digest = hashlib.sha1(json.dumps(selection, sort_keys=True).encode('utf-8')).hexdigest()[:8]
+    return '_vHRM' + digest
+
+
 def update_config(config, args):
 
     # store default file list path for checking against later
@@ -443,13 +520,16 @@ def update_config(config, args):
         # Resume must reuse the original clips/file lists, not rebuild a cache.
         for split in (config.TRAIN, config.VALID, config.TEST):
             split.DATA.DO_PREPROCESS = False
-    
+    if config.TOOLBOX_MODE == 'train_and_test' and config.TEST.DATA.DATASET == 'vHRM':
+        # A model trained in this run predicts the TRAIN label transform.
+        config.TEST.DATA.VHRM.PREDICTION_IS_DIFF = config.TRAIN.DATA.PREPROCESS.LABEL_TYPE == 'DiffNormalized'
+
     # UPDATE TRAIN PATHS
     if config.TRAIN.DATA.FILE_LIST_PATH == default_TRAIN_FILE_LIST_PATH:
         config.TRAIN.DATA.FILE_LIST_PATH = os.path.join(config.TRAIN.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.TRAIN.DATA.EXP_DATA_NAME == '':
-        config.TRAIN.DATA.EXP_DATA_NAME = "_".join([config.TRAIN.DATA.DATASET, "SizeW{0}".format(
+        config.TRAIN.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.TRAIN.DATA, "_".join([config.TRAIN.DATA.DATASET, "SizeW{0}".format(
             str(config.TRAIN.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.TRAIN.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
             str(config.TRAIN.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.TRAIN.DATA.PREPROCESS.DATA_TYPE)),
                                       "DataAug{0}".format("_".join(config.TRAIN.DATA.PREPROCESS.DATA_AUG)),
@@ -461,12 +541,13 @@ def update_config(config, args):
                                       "Dyamic_Det{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
                                         "det_len{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
                                         "Median_face_box{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                              ])
+                                              ]))
     config.TRAIN.DATA.CACHED_PATH = os.path.join(config.TRAIN.DATA.CACHED_PATH, config.TRAIN.DATA.EXP_DATA_NAME)
 
     name, ext = os.path.splitext(config.TRAIN.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
-        FOLD_STR = '_' + config.TRAIN.DATA.FOLD.FOLD_NAME if config.TRAIN.DATA.FOLD.FOLD_NAME else ''
+        FOLD_STR = ('_' + config.TRAIN.DATA.FOLD.FOLD_NAME if config.TRAIN.DATA.FOLD.FOLD_NAME else '') + \
+            _vhrm_selection_suffix(config.TRAIN.DATA)
         config.TRAIN.DATA.FILE_LIST_PATH = os.path.join(config.TRAIN.DATA.FILE_LIST_PATH, \
                                                         config.TRAIN.DATA.EXP_DATA_NAME + '_' + \
                                                         str(config.TRAIN.DATA.BEGIN) + '_' + \
@@ -485,7 +566,7 @@ def update_config(config, args):
             config.VALID.DATA.FILE_LIST_PATH = os.path.join(config.VALID.DATA.CACHED_PATH, 'DataFileLists')
 
         if config.VALID.DATA.EXP_DATA_NAME == '':
-            config.VALID.DATA.EXP_DATA_NAME = "_".join([config.VALID.DATA.DATASET, "SizeW{0}".format(
+            config.VALID.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.VALID.DATA, "_".join([config.VALID.DATA.DATASET, "SizeW{0}".format(
                 str(config.VALID.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.VALID.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
                 str(config.VALID.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.VALID.DATA.PREPROCESS.DATA_TYPE)),
                                         "DataAug{0}".format("_".join(config.VALID.DATA.PREPROCESS.DATA_AUG)),
@@ -497,12 +578,13 @@ def update_config(config, args):
                                         "Dyamic_Det{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
                                           "det_len{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
                                           "Median_face_box{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                                ])
+                                                ]))
         config.VALID.DATA.CACHED_PATH = os.path.join(config.VALID.DATA.CACHED_PATH, config.VALID.DATA.EXP_DATA_NAME)
 
         name, ext = os.path.splitext(config.VALID.DATA.FILE_LIST_PATH)
         if not ext:  # no file extension
-            FOLD_STR = '_' + config.VALID.DATA.FOLD.FOLD_NAME if config.VALID.DATA.FOLD.FOLD_NAME else ''
+            FOLD_STR = ('_' + config.VALID.DATA.FOLD.FOLD_NAME if config.VALID.DATA.FOLD.FOLD_NAME else '') + \
+                _vhrm_selection_suffix(config.VALID.DATA)
             config.VALID.DATA.FILE_LIST_PATH = os.path.join(config.VALID.DATA.FILE_LIST_PATH, \
                                                             config.VALID.DATA.EXP_DATA_NAME + '_' + \
                                                             str(config.VALID.DATA.BEGIN) + '_' + \
@@ -522,7 +604,7 @@ def update_config(config, args):
         config.TEST.DATA.FILE_LIST_PATH = os.path.join(config.TEST.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.TEST.DATA.EXP_DATA_NAME == '':
-        config.TEST.DATA.EXP_DATA_NAME = "_".join([config.TEST.DATA.DATASET, "SizeW{0}".format(
+        config.TEST.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.TEST.DATA, "_".join([config.TEST.DATA.DATASET, "SizeW{0}".format(
             str(config.TEST.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.TEST.DATA.PREPROCESS.RESIZE.H)), "ClipLength{0}".format(
             str(config.TEST.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.TEST.DATA.PREPROCESS.DATA_TYPE)),
                                       "DataAug{0}".format("_".join(config.TEST.DATA.PREPROCESS.DATA_AUG)),
@@ -534,12 +616,13 @@ def update_config(config, args):
                                       "Dyamic_Det{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
                                         "det_len{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
                                         "Median_face_box{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                              ])
+                                              ]))
     config.TEST.DATA.CACHED_PATH = os.path.join(config.TEST.DATA.CACHED_PATH, config.TEST.DATA.EXP_DATA_NAME)
 
     name, ext = os.path.splitext(config.TEST.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
-        FOLD_STR = '_' + config.TEST.DATA.FOLD.FOLD_NAME if config.TEST.DATA.FOLD.FOLD_NAME else ''
+        FOLD_STR = ('_' + config.TEST.DATA.FOLD.FOLD_NAME if config.TEST.DATA.FOLD.FOLD_NAME else '') + \
+            _vhrm_selection_suffix(config.TEST.DATA)
         config.TEST.DATA.FILE_LIST_PATH = os.path.join(config.TEST.DATA.FILE_LIST_PATH, \
                                                        config.TEST.DATA.EXP_DATA_NAME + '_' + \
                                                        str(config.TEST.DATA.BEGIN) + '_' + \
@@ -591,7 +674,7 @@ def update_config(config, args):
         config.UNSUPERVISED.DATA.FILE_LIST_PATH = os.path.join(config.UNSUPERVISED.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.UNSUPERVISED.DATA.EXP_DATA_NAME == '':
-        config.UNSUPERVISED.DATA.EXP_DATA_NAME = "_".join([config.UNSUPERVISED.DATA.DATASET, "SizeW{0}".format(
+        config.UNSUPERVISED.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.UNSUPERVISED.DATA, "_".join([config.UNSUPERVISED.DATA.DATASET, "SizeW{0}".format(
             str(config.UNSUPERVISED.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.UNSUPERVISED.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
             str(config.UNSUPERVISED.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE)),
                                       "DataAug{0}".format("_".join(config.UNSUPERVISED.DATA.PREPROCESS.DATA_AUG)),
@@ -604,12 +687,13 @@ def update_config(config, args):
                                         "det_len{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
                                         "Median_face_box{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX),
                                         "unsupervised"
-                                              ])
+                                              ]))
     config.UNSUPERVISED.DATA.CACHED_PATH = os.path.join(config.UNSUPERVISED.DATA.CACHED_PATH, config.UNSUPERVISED.DATA.EXP_DATA_NAME)
 
     name, ext = os.path.splitext(config.UNSUPERVISED.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
-        FOLD_STR = '_' + config.UNSUPERVISED.DATA.FOLD.FOLD_NAME if config.UNSUPERVISED.DATA.FOLD.FOLD_NAME else ''
+        FOLD_STR = ('_' + config.UNSUPERVISED.DATA.FOLD.FOLD_NAME if config.UNSUPERVISED.DATA.FOLD.FOLD_NAME else '') + \
+            _vhrm_selection_suffix(config.UNSUPERVISED.DATA)
         config.UNSUPERVISED.DATA.FILE_LIST_PATH = os.path.join(config.UNSUPERVISED.DATA.FILE_LIST_PATH, \
                                                         config.UNSUPERVISED.DATA.EXP_DATA_NAME + '_' + \
                                                         str(config.UNSUPERVISED.DATA.BEGIN) + '_' + \

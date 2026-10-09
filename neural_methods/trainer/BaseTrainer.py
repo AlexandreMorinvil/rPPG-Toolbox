@@ -31,6 +31,11 @@ class BaseTrainer:
 
     def training_epochs(self, data_loader, **histories):
         """Shared epoch-boundary checkpoint/pause/resume lifecycle."""
+        init_weights = self.config.MODEL.INIT_WEIGHTS
+        if init_weights and not self.config.MODEL.RESUME:
+            # Fine-tuning: start from released weights (e.g. final_model_release/PURE_*.pth).
+            self.model.load_state_dict(torch.load(init_weights, map_location='cpu', weights_only=False))
+            print(f'[training] Initialised model weights from {init_weights}', flush=True)
         return training_epochs(self, data_loader, histories)
 
     def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
@@ -86,8 +91,6 @@ class BaseTrainer:
         data['labels'] = labels
         data['label_type'] = config.TEST.DATA.PREPROCESS.LABEL_TYPE
         data['fs'] = config.TEST.DATA.FS
-        if config.TEST.DATA.DATASET == 'vHRM':
-            data['label_columns'] = ['heart_rate_bpm', 'HRV', 'respiration_rate_bpm']
 
         with open(output_path, 'wb') as handle: # save out frame dict pickle file
             pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)

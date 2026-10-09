@@ -116,7 +116,9 @@ class BaseLoader(Dataset):
             pass
         else:
             raise ValueError('Unsupported Data Format!')
-        data = np.float32(data)
+        # Contiguous copy: with DataLoader num_workers=0 a transposed array would reach the
+        # model with channels-last strides and break .view() calls (e.g. in DeepPhys).
+        data = np.ascontiguousarray(data, dtype=np.float32)
         label = np.float32(label)
         # item_path is the location of a specific clip in a preprocessing output folder
         # For example, an item path could be /home/data/PURE_SizeW72_...unsupervised/501_input0.npy

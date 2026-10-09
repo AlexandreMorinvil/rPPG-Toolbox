@@ -202,6 +202,9 @@ def load_pickle(path):
 
 def _recording_meta(name):
     parts = name.split("--")
+    if len(parts) == 5:
+        return {"experiment": parts[0], "participant": parts[1], "segment": parts[2], "movement": parts[3],
+                "view": parts[4]}
     if len(parts) == 4:
         return {"participant": parts[0], "segment": parts[1], "movement": parts[2], "view": parts[3]}
     return {}

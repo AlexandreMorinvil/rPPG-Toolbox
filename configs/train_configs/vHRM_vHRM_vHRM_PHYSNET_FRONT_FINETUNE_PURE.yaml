@@ -1,0 +1,11 @@
+# Fine-tune the PURE-trained PhysNet release on the vHRM front view.
+# Everything not listed here comes from the BASE config.
+BASE: ['vHRM_vHRM_vHRM_PHYSNET_FRONT.yaml']
+TRAIN:
+  EPOCHS: 10
+  LR: 1e-3
+  MODEL_FILE_NAME: vHRM_vHRM_vHRM_physnet_front_from_PURE
+LOG:
+  PATH: runs/vHRM_physnet_front_from_PURE
+MODEL:
+  INIT_WEIGHTS: "./final_model_release/PURE_PhysNet_DiffNormalized.pth"
