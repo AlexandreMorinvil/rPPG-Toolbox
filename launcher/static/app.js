@@ -11,6 +11,7 @@ const S = {
   extras: {},
   backend: 'docker',
   source: null,
+  syncLinks: {},
   validation: null,
   validateTimer: null,
   validateSeq: 0,
@@ -192,20 +193,80 @@ const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
 // ------------------------------------------------------------------ editor
 function populateConfigSelect() {
-  const select = $('configSelect');
-  const groups = { docker: 'Docker configs (docker/configs)', local: 'Local configs (configs)' };
-  select.replaceChildren();
-  for (const [group, label] of Object.entries(groups)) {
-    const og = h('optgroup', { label });
-    for (const item of S.boot.configs.filter(c => c.group === group)) {
-      const rel = item.path.replace(/^(docker\/)?configs\//, '');
-      const detail = item.error ? 'unreadable' : [item.mode, item.model, item.train || item.test].filter(Boolean).join(' · ');
-      og.append(h('option', { value: item.path }, `${rel}  —  ${detail}`));
-    }
-    if (og.children.length) select.append(og);
-  }
+  const selected = $('configSelect').value;
+  const first = S.boot.configs.find(c => c.group === 'docker') || S.boot.configs[0];
+  selectConfig(S.boot.configs.some(c => c.path === selected) ? selected : first?.path || '');
   const blank = $('blankMode');
   blank.replaceChildren(...S.boot.schema.modes.map(m => h('option', { value: m }, S.boot.schema.mode_labels[m])));
+}
+
+function selectConfig(path) {
+  $('configSelect').value = path;
+  $('configSelectionLabel').textContent = path || 'No configs available';
+  $('configPicker').querySelector('summary').title = path || 'No configs available';
+  $('loadConfig').disabled = !path;
+  renderConfigTree();
+}
+
+function renderConfigTree() {
+  const tree = $('configTree');
+  const expanded = new Set([...tree.querySelectorAll('details[open]')].map(el => el.dataset.path));
+  const query = $('configSearch').value.trim().toLowerCase();
+  const selected = $('configSelect').value;
+  const groups = { docker: ['Docker configs', 'docker/configs'], local: ['Local configs', 'configs'] };
+  let count = 0;
+  tree.replaceChildren();
+
+  const renderFolder = (folder, name, path, root = false) => {
+    const details = h('details', {
+      class: 'config-folder', 'data-path': path,
+      open: !!query || root || expanded.has(path) || selected.startsWith(path + '/'),
+    });
+    details.append(h('summary', {}, h('span', { class: 'config-folder-name' }, name),
+      root ? h('span', { class: 'config-root-path' }, path + '/') : null,
+      h('span', { class: 'config-folder-count' }, folder.count)));
+    const children = h('div', { class: 'config-folder-children' });
+    for (const [childName, child] of [...folder.folders].sort(([a], [b]) => a.localeCompare(b))) {
+      children.append(renderFolder(child, childName, path + '/' + childName));
+    }
+    for (const item of folder.files.sort((a, b) => a.path.localeCompare(b.path))) {
+      const detail = item.error ? 'Unreadable config' : [S.boot.schema.mode_labels[item.mode] || item.mode,
+        item.model, item.train, item.test !== item.train ? item.test : ''].filter(Boolean).join(' · ');
+      children.append(h('button', {
+        type: 'button', class: 'config-file' + (item.path === selected ? ' selected' : ''),
+        'aria-pressed': String(item.path === selected), title: item.path + (item.error ? '\n' + item.error : ''),
+        onclick: () => {
+          selectConfig(item.path);
+          $('configPicker').open = false;
+          $('configPicker').querySelector('summary').focus();
+        },
+      }, h('span', { class: 'config-file-name' }, item.path.split('/').pop()),
+      h('span', { class: 'config-file-detail' + (item.error ? ' bad' : '') }, detail)));
+    }
+    details.append(children);
+    return details;
+  };
+
+  for (const [group, [label, rootPath]] of Object.entries(groups)) {
+    const root = { folders: new Map(), files: [], count: 0 };
+    for (const item of S.boot.configs.filter(c => c.group === group)) {
+      const searchable = [item.path, label, item.mode, S.boot.schema.mode_labels[item.mode], item.model, item.train, item.test].join(' ').toLowerCase();
+      if (query && !query.split(/\s+/).every(term => searchable.includes(term))) continue;
+      count++;
+      const parts = item.path.slice(rootPath.length + 1).split('/');
+      let folder = root;
+      folder.count++;
+      for (const part of parts.slice(0, -1)) {
+        if (!folder.folders.has(part)) folder.folders.set(part, { folders: new Map(), files: [], count: 0 });
+        folder = folder.folders.get(part);
+        folder.count++;
+      }
+      folder.files.push(item);
+    }
+    if (root.count) tree.append(renderFolder(root, label, rootPath, true));
+  }
+  $('configCount').textContent = query ? `${count} of ${S.boot.configs.length} configs match` : `${count} configs · Expand a folder to browse`;
+  if (!count) tree.append(h('p', { class: 'muted pad' }, query ? 'No matching configs. Try another search.' : 'No config files found.'));
 }
 
 async function loadConfig(path) {
@@ -240,6 +301,7 @@ async function newBlank(mode) {
 
 function setValues(values, extras, backend, label, source) {
   S.values = values;
+  S.syncLinks = {};
   S.resumeFrom = null;
   S.extras = extras || {};
   S.source = source;
@@ -265,6 +327,7 @@ function fieldVisible(field) {
 }
 
 function renderForm() {
+  updateSyncControls();
   const form = $('configForm');
   const scroll = form.scrollTop;
   form.replaceChildren();
@@ -383,6 +446,15 @@ function renderField(field) {
       control.append(input);
       if (field.type === 'path') control.append(h('button', { type: 'button', class: 'small', onclick: () => browseDialog(field) }, 'Browse…'));
   }
+  if (syncEnabled() && S.syncLinks[key]) {
+    control.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
+    wrap.classList.add('linked-field');
+    wrap.append(h('div', { class: 'sync-link' }, h('span', {}, 'Linked to training'),
+      h('button', { type: 'button', class: 'small', 'aria-label': `Unlink ${field.label} from training`, onclick: () => {
+        delete S.syncLinks[key];
+        renderForm();
+      } }, 'Unlink')));
+  }
   wrap.append(control);
   if (field.help) wrap.append(h('div', { class: 'help' }, field.help));
   wrap.append(h('div', { class: 'path-info' }), h('div', { class: 'msgs' }));
@@ -396,26 +468,170 @@ function renderFieldInPlace(key) {
 }
 
 function onFieldChange(key, value) {
+  if (syncEnabled() && S.syncLinks[key]) return;
   const previous = S.values[key];
   S.values[key] = value;
-  const linked = linkPreprocessing(key, value);
+  if (key === 'TOOLBOX_MODE' && value !== 'train_and_test') S.syncLinks = {};
+  const linked = syncTrainingValue(key, value);
   if (key === 'MODEL.NAME' && value && value !== previous) offerModelDefaults(value);
   if (isStructural(key) || linked.length) renderForm();
   scheduleValidate();
 }
 
-function linkPreprocessing(key, value) {
-  if (!$('linkPreprocess').checked || !key.startsWith('TRAIN.DATA.')) return [];
-  const suffix = key.slice('TRAIN.DATA.'.length);
-  if (!(suffix.startsWith('PREPROCESS.') || suffix === 'DATA_FORMAT' || suffix === 'FS')) return [];
+// Links are editor-session state only; saved values remain ordinary YAML.
+const SYNC_TARGETS = ['VALID.DATA', 'TEST.DATA'];
+const SYNC_VHRM_FIELDS = new Set([
+  'VHRM.VIEWS', 'VHRM.CROP_MODE_BY_VIEW', 'VHRM.PPG_SOURCE',
+  'VHRM.RPEAK_PULSE_DELAY_SEC', 'VHRM.RPEAK_GAUSSIAN_SIGMA',
+  'VHRM.HR_SOURCE', 'VHRM.VIDEO_DECODER', 'VHRM.CACHE_DTYPE',
+  'VHRM.SHOW_VIDEO_PROGRESS',
+]);
+
+function syncEnabled() {
+  return S.values?.TOOLBOX_MODE === 'train_and_test';
+}
+
+function preprocessingSyncField(field) {
+  const suffix = field.key.slice('TRAIN.DATA.'.length);
+  return suffix.startsWith('PREPROCESS.') || suffix === 'DATA_FORMAT' || suffix === 'FS';
+}
+
+function syncFields() {
+  return S.fields.filter(field => {
+    if (!field.key.startsWith('TRAIN.DATA.')) return false;
+    const suffix = field.key.slice('TRAIN.DATA.'.length);
+    return (preprocessingSyncField(field) || suffix === 'DO_PREPROCESS' || SYNC_VHRM_FIELDS.has(suffix))
+      && SYNC_TARGETS.every(split => S.fieldMap[`${split}.${suffix}`]?.type === field.type);
+  });
+}
+
+function syncTarget(source, split) {
+  return split + source.slice('TRAIN.DATA'.length);
+}
+
+function cloneSyncValue(value) {
+  if (Array.isArray(value)) return value.map(cloneSyncValue);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cloneSyncValue(v)]));
+  return value;
+}
+
+function syncTrainingValue(key, value) {
+  if (!syncEnabled()) return [];
   const changed = [];
-  for (const split of ['VALID.DATA', 'TEST.DATA']) {
-    const target = `${split}.${suffix}`;
-    if (!(target in S.fieldMap)) continue;
-    S.values[target] = Array.isArray(value) ? [...value] : value;
+  for (const [target, source] of Object.entries(S.syncLinks)) {
+    if (source !== key) continue;
+    S.values[target] = cloneSyncValue(value);
     changed.push(target);
   }
   return changed;
+}
+
+function updateSyncControls() {
+  const preset = syncFields().filter(preprocessingSyncField);
+  const total = preset.length * SYNC_TARGETS.length;
+  const linked = preset.reduce((n, field) => n + SYNC_TARGETS.filter(split => S.syncLinks[syncTarget(field.key, split)] === field.key).length, 0);
+  const count = Object.keys(S.syncLinks).length;
+  const box = $('linkPreprocess');
+  box.disabled = !syncEnabled();
+  box.checked = total > 0 && linked === total;
+  box.indeterminate = count > 0 && !box.checked;
+  $('syncSettings').disabled = !syncEnabled();
+  $('syncSummary').textContent = count ? `${count} linked field${count === 1 ? '' : 's'}` : '';
+}
+
+function applySyncLinks(links) {
+  if (!syncEnabled()) return;
+  S.syncLinks = { ...links };
+  for (const [target, source] of Object.entries(S.syncLinks)) S.values[target] = cloneSyncValue(S.values[source]);
+  closeModal();
+  renderForm();
+  scheduleValidate(0);
+}
+
+function previewSyncLinks(links, back) {
+  if (!syncEnabled()) return;
+  const changes = Object.entries(links).filter(([target, source]) => !sameValue(S.values[target], S.values[source]));
+  const removed = Object.keys(S.syncLinks).filter(target => !links[target]).length;
+  const body = h('div', { class: 'form-stack' },
+    h('p', {}, `${Object.keys(links).length} destination fields will follow training. ${changes.length} current values will change. ${removed} links will be removed (values retained).`),
+    h('p', { class: 'muted small' }, 'Check frame rates and transforms carefully when datasets differ. Links also apply to currently hidden validation/model-specific fields.'));
+  if (changes.length) {
+    const table = h('table', { class: 'grid-table sync-preview' }, h('thead', {}, h('tr', {},
+      h('th', {}, 'Destination'), h('th', {}, 'Current value'), h('th', {}, 'Training value'))));
+    const rows = h('tbody');
+    for (const [target, source] of changes) rows.append(h('tr', {}, h('td', {}, target),
+      h('td', {}, JSON.stringify(S.values[target]) ?? 'unset'), h('td', {}, JSON.stringify(S.values[source]) ?? 'unset')));
+    table.append(rows);
+    body.append(h('div', { class: 'table-wrap' }, table));
+  }
+  openModal('Preview training sync', body, [
+    { label: back ? 'Back' : 'Cancel', onClick: back || closeModal },
+    { label: 'Apply links', primary: true, onClick: () => applySyncLinks(links) },
+  ], true);
+}
+
+function togglePreprocessingSync() {
+  if (!syncEnabled()) return;
+  const enable = $('linkPreprocess').checked;
+  const links = { ...S.syncLinks };
+  for (const field of syncFields().filter(preprocessingSyncField)) {
+    for (const split of SYNC_TARGETS) {
+      const target = syncTarget(field.key, split);
+      if (enable) links[target] = field.key;
+      else delete links[target];
+    }
+  }
+  // The checkbox reflects committed links, even if the preview is cancelled.
+  updateSyncControls();
+  if (enable) previewSyncLinks(links);
+  else applySyncLinks(links);
+}
+
+function syncSettingsDialog(draft = { ...S.syncLinks }) {
+  if (!syncEnabled()) return;
+  const body = h('div', { class: 'form-stack' },
+    h('p', {}, 'Choose which training parameters validation and test should follow. Linked destination fields are read-only until unlinked.'),
+    h('p', { class: 'muted small' }, 'Dataset identities, participants, split boundaries, paths and cache/output identifiers are excluded. Links reset when you load/create a config or leave training mode; they are not saved in YAML.'),
+    S.values['TEST.USE_LAST_EPOCH'] ? h('p', { class: 'msg info' }, 'Validation is currently unused. Its selected links still update its stored values.') : null);
+  const fields = syncFields();
+  const table = h('table', { class: 'grid-table sync-options' }, h('thead', {}, h('tr', {},
+    h('th', {}, 'Training parameter'), h('th', {}, 'Validation'), h('th', {}, 'Test'))));
+  const rows = h('tbody');
+  const boxes = [];
+  for (const field of fields) {
+    const suffix = field.key.slice('TRAIN.DATA.'.length);
+    const row = h('tr', {}, h('td', {}, h('strong', {}, field.label), h('div', { class: 'muted small' }, suffix),
+      !isActive(field, S.values) ? h('div', { class: 'muted small' }, 'Not used by the current training model/dataset') : null));
+    for (const split of SYNC_TARGETS) {
+      const target = syncTarget(field.key, split);
+      const box = h('input', { type: 'checkbox', 'aria-label': `${field.label}: sync ${split === 'VALID.DATA' ? 'validation' : 'test'} with training`, onchange: () => {
+        if (box.checked) draft[target] = field.key;
+        else delete draft[target];
+      } });
+      box.checked = draft[target] === field.key;
+      boxes.push({ box, field, target });
+      row.append(h('td', {}, box));
+    }
+    rows.append(row);
+  }
+  const selectPreset = () => {
+    for (const { box, field, target } of boxes) {
+      if (!preprocessingSyncField(field)) continue;
+      box.checked = true;
+      draft[target] = field.key;
+    }
+  };
+  body.append(h('div', { class: 'row' },
+    h('button', { type: 'button', class: 'small', onclick: selectPreset }, 'Select preprocessing settings'),
+    h('button', { type: 'button', class: 'small', onclick: () => {
+      for (const { box, target } of boxes) { box.checked = false; delete draft[target]; }
+    } }, 'Clear all')));
+  table.append(rows);
+  body.append(h('div', { class: 'sync-options-wrap' }, table));
+  openModal('Sync settings', body, [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Preview changes', primary: true, onClick: () => previewSyncLinks(draft, () => syncSettingsDialog(draft)) },
+  ], true);
 }
 
 function offerModelDefaults(model) {
@@ -444,6 +660,7 @@ function applyModelDefaults(model) {
   if (p.frame_num) v[p.frame_num] = p.chunk;
   if (p.channels_key) v[p.channels_key] = 3 * p.types.length;
   if (model === 'FactorizePhys' && p.size === 72) v['MODEL.FactorizePhys.TYPE'] = 'Standard';
+  for (const source of new Set(Object.values(S.syncLinks))) syncTrainingValue(source, v[source]);
   renderForm();
   scheduleValidate(0);
   toast(`Applied ${model} preprocessing defaults.`, 'ok');
@@ -562,7 +779,7 @@ function saveConfigDialog() {
       const result = await api('/api/config/save', { method: 'POST', body: { location: location.value, name: name.value, values: S.values, extras: S.extras, overwrite } });
       S.boot.configs = result.configs;
       populateConfigSelect();
-      $('configSelect').value = result.path;
+      selectConfig(result.path);
       S.source = result.path;
       $('sourceInfo').textContent = `Saved as ${result.path}`;
       closeModal();
@@ -1414,9 +1631,25 @@ async function init() {
   renderForm();
 
   $('loadConfig').addEventListener('click', () => loadConfig($('configSelect').value));
+  $('configSearch').addEventListener('input', renderConfigTree);
+  $('configPicker').addEventListener('toggle', () => {
+    if ($('configPicker').open) $('configSearch').focus();
+  });
+  document.addEventListener('click', e => {
+    if (!$('configPicker').contains(e.target)) $('configPicker').open = false;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('configPicker').open) {
+      $('configPicker').open = false;
+      $('configPicker').querySelector('summary').focus();
+      e.preventDefault();
+    }
+  });
   $('newBlank').addEventListener('click', () => newBlank($('blankMode').value));
   document.querySelectorAll('input[name="backend"]').forEach(r => r.addEventListener('change', () => setBackend(r.value)));
   $('convertPaths').addEventListener('click', convertPaths);
+  $('linkPreprocess').addEventListener('change', togglePreprocessingSync);
+  $('syncSettings').addEventListener('click', () => syncSettingsDialog());
   $('showAdvanced').addEventListener('change', renderForm);
   $('previewYaml').addEventListener('click', previewYaml);
   $('saveConfig').addEventListener('click', saveConfigDialog);
