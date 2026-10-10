@@ -50,8 +50,9 @@ def scan(max_depth=4):
                             and not e.name.startswith(".")]
             except OSError:
                 continue
-            if not lists_dir.is_dir():
-                stack.extend((child, depth + 1) for child in children)
+            # A shared cache root can have its own lists as well as nested
+            # dataset caches, each with a separate DataFileLists directory.
+            stack.extend((child, depth + 1) for child in children)
     return sets
 
 
