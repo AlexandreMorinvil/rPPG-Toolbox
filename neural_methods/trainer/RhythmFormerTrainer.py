@@ -124,6 +124,7 @@ class RhythmFormerTrainer(BaseTrainer):
                 N, D, C, H, W = data_valid.shape
                 pred_ppg_valid = self.model(data_valid)
                 pred_ppg_valid = (pred_ppg_valid-torch.mean(pred_ppg_valid, axis=-1).view(-1, 1))/torch.std(pred_ppg_valid, axis=-1).view(-1, 1)    # normalize
+                self.capture_valid(valid_batch, pred_ppg_valid, labels_valid)
                 for ib in range(N):
                     loss = self.criterion(pred_ppg_valid[ib], labels_valid[ib], self.config.TRAIN.EPOCHS , self.config.VALID.DATA.FS , self.diff_flag)
                     valid_loss.append(loss.item())

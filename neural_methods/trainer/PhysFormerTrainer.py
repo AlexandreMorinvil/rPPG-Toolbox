@@ -200,6 +200,7 @@ class PhysFormerTrainer(BaseTrainer):
                 gra_sharp = 2.0
                 rPPG, _, _, _ = self.model(data, gra_sharp)
                 rPPG = (rPPG-torch.mean(rPPG, axis=-1).view(-1, 1))/torch.std(rPPG).view(-1, 1)
+                self.capture_valid(val_batch, rPPG, label)
                 for _1, _2 in zip(rPPG, label):
                     hrs.append((self.get_hr(_1.cpu().detach().numpy(), sr=self.frame_rate_valid), self.get_hr(_2.cpu().detach().numpy(), sr=self.frame_rate_valid)))
             RMSE = np.mean([(i-j)**2 for i, j in hrs])**0.5

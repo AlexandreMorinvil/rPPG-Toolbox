@@ -234,6 +234,22 @@ main { flex: 1; min-height: 0; }
 .subtabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
 .subtabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; }
 .subtabs button.active { border-color: var(--accent); color: var(--accent); }
+.chart-block { margin-top: 10px; }
+.chart-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.chart-head h4, .chart-head h3 { margin: 0; }
+.chart-head h4 { flex: 1; min-width: 180px; }
+.chart-head label { display: inline-flex; align-items: center; gap: 4px; }
+.chart-head input[type="range"] { flex: 1; min-width: 140px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.stat { border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; font-size: 12px; color: var(--muted); background: #fafbfc; }
+.stat b { color: var(--ink); }
+.card.inset { background: #fafbfc; margin-top: 10px; }
+.toolbar.flat { padding: 6px 0; background: transparent; border-bottom: none; }
+.grid-table.heat td, .grid-table.heat th { text-align: center; }
+.grid-table.heat th:first-child { text-align: left; }
+.heat-cell { cursor: pointer; font-variant-numeric: tabular-nums; }
+.heat-cell.active { outline: 2px solid var(--accent); outline-offset: -2px; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .gallery figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .gallery img { width: 100%; display: block; }

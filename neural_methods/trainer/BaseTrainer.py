@@ -3,7 +3,6 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter, MaxNLocator
 import os
-import pickle
 import math
 
 from neural_methods import wandb_logger
@@ -42,10 +41,14 @@ class BaseTrainer:
     def record_validation_loss(self, loss, epoch):
         """Select the lowest finite loss and update shared early-stopping state."""
         loss = float(loss)
-        if math.isfinite(loss) and (self.min_valid_loss is None or loss < self.min_valid_loss):
+        is_best = math.isfinite(loss) and (self.min_valid_loss is None or loss < self.min_valid_loss)
+        if is_best:
             self.min_valid_loss = loss
             self.best_epoch = epoch
             print("Update best model! Best epoch: {}".format(epoch))
+        capture = getattr(self, '_valid_capture', None)
+        if capture is not None:
+            capture.commit(epoch, is_best)
         stopping = getattr(self, '_early_stopping', None)
         if stopping is not None:
             stopping.update(loss)
@@ -85,8 +88,26 @@ class BaseTrainer:
             extra=extra,
         )
 
+    def capture_valid(self, batch, prediction, label, frames=None):
+        """Keep validation outputs for visualization (see config VISUALIZE); call once per batch.
+
+        frames: samples per clip when the trainer flattens a batch to (N * D, 1) outputs.
+        """
+        if len(batch) < 4:
+            return  # no recording/chunk identifiers
+        capture = getattr(self, '_valid_capture', None)
+        if capture is None:
+            from evaluation.prediction_store import ValidationCapture
+            capture = self._valid_capture = ValidationCapture(self.config)
+        if capture.enabled:
+            try:
+                capture.add_batch(batch[2], batch[3], prediction, label, frames)
+            except Exception as error:  # visualization extras must never stop training
+                print(f'[outputs] Validation batch not captured: {error}')
+
     def save_test_outputs(self, predictions, labels, config):
-    
+        from evaluation import prediction_store
+
         output_dir = config.TEST.OUTPUT_SAVE_DIR
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
@@ -101,16 +122,19 @@ class BaseTrainer:
             raise ValueError('Metrics.py evaluation only supports train_and_test and only_test!')
         output_path = os.path.join(output_dir, filename_id + '_outputs.pickle')
 
-        data = dict()
-        data['predictions'] = predictions
-        data['labels'] = labels
-        data['label_type'] = config.TEST.DATA.PREPROCESS.LABEL_TYPE
-        data['fs'] = config.TEST.DATA.FS
-
-        with open(output_path, 'wb') as handle: # save out frame dict pickle file
-            pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-        print('Saving outputs to:', output_path)
+        epoch = None
+        if config.TOOLBOX_MODE == 'train_and_test':
+            epoch = getattr(self, 'max_epoch_num', 0) - 1 if config.TEST.USE_LAST_EPOCH                 else getattr(self, 'best_epoch', None)
+        meta = prediction_store.run_meta(
+            config, config.TEST.DATA, 'test', name=filename_id, epoch=epoch,
+            prediction_is_diff=prediction_store.prediction_is_diff(config))
+        data = prediction_store.write_outputs_pickle(
+            output_path, predictions, labels, config.TEST.DATA.PREPROCESS.LABEL_TYPE, config.TEST.DATA.FS,
+            split='test', meta=meta,
+            gt=prediction_store.vhrm_ground_truth_or_none(config.TEST.DATA, predictions))
+        if config.VISUALIZE.HIGHLIGHTS:
+            from evaluation.prediction_plots import render_highlights
+            render_highlights(data, output_dir, worst=config.VISUALIZE.HIGHLIGHT_WORST)
 
     def plot_losses_and_lrs(self, train_loss, valid_loss, lrs, config):
 

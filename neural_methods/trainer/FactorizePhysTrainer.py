@@ -214,6 +214,7 @@ class FactorizePhysTrainer(BaseTrainer):
                     pred_ppg, vox_embed = self.model(data)
                 pred_ppg = (pred_ppg - torch.mean(pred_ppg)) / torch.std(pred_ppg)  # normalize
                 loss = self.criterion(pred_ppg, labels)
+                self.capture_valid(valid_batch, pred_ppg, labels)
 
                 valid_loss.append(loss.item())
                 valid_step += 1

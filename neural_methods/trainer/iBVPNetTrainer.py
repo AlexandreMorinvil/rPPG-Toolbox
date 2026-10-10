@@ -138,6 +138,7 @@ class iBVPNetTrainer(BaseTrainer):
                 rPPG = (rPPG - torch.mean(rPPG)) / torch.std(rPPG)  # normalize
                 BVP_label = (BVP_label - torch.mean(BVP_label)) / torch.std(BVP_label)  # normalize
                 loss_ecg = self.loss_model(rPPG, BVP_label)
+                self.capture_valid(valid_batch, rPPG, BVP_label)
                 valid_loss.append(loss_ecg.item())
                 valid_step += 1
                 vbar.set_postfix(loss=loss_ecg.item())

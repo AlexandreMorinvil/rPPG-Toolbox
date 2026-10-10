@@ -219,6 +219,12 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
     # ---------------------------------------------------------------- API
+    @staticmethod
+    def _analysis_options(q):
+        """window (s), step (s), prediction-is-differenced flag and ground-truth source of a request."""
+        return (float(q("window", "10") or 0) or None, float(q("step", "0") or 0) or None,
+                q("diff", "auto"), q("truth", "measured"))
+
     def _api(self, method, route, params, body):
         q = lambda name, default=None: params.get(name, [default])[0]  # noqa: E731
         manager = self.server.manager
@@ -354,11 +360,17 @@ class Handler(BaseHTTPRequestHandler):
             if path.lower().endswith(".csv"):
                 self._json(results.window_csv(path))
             else:
-                self._json(results.analyse(path, float(q("window", "10") or 0) or None,
-                                           float(q("step", "0") or 0) or None, q("diff", "auto")))
+                self._json(results.analyse(path, *self._analysis_options(q), track=q("track") == "1"))
         elif method == "GET" and route == "/api/results/recording":
-            self._json(results.recording(q("path", ""), q("id", ""), float(q("window", "10") or 0) or None,
-                                         float(q("step", "0") or 0) or None, q("diff", "auto")))
+            self._json(results.recording(q("path", ""), q("id", ""), *self._analysis_options(q),
+                                         track=q("track") == "1"))
+        elif method == "GET" and route == "/api/results/sources":
+            self._json({"sources": results.sources()})
+        elif method == "GET" and route == "/api/results/compare":
+            self._json(results.compare([p for p in q("paths", "").split("|") if p], q("id") or None,
+                                       *self._analysis_options(q), track=q("track") == "1"))
+        elif method == "GET" and route == "/api/results/history":
+            self._json(results.history(q("path", ""), q("id", ""), *self._analysis_options(q)))
         elif method == "GET" and route == "/api/cache":
             self._json({"sets": preprocessed.scan(), "roots": [str(r) for r in settings.cache_roots()]})
         elif method == "GET" and route == "/api/cache/samples":

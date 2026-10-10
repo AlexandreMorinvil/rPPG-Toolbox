@@ -82,6 +82,14 @@ Other example configs:
   - predicted HR vs the measured HR (`HR_SOURCE`, the primary metric);
   - predicted HR vs the HR of the PPG label (`label_hr_bpm`), comparable with the usual toolbox numbers.
 - Summaries: `overall_summary.csv`, `summary.json`, `by_experiment` / `by_movement` / `by_participant` / `by_view` CSVs, plus plots.
+- `*_outputs.pickle` keeps the per-frame prediction and PPG label of every recording, plus the measured
+  ground truth (`gt`: HR, HRV, respiration, PPG-valid mask). Unsupervised runs write one per method in
+  `saved_outputs/<method>/`. Browse them in the launcher (Results → Predictions).
+- `highlights/` holds a few PNGs (worst, best, median, and the worst of each movement × view):
+  HR over time, a BVP excerpt with detected beats, and a spectrogram (`VISUALIZE.HIGHLIGHTS`).
+- During training, `<LOG.PATH>/<train cache>/saved_valid_outputs/` keeps the validation predictions of
+  the best epoch and a `probe_history.npz` with a few probe recordings every
+  `VISUALIZE.PROBE_EVERY_N_EPOCHS` epochs (see `VISUALIZE` in `config.py`).
 - The cross-validation runner merges every fold into `<output-root>/cv_summary/`.
 
 ## Caveats

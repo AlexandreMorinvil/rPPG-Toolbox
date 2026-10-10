@@ -432,6 +432,19 @@ _C.LOG = CN()
 _C.LOG.PATH = "runs/exp"
 
 # -----------------------------------------------------------------------------
+# Prediction outputs for visualization (launcher Results tab, highlight plots)
+# -----------------------------------------------------------------------------
+# Test predictions are always saved (TEST.OUTPUT_SAVE_DIR). These settings add the
+# validation set during training and a few static plots, kept small on purpose.
+_C.VISUALIZE = CN()
+_C.VISUALIZE.VALID_BEST = True          # validation predictions at the best epoch (overwritten)
+_C.VISUALIZE.PROBE_EVERY_N_EPOCHS = 5   # probe-recording history every N epochs; 0 = off
+_C.VISUALIZE.PROBE_RECORDINGS = []      # probe recording IDs; empty = one per movement x view
+_C.VISUALIZE.PROBE_COUNT = 6            # automatic probe count
+_C.VISUALIZE.HIGHLIGHTS = True          # PNGs for worst/best/median/per-scenario test recordings
+_C.VISUALIZE.HIGHLIGHT_WORST = 3        # number of worst recordings plotted
+
+# -----------------------------------------------------------------------------
 # Weights & Biases (wandb) settings
 # -----------------------------------------------------------------------------
 # All fields are optional; ENABLED=False makes the integration a no-op so the

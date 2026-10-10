@@ -288,6 +288,25 @@ def _evaluation_fields():
          when={"modes": ["unsupervised_method"]})
 
 
+def _visualize_fields():
+    s = "Visualization outputs"
+    valid = {"modes": ["train_and_test"], "needs_valid": True}
+    _add("VISUALIZE.HIGHLIGHTS", "bool", True, "Save highlight plots", s,
+         "PNG per worst/best/median recording and per movement × view scenario, in saved_test_outputs/highlights. "
+         "Every recording can be browsed in Results → Predictions without them.")
+    _add("VISUALIZE.HIGHLIGHT_WORST", "int", 3, "Worst recordings plotted", s, min=0, max=100)
+    _add("VISUALIZE.VALID_BEST", "bool", True, "Keep best-epoch validation predictions", s,
+         "Overwritten at each new best epoch (saved_valid_outputs).", when=valid)
+    _add("VISUALIZE.PROBE_EVERY_N_EPOCHS", "int", 5, "Probe history interval (epochs)", s,
+         "Predictions of a few probe recordings every N epochs (plus the first and last); 0 disables.",
+         min=0, max=10000, when=valid)
+    _add("VISUALIZE.PROBE_COUNT", "int", 6, "Automatic probe count", s,
+         "One recording per movement × view, rotating participants.", min=1, max=100, when=valid)
+    _add("VISUALIZE.PROBE_RECORDINGS", "list", [], "Probe recordings", s,
+         "Recording IDs, e.g. jzc01--0002--curl--front. Empty picks them automatically.", when=valid,
+         advanced=True)
+
+
 def _model_fields():
     s = "Model"
     neural = {"modes": NEURAL_MODES}
@@ -370,6 +389,7 @@ _training_fields()
 for _prefix, _spec in SPLITS.items():
     _split_fields(_prefix, _spec)
 _evaluation_fields()
+_visualize_fields()
 _model_fields()
 _wandb_fields()
 

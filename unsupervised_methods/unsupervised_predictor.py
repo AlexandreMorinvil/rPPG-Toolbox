@@ -96,13 +96,27 @@ def unsupervised_predict(config, data_loader, method_name):
     print("Used Unsupervised Method: " + method_name)
 
     if is_vhrm:
+        from evaluation import prediction_store
         from evaluation.vhrm_metrics import calculate_vhrm_metrics
-        return calculate_vhrm_metrics(
+        data_config = config.UNSUPERVISED.DATA
+        output_dir = os.path.join(config.UNSUPERVISED.OUTPUT_SAVE_DIR, method_name)
+        results = calculate_vhrm_metrics(
             vhrm_predictions, vhrm_labels, config,
-            data_config=config.UNSUPERVISED.DATA,
-            output_dir=os.path.join(config.UNSUPERVISED.OUTPUT_SAVE_DIR, method_name),
+            data_config=data_config,
+            output_dir=output_dir,
             prediction_is_diff=False,
             prefix=f"unsupervised/vHRM/{method_name}")
+        # Per-frame signals for the launcher viewer and highlight plots.
+        outputs = prediction_store.write_outputs_pickle(
+            os.path.join(output_dir, f"{method_name}_vHRM_outputs.pickle"), vhrm_predictions, vhrm_labels,
+            data_config.PREPROCESS.LABEL_TYPE, data_config.FS, split="unsupervised",
+            meta=prediction_store.run_meta(config, data_config, "unsupervised", model=method_name,
+                                           name=method_name, prediction_is_diff=False),
+            gt=prediction_store.vhrm_ground_truth_or_none(data_config, vhrm_predictions))
+        if config.VISUALIZE.HIGHLIGHTS:
+            from evaluation.prediction_plots import render_highlights
+            render_highlights(outputs, output_dir, worst=config.VISUALIZE.HIGHLIGHT_WORST)
+        return results
 
     # Filename ID to be used in any results files (e.g., Bland-Altman plots) that get saved
     if config.TOOLBOX_MODE == 'unsupervised_method':
