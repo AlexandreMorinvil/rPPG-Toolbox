@@ -20,7 +20,7 @@ const S = {
   selectedJob: null,
   log: null,
   cache: { sets: [], samples: [], sample: null, frames: null, meta: null, frame: 0, timer: null, label: null },
-  results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae' },
+  results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae', compare: [] },
 };
 
 // ------------------------------------------------------------------ helpers
@@ -1204,53 +1204,146 @@ function useCheckpoint(hostPath) {
   showTab('editor');
 }
 
+// ------------------------------------------------------- prediction viewer
+const LINE = { gt: '#1c2024', label: '#8b8d98', pred: '#e5484d', tracked: '#3e63dd', raw: '#b9bbc6', band: '#30a46c' };
+// Index 0 is the current run (same red as its prediction); others avoid the tracked-HR blue.
+const RUN_COLORS = ['#e5484d', '#f76b15', '#8e4ec6', '#12a594', '#ad7f58', '#d6409f', '#30a46c'];
+
+function sourceKind(name) {
+  if (/(^|\/)saved_valid_outputs\//.test(name)) return 'validation, best epoch';
+  if (/(^|\/)saved_outputs\//.test(name)) return 'unsupervised';
+  if (/(^|\/)saved_test_outputs\//.test(name)) return 'test';
+  return '';
+}
+
+// Light-to-red background for an error value (0 = neutral, >= max = darkest).
+function errorColor(value, max) {
+  if (!Number.isFinite(value)) return {};
+  const t = Math.min(1, Math.max(0, value / (max || 1)));
+  const from = [241, 243, 245], to = [205, 43, 49];
+  const rgb = from.map((c, i) => Math.round(c + (to[i] - c) * t));
+  return { style: `background: rgb(${rgb.join(',')}); color: ${t > 0.55 ? '#fff' : 'inherit'}` };
+}
+
+function chartBlock(title, canvas, fileName, ...extra) {
+  return h('div', { class: 'chart-block' },
+    h('div', { class: 'chart-head' }, h('h4', {}, title), ...extra,
+      h('button', { type: 'button', class: 'small', title: 'Download this chart as PNG', onclick: () => Charts.download(canvas, fileName) }, 'PNG')),
+    canvas);
+}
+
 function renderPredictionControls(body, files) {
-  const sources = files.filter(f => f.kind === 'pickle' || /window_results\.csv$/.test(f.name));
+  const sources = files.filter(f => f.kind === 'pickle' || /window_results\.csv$/.test(f.name))
+    .sort((a, b) => (a.kind === 'pickle' ? 0 : 1) - (b.kind === 'pickle' ? 0 : 1));
   if (!sources.length) { body.replaceChildren(h('p', { class: 'muted' }, 'No *_outputs.pickle or window_results.csv in this folder.')); return; }
-  const source = h('select', {}, ...sources.map(f => h('option', { value: f.path }, f.name)));
+  S.results.historyPath = files.find(f => /probe_history\.npz$/.test(f.name))?.path || null;
+  S.results.compare = [];
+  const source = h('select', {}, ...sources.map(f => h('option', { value: f.path }, f.name + (sourceKind(f.name) ? `  (${sourceKind(f.name)})` : ''))));
   const windowInput = h('input', { type: 'number', min: '0', step: '1', value: '10', title: '0 = whole recording' });
-  const stepInput = h('input', { type: 'number', min: '0', step: '1', value: '0', title: '0 = same as the window' });
+  const stepInput = h('input', { type: 'number', min: '0', step: '1', value: '2', title: '0 = same as the window' });
+  const truth = h('select', { title: 'Reference heart rate' }, h('option', { value: 'measured' }, 'measured HR (when saved)'), h('option', { value: 'label' }, 'HR of the PPG label'));
   const diff = h('select', {}, h('option', { value: 'auto' }, 'auto'), h('option', { value: '1' }, 'yes'), h('option', { value: '0' }, 'no'));
+  const track = h('input', { type: 'checkbox', title: 'Add a causal Viterbi-tracked HR line (limits jumps to ~8 bpm/s)' });
   const out = h('div', { id: 'analysisOut' });
   const run = async () => {
     out.replaceChildren(h('p', { class: 'muted' }, 'Analysing…'));
     try {
-      const params = { path: source.value, window: windowInput.value || '0', step: stepInput.value || '0', diff: diff.value };
+      const params = { path: source.value, window: windowInput.value || '0', step: stepInput.value || '0', diff: diff.value,
+        truth: truth.value, track: track.checked ? '1' : '0' };
       S.results.analysis = await api('/api/results/predictions', { params });
       S.results.analysisParams = params;
       renderAnalysis(out);
+      if (S.results.compare.length) loadComparison();
     } catch (error) { out.replaceChildren(h('div', { class: 'msg error' }, error.message)); }
   };
   body.replaceChildren(h('div', { class: 'toolbar' },
     h('label', {}, 'Source ', source), h('label', {}, 'Window (s) ', windowInput), h('label', {}, 'Step (s) ', stepInput),
-    h('label', {}, 'Prediction is differenced ', diff), h('button', { type: 'button', class: 'primary', onclick: run }, 'Analyse')),
-    h('p', { class: 'muted small' }, 'Heart rate is estimated per window with the toolbox method (integrate if differenced, detrend, 0.6–3.3 Hz band-pass, FFT peak).'), out);
+    h('label', {}, 'Ground truth ', truth), h('label', {}, 'Prediction is differenced ', diff),
+    h('label', {}, track, ' Tracked HR'), h('button', { type: 'button', class: 'primary', onclick: run }, 'Analyse')),
+    h('p', { class: 'muted small' }, 'Heart rate per sliding window with the toolbox method (integrate if differenced, detrend, 0.6–3.3 Hz band-pass, FFT peak). ',
+      'Measured HR is the vHRM sensor HR saved with newer runs; older outputs fall back to the HR of the PPG label. ',
+      'Use ↑/↓ to step through recordings.'), out);
   run();
 }
 
 function renderAnalysis(out) {
   const a = S.results.analysis;
   const o = a.overall || {};
-  const cards = [['Windows', o.windows, 0], ['MAE (bpm)', o.mae], ['RMSE (bpm)', o.rmse], ['MAPE (%)', o.mape], ['Pearson', o.pearson, 3], ['Bias (bpm)', o.bias], ['SNR (dB)', o.snr]];
+  const cards = [['Windows', o.windows, 0], ['MAE (bpm)', o.mae], ['RMSE (bpm)', o.rmse], ['MAPE (%)', o.mape], ['Pearson', o.pearson, 3],
+    ['Bias (bpm)', o.bias], ['Within ±5 bpm (%)', o.within5, 0], ['SNR (dB)', o.snr]];
+  const reference = a.source === 'csv' ? 'window_results.csv' : a.truth === 'measured' ? 'measured HR' : 'HR of the PPG label';
+  const info = [a.split && `split: ${a.split}`, a.meta?.epoch !== undefined && a.meta?.epoch !== null && `epoch ${a.meta.epoch}`,
+    a.meta?.model && `model: ${a.meta.model}`, `reference: ${reference}`, a.has_gt === false && a.source !== 'csv' && 'no measured HR saved in this file'].filter(Boolean);
   const scatter = h('canvas', { class: 'chart' });
   const ba = h('canvas', { class: 'chart' });
-  const filters = h('div', { class: 'toolbar' });
+  const filters = h('div', { class: 'toolbar flat' });
+  const heat = h('div', { class: 'table-wrap' });
+  const grouping = h('select', {}, ...[['movement', 'view'], ['participant', 'movement'], ['participant', 'view']]
+    .map(([r, c]) => h('option', { value: `${r}|${c}` }, `${r} × ${c}`)));
   const table = h('div', { class: 'table-wrap' });
+  const compareCard = h('div', { id: 'compareCard' });
   const detail = h('div', { id: 'recordingDetail' });
-  out.replaceChildren(h('div', { class: 'cards' }, ...cards.map(([label, v, d]) => h('div', { class: 'metric' }, h('span', {}, label), h('b', {}, num(v, d ?? 2))))),
-    h('div', { class: 'two-col' }, h('div', { class: 'card' }, h('h4', {}, 'Predicted vs ground-truth HR'), scatter), h('div', { class: 'card' }, h('h4', {}, 'Bland-Altman'), ba)),
-    h('div', { class: 'card' }, h('h4', {}, 'Recordings'), filters, table), detail);
   const hasMeta = a.recordings.some(r => r.participant);
-  const state = { participant: '', movement: '', view: '' };
+  out.replaceChildren(h('div', { class: 'cards' }, ...cards.map(([label, v, d]) => h('div', { class: 'metric' }, h('span', {}, label), h('b', {}, num(v, d ?? 2))))),
+    h('p', { class: 'muted small' }, info.join(' · ')),
+    h('div', { class: 'two-col' }, h('div', { class: 'card' }, chartBlock('Predicted vs ground-truth HR', scatter, 'scatter')),
+      h('div', { class: 'card' }, chartBlock('Bland-Altman', ba, 'bland_altman'))),
+    hasMeta ? h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, 'MAE by scenario (bpm)'), grouping,
+      h('span', { class: 'muted small' }, 'Click a cell to filter; click again to clear.')), heat) : null,
+    compareCard,
+    h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, 'Recordings'),
+      h('button', { type: 'button', class: 'small', onclick: () => pickExtreme(-1) }, 'Worst'),
+      h('button', { type: 'button', class: 'small', onclick: () => pickExtreme(1) }, 'Best'),
+      a.source === 'csv' ? null : h('button', { type: 'button', class: 'small', onclick: openComparePicker }, 'Compare with…')),
+    filters, table), detail);
+  const state = S.results.filter = { participant: '', movement: '', view: '' };
+  const selects = {};
   if (hasMeta) {
     for (const key of ['participant', 'movement', 'view']) {
       const values = [...new Set(a.recordings.map(r => r[key]))].sort();
-      const select = h('select', { onchange: e => { state[key] = e.target.value; draw(); } }, h('option', { value: '' }, `All ${key}s`), ...values.map(v => h('option', { value: v }, v)));
-      filters.append(select);
+      selects[key] = h('select', { onchange: e => { state[key] = e.target.value; draw(); } }, h('option', { value: '' }, `All ${key}s`), ...values.map(v => h('option', { value: v }, v)));
+      filters.append(selects[key]);
     }
+    grouping.addEventListener('change', () => draw());
   }
+  const meta = Object.fromEntries(a.recordings.map(r => [r.id, r]));
+  const drawHeat = rows => {
+    const [rowKey, colKey] = grouping.value.split('|');
+    const ids = new Set(rows.map(r => r.id));
+    const cells = {};
+    for (const p of a.points) {
+      if (!ids.has(p.recording)) continue;
+      const m = meta[p.recording];
+      const k = `${m[rowKey]}|${m[colKey]}`;
+      (cells[k] ||= { sum: 0, n: 0, recs: new Set() });
+      cells[k].sum += Math.abs(p.pred - p.gt); cells[k].n += 1; cells[k].recs.add(p.recording);
+    }
+    const rowValues = [...new Set(rows.map(r => r[rowKey]))].sort();
+    const colValues = [...new Set(rows.map(r => r[colKey]))].sort();
+    const maes = Object.values(cells).map(c => c.sum / c.n);
+    const max = Math.max(10, ...maes);
+    const toggle = (r, c) => {
+      const active = state[rowKey] === r && state[colKey] === c;
+      state[rowKey] = active ? '' : r; state[colKey] = active ? '' : c;
+      for (const [k, sel] of Object.entries(selects)) sel.value = state[k];
+      draw();
+    };
+    heat.replaceChildren(h('table', { class: 'grid-table heat' }, h('tr', {}, h('th', {}, `${rowKey} \\ ${colKey}`), ...colValues.map(c => h('th', {}, c))),
+      ...rowValues.map(r => h('tr', {}, h('th', {}, r), ...colValues.map(c => {
+        const cell = cells[`${r}|${c}`];
+        if (!cell) return h('td', { class: 'muted' }, '');
+        const mae = cell.sum / cell.n;
+        return h('td', { ...errorColor(mae, max), class: 'heat-cell' + (state[rowKey] === r && state[colKey] === c ? ' active' : ''),
+          title: `${cell.n} windows, ${cell.recs.size} recordings`, onclick: () => toggle(r, c) }, num(mae, 1));
+      })))));
+  };
   const draw = () => {
     const rows = a.recordings.filter(r => Object.entries(state).every(([k, v]) => !v || r[k] === v));
+    if (hasMeta) {
+      // The grid keeps all its own rows/columns; only the other filters narrow it.
+      const [rowKey, colKey] = grouping.value.split('|');
+      drawHeat(a.recordings.filter(r => Object.entries(state).every(([k, v]) => !v || k === rowKey || k === colKey || r[k] === v)));
+    }
     const ids = new Set(rows.map(r => r.id));
     const pts = a.points.filter(p => ids.has(p.recording));
     const selected = S.results.recording;
@@ -1263,18 +1356,82 @@ function renderAnalysis(out) {
     const bias = d.reduce((s, v) => s + v, 0) / (d.length || 1);
     const sd = Math.sqrt(d.reduce((s, v) => s + (v - bias) ** 2, 0) / Math.max(1, d.length - 1));
     Charts.draw(ba, { height: 260, xLabel: 'mean of GT and prediction (bpm)', yLabel: 'prediction − GT (bpm)', legend: false,
-      series: [{ type: 'points', x: mean, y: d, labels: pts.map(p => p.recording), color: '#3e63dd' }],
+      series: [{ type: 'points', x: mean, y: d, labels: pts.map(p => p.recording), color: '#3e63dd' },
+        { type: 'points', x: highlight.map(p => (p.gt + p.pred) / 2), y: highlight.map(p => p.pred - p.gt), color: '#e5484d', radius: 4, labels: highlight.map(p => p.recording) }],
       hlines: [{ y: bias, color: '#e5484d', label: `bias ${num(bias)}` }, { y: bias + 1.96 * sd, dash: [4, 3], label: `+1.96 SD ${num(bias + 1.96 * sd)}` }, { y: bias - 1.96 * sd, dash: [4, 3], label: `−1.96 SD ${num(bias - 1.96 * sd)}` }] });
     const sortKey = S.results.sort;
-    rows.sort((x, y) => sortKey === 'id' ? x.id.localeCompare(y.id) : (y[sortKey] ?? -Infinity) - (x[sortKey] ?? -Infinity));
-    const cols = [['id', 'Recording'], ['windows', 'Windows'], ['duration', 'Duration (s)'], ['mean_gt', 'GT HR'], ['mean_pred', 'Pred HR'], ['mae', 'MAE'], ['rmse', 'RMSE'], ['bias', 'Bias'], ['pearson', 'r'], ['snr', 'SNR']];
+    const ascending = ['id', 'within5'].includes(sortKey);
+    rows.sort((x, y) => sortKey === 'id' ? x.id.localeCompare(y.id) : ascending ? (x[sortKey] ?? Infinity) - (y[sortKey] ?? Infinity) : (y[sortKey] ?? -Infinity) - (x[sortKey] ?? -Infinity));
+    S.results.visible = rows.map(r => r.id);
+    const cols = [['id', 'Recording'], ['windows', 'Windows'], ['duration', 'Duration (s)'], ['mean_gt', 'GT HR'], ['mean_pred', 'Pred HR'], ['mae', 'MAE'],
+      ...(a.track ? [['mae_tracked', 'MAE tracked']] : []), ['rmse', 'RMSE'], ['bias', 'Bias'], ['within5', '±5 bpm %'], ['max_jump', 'Max jump'], ['pearson', 'r'], ['snr', 'SNR']];
+    const maxMae = Math.max(10, ...rows.map(r => r.mae).filter(Number.isFinite));
     table.replaceChildren(h('table', { class: 'grid-table clickable' },
       h('tr', {}, ...cols.map(([k, label]) => h('th', { class: k === sortKey ? 'sorted' : '', onclick: () => { S.results.sort = k; draw(); } }, label))),
       ...rows.map(r => h('tr', { class: r.id === selected ? 'active' : '', onclick: () => selectRecording(r.id) },
-        ...cols.map(([k]) => h('td', {}, k === 'id' ? r.id : num(r[k], k === 'windows' ? 0 : k === 'pearson' ? 3 : 1)))))));
+        ...cols.map(([k]) => h('td', k === 'mae' ? errorColor(r.mae, maxMae) : {}, k === 'id' ? r.id : num(r[k], k === 'windows' || k === 'within5' ? 0 : k === 'pearson' ? 3 : 1)))))));
   };
   S.results.redraw = draw;
   draw();
+}
+
+function pickExtreme(direction) {
+  const a = S.results.analysis;
+  const ids = new Set(S.results.visible || []);
+  const rows = a.recordings.filter(r => ids.has(r.id) && Number.isFinite(r.mae)).sort((x, y) => (y.mae - x.mae) * -direction);
+  if (rows.length) selectRecording(rows[0].id);
+}
+
+function stepRecording(delta) {
+  const ids = S.results.visible || [];
+  if (!ids.length) return;
+  const index = ids.indexOf(S.results.recording);
+  const next = ids[Math.max(0, Math.min(ids.length - 1, index < 0 ? 0 : index + delta))];
+  if (next !== S.results.recording) selectRecording(next);
+}
+
+async function openComparePicker() {
+  let list;
+  try { list = (await api('/api/results/sources')).sources; } catch (error) { toast(error.message, 'error'); return; }
+  const current = S.results.analysisParams.path;
+  const choices = list.filter(s => s.path !== current);
+  if (!choices.length) { toast('No other prediction outputs found under the results folders.', 'warn'); return; }
+  const chosen = new Set(S.results.compare);
+  const filter = h('input', { type: 'search', placeholder: 'Filter…' });
+  const box = h('div', { class: 'browse-list' });
+  const render = () => {
+    const q = filter.value.toLowerCase();
+    box.replaceChildren(...choices.filter(s => !q || (s.experiment + ' ' + s.name).toLowerCase().includes(q)).map(s => h('label', { class: 'browse-item option' },
+      h('input', { type: 'checkbox', checked: chosen.has(s.path), onchange: e => { e.target.checked ? chosen.add(s.path) : chosen.delete(s.path); } }),
+      h('span', {}, h('b', {}, s.experiment), ' / ', s.name, h('small', {}, fmtDate(s.modified) + (sourceKind(s.name) ? ' · ' + sourceKind(s.name) : ''))))));
+  };
+  filter.addEventListener('input', render);
+  render();
+  openModal('Compare with other runs', h('div', { class: 'form-stack' },
+    h('p', { class: 'muted small' }, 'Runs are compared on the recordings they share, with the current window, step and ground-truth settings.'), filter, box), [
+    { label: 'Clear comparison', onClick: () => { S.results.compare = []; closeModal(); $('compareCard').replaceChildren(); if (S.results.recording) selectRecording(S.results.recording); } },
+    { label: 'Compare', primary: true, onClick: () => { S.results.compare = [...chosen]; closeModal(); loadComparison(); } }], true);
+}
+
+async function loadComparison() {
+  const card = $('compareCard');
+  if (!card || !S.results.compare.length) return;
+  card.replaceChildren(h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Comparing runs…')));
+  let data;
+  try {
+    data = await api('/api/results/compare', { params: { ...S.results.analysisParams, paths: [S.results.analysisParams.path, ...S.results.compare].join('|') } });
+  } catch (error) { card.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
+  S.results.compareRuns = data.runs;
+  const max = Math.max(10, ...data.recordings.flatMap(r => r.mae).filter(Number.isFinite));
+  const meanOf = i => { const v = data.recordings.map(r => r.mae[i]).filter(Number.isFinite); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN; };
+  card.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, `Model comparison — MAE (bpm) on ${data.recordings.length} shared recordings`),
+    h('button', { type: 'button', class: 'small', onclick: openComparePicker }, 'Change…')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+      h('tr', {}, h('th', {}, 'Recording'), ...data.runs.map((run, i) => h('th', { title: run.path }, h('span', { class: 'swatch', style: `background:${RUN_COLORS[i % RUN_COLORS.length]}` }), run.name))),
+      h('tr', {}, h('th', {}, 'Mean'), ...data.runs.map((_, i) => h('th', errorColor(meanOf(i), max), num(meanOf(i), 1)))),
+      ...data.recordings.map(r => h('tr', { class: r.id === S.results.recording ? 'active' : '', onclick: () => selectRecording(r.id) }, h('td', {}, r.id),
+        ...r.mae.map(v => h('td', errorColor(v, max), num(v, 1)))))))));
+  if (S.results.recording) selectRecording(S.results.recording);
 }
 
 async function selectRecording(id) {
@@ -1283,54 +1440,146 @@ async function selectRecording(id) {
   const a = S.results.analysis;
   const detail = $('recordingDetail');
   detail.replaceChildren(h('p', { class: 'muted' }, 'Loading recording…'));
-  let data;
+  let data, compare = null, history = null;
   if (a.source === 'csv') {
     data = { id, windows: a.windows_by_recording[id] || [], metrics: a.recordings.find(r => r.id === id) };
   } else {
     try {
-      data = await api('/api/results/recording', { params: { ...S.results.analysisParams, id } });
+      const params = { ...S.results.analysisParams, id };
+      [data, compare, history] = await Promise.all([
+        api('/api/results/recording', { params }),
+        S.results.compare.length ? api('/api/results/compare', { params: { ...params, paths: [params.path, ...S.results.compare].join('|') } }) : null,
+        S.results.historyPath && (a.split === 'valid' || /saved_valid_outputs/.test(a.path)) ? api('/api/results/history', { params: { ...params, path: S.results.historyPath } }) : null,
+      ]);
     } catch (error) { detail.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
   }
-  const hr = h('canvas', { class: 'chart' });
-  const parts = [h('h4', {}, `${id} — MAE ${num(data.metrics?.mae)} bpm`), hr];
-  const center = data.windows.map(w => (w.start + w.end) / 2);
-  Charts.draw(hr, { height: 230, xLabel: 'time (s)', yLabel: 'heart rate (bpm)', series: [
-    { label: 'ground truth', x: center, y: data.windows.map(w => w.gt), color: '#222', markers: true },
-    { label: 'predicted', x: center, y: data.windows.map(w => w.pred), color: '#e5484d', markers: true }] });
-  if (data.prediction) {
-    const wave = h('canvas', { class: 'chart' });
-    const span = h('select', {}, ...[10, 30, 60, 0].map(s => h('option', { value: s }, s ? `${s} s` : 'all')));
-    const offset = h('input', { type: 'range', min: '0', max: String(Math.max(0, Math.floor(data.duration))), value: '0', step: '1' });
-    const step = data.duration / data.prediction.length;
-    const t = data.prediction.map((_, i) => i * step);
-    const drawWave = () => {
-      const s = +span.value, o = +offset.value;
-      const series = [{ label: 'prediction (processed)', x: t, y: data.prediction, color: '#e5484d' }];
-      if (data.label) series.unshift({ label: 'label (processed)', x: t, y: data.label, color: '#222' });
-      Charts.draw(wave, { height: 200, xLabel: 'time (s)', series, xMin: s ? o : undefined, xMax: s ? Math.min(data.duration, o + s) : undefined });
-    };
-    span.addEventListener('change', drawWave);
-    offset.addEventListener('input', drawWave);
-    span.value = '30';
-    const spectrum = h('canvas', { class: 'chart' });
-    parts.push(h('div', { class: 'toolbar' }, h('label', {}, 'Span ', span), h('label', { class: 'grow' }, 'Start ', offset)), wave,
-      h('h4', {}, 'Prediction spectrum (whole recording)'), spectrum);
-    detail.replaceChildren(h('div', { class: 'card' }, ...parts));
-    drawWave();
-    const gtMean = data.metrics?.mean_gt;
-    Charts.draw(spectrum, { height: 150, xLabel: 'Hz', yLabel: 'power', legend: false, series: [{ x: data.spectrum.freqs, y: data.spectrum.power, color: '#3e63dd' }],
-      vlines: Number.isFinite(gtMean) ? [{ x: gtMean / 60, color: '#222', dash: [4, 3] }] : [] });
-    if (data.label_channels) {
-      for (const [name, values] of Object.entries(data.label_channels).slice(1)) {
-        const c = h('canvas', { class: 'chart' });
-        detail.firstChild.append(h('h4', {}, name), c);
-        const x = values.map((_, i) => i * data.duration / values.length);
-        Charts.draw(c, { height: 130, xLabel: 'time (s)', legend: false, series: [{ x, y: values, color: '#30a46c' }] });
-      }
+  if (S.results.recording !== id) return;  // a newer selection is loading
+  renderRecording(detail, data, compare?.runs?.slice(1) || [], history?.epochs?.length ? history : null);
+}
+
+function renderRecording(detail, data, others, history) {
+  const view = S.results.view ||= { span: 30, offset: 0, raw: false, beats: true };
+  const state = { epoch: null };
+  const duration = data.duration || Math.max(0, ...data.windows.map(w => w.end));
+  view.offset = Math.min(view.offset, Math.max(0, duration - (view.span || duration)));
+  const m = data.metrics || {}, mt = data.metrics_tracked;
+  const chips = [['MAE', m.mae, 1], ['bias', m.bias, 1], ['RMSE', m.rmse, 1], ['r', m.pearson, 2], ['within ±5', m.within5, 0, '%'], ['max jump', m.max_jump, 1],
+    ...(mt ? [['tracked MAE', mt.mae, 1], ['tracked max jump', mt.max_jump, 1]] : [])];
+  const centre = w => (w.start + w.end) / 2;
+  const hr = h('canvas', { class: 'chart' }), err = h('canvas', { class: 'chart' }), wave = h('canvas', { class: 'chart' }), spec = h('canvas', { class: 'chart' });
+  const caption = h('span', { class: 'muted small' });
+  const hasGtLine = data.truth === 'measured' && data.gt_channels?.heart_rate_bpm;
+  const activeWindows = () => state.epoch ? state.epoch.windows : data.windows;
+  const activePrediction = () => state.epoch ? state.epoch.prediction : data.prediction;
+  const viewRange = () => view.span ? [view.offset, Math.min(duration, view.offset + view.span)] : [0, duration];
+  const invalid = (data.invalid_spans || []).map(([x0, x1]) => ({ x0, x1, color: '#8b8d98', alpha: 0.18 }));
+
+  const drawHr = () => {
+    const windows = activeWindows();
+    const series = [];
+    if (hasGtLine) {
+      const values = data.gt_channels.heart_rate_bpm;
+      series.push({ label: 'measured HR', x: values.map((_, i) => i * duration / values.length), y: values, color: LINE.gt, width: 2 });
+    } else {
+      series.push({ label: data.truth === 'measured' ? 'ground truth' : 'label HR (reference)', x: data.windows.map(centre), y: data.windows.map(w => w.gt), color: LINE.gt, width: 2, markers: true });
     }
-  } else {
-    detail.replaceChildren(h('div', { class: 'card' }, ...parts, h('p', { class: 'muted small' }, 'Waveforms need the output pickle.')));
+    if (hasGtLine && data.windows.some(w => Number.isFinite(w.label_hr))) series.push({ label: 'label HR', x: data.windows.map(centre), y: data.windows.map(w => w.label_hr), color: LINE.label, dash: [5, 4] });
+    series.push({ label: state.epoch ? `predicted (epoch ${state.epoch.epoch})` : 'predicted', x: windows.map(centre), y: windows.map(w => w.pred), color: LINE.pred, markers: true });
+    if (!state.epoch && windows.some(w => Number.isFinite(w.tracked))) series.push({ label: 'tracked', x: windows.map(centre), y: windows.map(w => w.tracked), color: LINE.tracked });
+    others.forEach((run, i) => series.push({ label: run.name, x: run.windows.map(centre), y: run.windows.map(w => w.pred), color: RUN_COLORS[(i + 1) % RUN_COLORS.length], dash: [3, 2] }));
+    const [x0, x1] = viewRange();
+    Charts.draw(hr, { height: 250, xLabel: 'time (s)', yLabel: 'heart rate (bpm)', xMin: 0, xMax: duration, series,
+      vspans: [...invalid, ...(data.prediction ? [{ x0, x1, color: '#3e63dd', alpha: 0.1 }] : [])],
+      onClick: data.prediction ? x => { if (view.span) { view.offset = Math.max(0, Math.min(duration - view.span, x - view.span / 2)); offset.value = view.offset; drawWave(); drawHr(); } } : undefined });
+    const errors = windows.map(w => w.pred - w.gt);
+    const errSeries = [{ label: 'prediction − GT', x: windows.map(centre), y: errors, color: LINE.pred, markers: true }];
+    if (!state.epoch && windows.some(w => Number.isFinite(w.tracked))) errSeries.push({ label: 'tracked − GT', x: windows.map(centre), y: windows.map(w => w.tracked - w.gt), color: LINE.tracked });
+    Charts.draw(err, { height: 130, xLabel: 'time (s)', yLabel: 'error (bpm)', xMin: 0, xMax: duration, series: errSeries,
+      hbands: [{ y0: -5, y1: 5, color: LINE.band, alpha: 0.15 }], hlines: [{ y: 0 }], vspans: invalid });
+  };
+
+  const valueAt = (values, t) => values[Math.max(0, Math.min(values.length - 1, Math.round(t / duration * values.length)))];
+  const beatRate = times => times.length > 1 ? 60 / ((times[times.length - 1] - times[0]) / (times.length - 1)) : NaN;
+  const drawWave = () => {
+    const prediction = activePrediction();
+    if (!prediction) return;
+    const [x0, x1] = viewRange();
+    const t = prediction.map((_, i) => i * duration / prediction.length);
+    const series = [];
+    if (view.raw && data.prediction_raw && !state.epoch) series.push({ label: 'prediction (unfiltered)', x: t, y: data.prediction_raw, color: LINE.raw, width: 1 });
+    if (data.label) series.push({ label: 'PPG label', x: data.label.map((_, i) => i * duration / data.label.length), y: data.label, color: LINE.gt });
+    series.push({ label: state.epoch ? `prediction (epoch ${state.epoch.epoch})` : 'prediction', x: t, y: prediction, color: LINE.pred });
+    others.forEach((run, i) => run.prediction && series.push({ label: run.name, x: run.prediction.map((_, k) => k * run.duration / run.prediction.length), y: run.prediction, color: RUN_COLORS[(i + 1) % RUN_COLORS.length], width: 1 }));
+    const inView = times => (times || []).filter(v => v >= x0 && v <= x1);
+    const parts = [];
+    if (view.beats && !state.epoch) {
+      const pb = inView(data.pred_beats);
+      series.push({ type: 'marks', shape: 'up', x: pb, y: pb.map(v => valueAt(data.prediction, v)), color: LINE.pred });
+      parts.push(`prediction: ${pb.length} beats, ${num(beatRate(pb), 0)} bpm`);
+      if (data.label_beats) {
+        const lb = inView(data.label_beats);
+        series.push({ type: 'marks', shape: 'down', x: lb, y: lb.map(v => valueAt(data.label, v)), color: LINE.gt });
+        parts.push(`label: ${lb.length} beats, ${num(beatRate(lb), 0)} bpm`);
+      }
+      const windows = activeWindows().filter(w => centre(w) >= x0 && centre(w) <= x1 && Number.isFinite(w.gt));
+      if (windows.length) parts.push(`reference ${num(windows.reduce((s, w) => s + w.gt, 0) / windows.length, 0)} bpm`);
+    }
+    caption.textContent = `${num(x0, 0)}–${num(x1, 0)} s` + (parts.length ? ' · in view: ' + parts.join(' · ') : '');
+    Charts.draw(wave, { height: 230, xLabel: 'time (s)', yLabel: 'z', series, xMin: x0, xMax: x1, vspans: invalid });
+  };
+
+  const parts = [h('div', { class: 'chart-head' }, h('h3', {}, data.id),
+    h('div', { class: 'chips' }, ...chips.map(([label, v, d, unit]) => h('span', { class: 'stat' }, label, ' ', h('b', {}, num(v, d) + (unit && Number.isFinite(v) ? unit : '')))))),
+    chartBlock('Heart rate over time' + (data.prediction ? ' — click to move the waveform window' : ''), hr, `${data.id}_hr`),
+    chartBlock('Error per window (green band = ±5 bpm)', err, `${data.id}_error`)];
+
+  let offset = h('input', { type: 'range' });
+  if (data.prediction) {
+    const span = h('select', {}, ...[10, 20, 30, 60, 0].map(s => h('option', { value: s }, s ? `${s} s` : 'all')));
+    span.value = String(view.span);
+    offset = h('input', { type: 'range', min: '0', max: String(Math.max(0, Math.floor(duration))), value: String(view.offset), step: '1' });
+    const raw = h('input', { type: 'checkbox', checked: view.raw });
+    const beats = h('input', { type: 'checkbox', checked: view.beats });
+    span.addEventListener('change', () => { view.span = +span.value; view.offset = Math.min(view.offset, Math.max(0, duration - view.span)); drawWave(); drawHr(); });
+    offset.addEventListener('input', () => { view.offset = +offset.value; drawWave(); drawHr(); });
+    raw.addEventListener('change', () => { view.raw = raw.checked; drawWave(); });
+    beats.addEventListener('change', () => { view.beats = beats.checked; drawWave(); });
+    parts.push(chartBlock('Pulse waveform (z-scored, band-passed)', wave, `${data.id}_bvp`,
+      h('label', { class: 'small' }, 'Span ', span), h('label', { class: 'small grow' }, 'Start ', offset),
+      h('label', { class: 'small' }, raw, ' unfiltered'), h('label', { class: 'small' }, beats, ' beats')), caption);
   }
+  if (history) {
+    const select = h('select', {}, h('option', { value: '' }, 'best epoch (saved file)'), ...history.epochs.map((e, i) => h('option', { value: i }, `epoch ${e.epoch} — MAE ${num(e.metrics?.mae, 1)}`)));
+    select.addEventListener('change', () => { state.epoch = select.value === '' ? null : history.epochs[+select.value]; drawHr(); drawWave(); });
+    const trend = h('canvas', { class: 'chart' });
+    parts.splice(1, 0, h('div', { class: 'card inset' }, h('div', { class: 'chart-head' }, h('h4', {}, 'Probe recording — predictions during training'), h('label', { class: 'small' }, 'Show ', select)), trend));
+    requestAnimationFrame(() => Charts.draw(trend, { height: 120, xLabel: 'epoch', yLabel: 'MAE (bpm)', legend: false,
+      series: [{ x: history.epochs.map(e => e.epoch), y: history.epochs.map(e => e.metrics?.mae ?? NaN), color: LINE.pred, markers: true }] }));
+  }
+  if (data.spectrogram?.times?.length) parts.push(chartBlock('Prediction spectrogram (white: measured HR and 2× harmonic)', spec, `${data.id}_spectrogram`));
+  const aux = Object.entries(data.gt_channels || {}).filter(([name]) => name !== 'heart_rate_bpm');
+  const auxCanvases = aux.map(() => h('canvas', { class: 'chart' }));
+  aux.forEach(([name], i) => parts.push(chartBlock(name, auxCanvases[i], `${data.id}_${name}`)));
+  if (!data.prediction) parts.push(h('p', { class: 'muted small' }, 'Waveforms need the output pickle.'));
+  detail.replaceChildren(h('div', { class: 'card' }, ...parts));
+
+  drawHr();
+  drawWave();
+  if (data.spectrogram?.times?.length) {
+    const sp = data.spectrogram;
+    const series = [];
+    if (hasGtLine) {
+      const values = data.gt_channels.heart_rate_bpm;
+      const x = values.map((_, i) => i * duration / values.length);
+      series.push({ label: 'measured HR', x, y: values, color: '#ffffff', width: 1.5 }, { label: '2×', x, y: values.map(v => v * 2), color: '#ffffff', dash: [3, 3], width: 1 });
+    } else {
+      series.push({ label: 'reference HR', x: data.windows.map(centre), y: data.windows.map(w => w.gt), color: '#ffffff', width: 1.5 });
+    }
+    Charts.draw(spec, { height: 210, xLabel: 'time (s)', yLabel: 'frequency (bpm)', xMin: 0, xMax: duration, yMin: 0, yMax: 240,
+      heatmap: { x: sp.times, y: sp.freqs, z: sp.power }, series, legend: false });
+  }
+  aux.forEach(([name, values], i) => Charts.draw(auxCanvases[i], { height: 130, xLabel: 'time (s)', legend: false, xMin: 0, xMax: duration,
+    series: [{ x: values.map((_, k) => k * duration / values.length), y: values, color: '#30a46c' }] }));
 }
 
 // ---------------------------------------------------------------- settings
@@ -1444,6 +1693,11 @@ async function init() {
     } else if (e.key === ' ') { e.preventDefault(); togglePlayback(); }
   });
 
+  document.addEventListener('keydown', e => {
+    if (!$('tab-results').classList.contains('active') || !S.results.analysis || !$('recordingDetail') ||
+        ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || !$('modal').classList.contains('hidden')) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); stepRecording(e.key === 'ArrowDown' ? 1 : -1); }
+  });
   $('resultFilter').addEventListener('input', renderResultList);
   $('refreshResults').addEventListener('click', loadResults);
 

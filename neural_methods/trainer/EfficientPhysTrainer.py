@@ -139,6 +139,7 @@ class EfficientPhysTrainer(BaseTrainer):
                 labels_valid = labels_valid[:(N * D) // self.base_len * self.base_len]
                 pred_ppg_valid = self.model(data_valid)
                 loss = self.criterion(pred_ppg_valid, labels_valid)
+                self.capture_valid(valid_batch, pred_ppg_valid, labels_valid, frames=D)
                 valid_loss.append(loss.item())
                 valid_step += 1
                 vbar.set_postfix(loss=loss.item())

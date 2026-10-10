@@ -15,7 +15,7 @@ import numpy as np
 
 from . import paths, settings, signals
 
-MARKERS = {"PreTrainedModels", "saved_test_outputs", "saved_outputs", "plots"}
+MARKERS = {"PreTrainedModels", "saved_test_outputs", "saved_outputs", "saved_valid_outputs", "plots"}
 SKIP_DIRS = {"wandb", ".git", "__pycache__", "node_modules"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 TABLE_LIMIT = 300_000
@@ -162,6 +162,7 @@ def _join_chunks(chunks):
 
 
 def load_pickle(path):
+    """Parsed *_outputs.pickle: recordings {id: (prediction, PPG label or None, gt[N, C] or None)}."""
     path = check_path(path)
     stamp = path.stat().st_mtime
     key = str(path)
@@ -178,24 +179,36 @@ def load_pickle(path):
                          "environment to analyse predictions.") from error
     if not isinstance(data, dict) or not {"predictions", "labels"} <= set(data):
         raise ValueError("Unsupported output pickle structure")
-    recordings = {}
-    for name in data["predictions"]:
-        prediction = _join_chunks(data["predictions"][name]).reshape(-1)
-        label = _join_chunks(data["labels"][name])
-        if label.ndim > 1 and label.shape[-1] == 1:
-            label = label.reshape(-1)
-        n = min(len(prediction), len(label))
-        recordings[str(name)] = (prediction[:n], label[:n])
     label_type = data.get("label_type", "")
     label_columns = data.get("label_columns")
-    sample = [label for _, label in list(recordings.values())[:5]]
-    label_is_hr = bool(label_columns) or (label_type == "Raw" and bool(sample) and
-                                          all(signals.looks_like_heart_rate(label) for label in sample))
+    gt_all = data.get("gt") or {}
+    joined = {}
+    for name in data["predictions"]:
+        prediction = _join_chunks(data["predictions"][name]).reshape(-1)
+        label = _join_chunks(data["labels"][name]) if name in data["labels"] else None
+        if label is not None and label.ndim > 1 and label.shape[-1] == 1:
+            label = label.reshape(-1)
+        joined[str(name)] = (prediction, label, gt_all.get(name))
+    sample = [label for _, label, _ in list(joined.values())[:5] if label is not None]
+    # Older vHRM outputs stored heart-rate channels as labels instead of a PPG waveform.
+    label_is_hr = not gt_all and (bool(label_columns) or (label_type == "Raw" and bool(sample) and
+                                                          all(signals.looks_like_heart_rate(x) for x in sample)))
+    recordings = {}
+    for name, (prediction, label, gt) in joined.items():
+        if label_is_hr and label is not None:
+            gt, label = (label if label.ndim > 1 else label[:, None]), None
+        n = min([len(prediction)] + [len(x) for x in (label, gt) if x is not None])
+        gt = np.asarray(gt, dtype=np.float64)[:n] if gt is not None else None
+        recordings[name] = (prediction[:n], label[:n] if label is not None else None, gt)
+    meta = data.get("meta") or {}
+    gt_columns = list(data.get("gt_columns") or label_columns or
+                      ["heart_rate_bpm", "HRV", "respiration_rate_bpm", "ppg_valid"])
     parsed = {"recordings": recordings, "fs": float(data.get("fs") or 30), "label_type": label_type,
-              "label_columns": label_columns, "label_is_hr": label_is_hr}
+              "gt_columns": gt_columns, "has_gt": any(gt is not None for _, _, gt in recordings.values()),
+              "label_is_hr": label_is_hr, "meta": meta, "split": data.get("split") or meta.get("split") or "test"}
     with _cache_lock:
         _pickle_cache[key] = (stamp, parsed)
-        while len(_pickle_cache) > 3:
+        while len(_pickle_cache) > 6:
             _pickle_cache.popitem(last=False)
     return parsed
 
@@ -210,119 +223,176 @@ def _recording_meta(name):
     return {}
 
 
-def _windows(prediction, label, fs, window_s, step_s, is_diff, label_is_hr):
-    n = len(prediction)
-    size = int(round(window_s * fs)) if window_s else n
-    size = min(size, n)
-    step = int(round(step_s * fs)) if step_s else size
-    if size < 9:
-        return []
-    rows = []
-    for start in range(0, n - size + 1, max(step, 1)):
-        segment = slice(start, start + size)
-        wave = signals.pulse_waveform(prediction[segment], fs, is_diff)
-        predicted = signals.fft_hr(wave, fs)
-        if label_is_hr:
-            channel = label[segment, 0] if label.ndim > 1 else label[segment]
-            finite = channel[np.isfinite(channel)]
-            truth = float(finite.mean()) if finite.size else float("nan")
-        else:
-            channel = label[segment, 0] if label.ndim > 1 else label[segment]
-            truth = signals.fft_hr(signals.pulse_waveform(channel, fs, is_diff), fs)
-        rows.append({"start": start / fs, "end": (start + size) / fs, "gt": truth, "pred": predicted,
-                     "snr": signals.snr_db(wave, fs, truth)})
-    return rows
-
-
-def _metrics(rows):
-    pairs = np.array([(r["gt"], r["pred"]) for r in rows if math.isfinite(r["gt"]) and math.isfinite(r["pred"])])
-    if not len(pairs):
-        return {"windows": 0}
-    error = pairs[:, 1] - pairs[:, 0]
-    result = {
-        "windows": int(len(pairs)),
-        "mae": float(np.mean(np.abs(error))),
-        "rmse": float(np.sqrt(np.mean(error ** 2))),
-        "bias": float(np.mean(error)),
-        "mean_gt": float(np.mean(pairs[:, 0])),
-        "mean_pred": float(np.mean(pairs[:, 1])),
-    }
-    nonzero = pairs[:, 0] != 0
-    if nonzero.any():
-        result["mape"] = float(np.mean(np.abs(error[nonzero] / pairs[nonzero, 0])) * 100)
-    if len(pairs) >= 3 and np.std(pairs[:, 0]) > 0 and np.std(pairs[:, 1]) > 0:
-        result["pearson"] = float(np.corrcoef(pairs[:, 0], pairs[:, 1])[0, 1])
-    snrs = [r["snr"] for r in rows if math.isfinite(r["snr"])]
-    if snrs:
-        result["snr"] = float(np.mean(snrs))
-    return result
-
-
-def _diff_flag(parsed, diff):
+def _flags(parsed, diff):
+    """(prediction is differenced, label is differenced)."""
+    meta = parsed["meta"]
+    label_diff = bool(meta.get("label_is_diff", parsed["label_type"] == "DiffNormalized"))
     if diff in ("1", "true", True):
-        return True
+        return True, label_diff
     if diff in ("0", "false", False):
-        return False
+        return False, label_diff
+    if "prediction_is_diff" in meta:
+        return bool(meta["prediction_is_diff"]), label_diff
     if parsed["label_is_hr"]:
-        return True
-    return parsed["label_type"] == "DiffNormalized"
+        return True, label_diff
+    return label_diff, label_diff
 
 
-def analyse(path, window_s=10.0, step_s=None, diff="auto"):
+def _rows(parsed, name, window_s, step_s, diff, truth, track=False):
+    prediction, label, gt = parsed["recordings"][name]
+    pred_diff, label_diff = _flags(parsed, diff)
+    return signals.recording_windows(prediction, parsed["fs"], window_s, step_s, pred_diff, label=label,
+                                     label_diff=label_diff, measured_hr=gt[:, 0] if gt is not None else None,
+                                     truth=truth, track=track)
+
+
+def _run_name(path, parsed):
+    path = Path(path)
+    name = parsed["meta"].get("name") or path.stem.removesuffix("_outputs")
+    return f"{path.parent.parent.name} / {name}"
+
+
+def analyse(path, window_s=10.0, step_s=None, diff="auto", truth="measured", track=False):
     parsed = load_pickle(path)
-    fs = parsed["fs"]
-    is_diff = _diff_flag(parsed, diff)
-    label_is_hr = parsed["label_is_hr"]
+    pred_diff, label_diff = _flags(parsed, diff)
     started = time.time()
     recordings = []
-    all_rows = []
-    for name, (prediction, label) in sorted(parsed["recordings"].items()):
-        rows = _windows(prediction, label, fs, window_s, step_s, is_diff, label_is_hr)
-        for row in rows:
-            row["recording"] = name
-        all_rows.extend(rows)
-        recordings.append({"id": name, "duration": len(prediction) / fs, **_recording_meta(name),
-                           **_metrics(rows)})
-    points = [{"recording": r["recording"], "gt": r["gt"], "pred": r["pred"]} for r in all_rows
-              if math.isfinite(r["gt"]) and math.isfinite(r["pred"])]
+    points = []
+    for name in sorted(parsed["recordings"]):
+        prediction = parsed["recordings"][name][0]
+        rows = _rows(parsed, name, window_s, step_s, diff, truth, track)
+        item = {"id": name, "duration": len(prediction) / parsed["fs"], **_recording_meta(name),
+                **signals.window_metrics(rows)}
+        if track:
+            item["mae_tracked"] = signals.window_metrics(rows, "tracked").get("mae")
+        recordings.append(item)
+        points.extend({"recording": name, "gt": r["gt"], "pred": r["pred"]} for r in rows
+                      if math.isfinite(r["gt"]) and math.isfinite(r["pred"]))
+    overall = signals.window_metrics([{"gt": p["gt"], "pred": p["pred"], "snr": float("nan")} for p in points])
+    overall.pop("max_jump", None)
+    snrs = [r["snr"] for r in recordings if math.isfinite(r.get("snr", float("nan")))]
+    if snrs:
+        overall["snr"] = float(np.mean(snrs))
     return {
-        "path": str(path), "fs": fs, "label_type": parsed["label_type"], "label_columns": parsed["label_columns"],
-        "is_diff": is_diff, "label_is_hr": label_is_hr, "window": window_s, "step": step_s or window_s,
-        "overall": _metrics(all_rows), "recordings": recordings, "points": points,
+        "path": str(path), "name": _run_name(path, parsed), "fs": parsed["fs"], "label_type": parsed["label_type"],
+        "split": parsed["split"], "meta": parsed["meta"], "has_gt": parsed["has_gt"],
+        "truth": "measured" if parsed["has_gt"] and truth == "measured" else "label",
+        "is_diff": pred_diff, "label_is_diff": label_diff, "label_is_hr": parsed["label_is_hr"],
+        "window": window_s, "step": step_s or window_s, "track": bool(track),
+        "overall": overall, "recordings": recordings, "points": points,
         "seconds": round(time.time() - started, 2),
     }
 
 
-def recording(path, name, window_s=10.0, step_s=None, diff="auto"):
+WAVE_LIMIT = 30000
+
+
+def _wave(values):
+    return signals.finite_list(signals.downsample(values, WAVE_LIMIT), 3)
+
+
+def recording(path, name, window_s=10.0, step_s=None, diff="auto", truth="measured", track=False):
     parsed = load_pickle(path)
     if name not in parsed["recordings"]:
         raise ValueError(f"Unknown recording: {name}")
-    prediction, label = parsed["recordings"][name]
+    prediction, label, gt = parsed["recordings"][name]
     fs = parsed["fs"]
-    is_diff = _diff_flag(parsed, diff)
-    label_is_hr = parsed["label_is_hr"]
-    rows = _windows(prediction, label, fs, window_s, step_s, is_diff, label_is_hr)
-    wave = signals.pulse_waveform(prediction, fs, is_diff)
-    wave = (wave - wave.mean()) / (wave.std() or 1)
+    pred_diff, label_diff = _flags(parsed, diff)
+    rows = _rows(parsed, name, window_s, step_s, diff, truth, track)
+    filtered = signals.pulse_waveform(prediction, fs, pred_diff)
+    wave = signals.zscore(filtered)
+    raw = signals.fill_nonfinite(prediction)
+    raw = signals.zscore(signals.detrend(np.cumsum(raw) if pred_diff else raw))
     payload = {
-        "id": name, "fs": fs, "duration": len(prediction) / fs, "windows": rows, "metrics": _metrics(rows),
-        "prediction": signals.finite_list(signals.downsample(wave)),
-        "is_diff": is_diff, "label_is_hr": label_is_hr,
+        "id": name, "fs": fs, "duration": len(prediction) / fs, "windows": rows,
+        "metrics": signals.window_metrics(rows), "is_diff": pred_diff, "label_is_hr": parsed["label_is_hr"],
+        "truth": "measured" if gt is not None and truth == "measured" else "label",
+        "prediction": _wave(wave), "prediction_raw": _wave(raw),
+        "pred_beats": signals.finite_list(signals.beats(wave, fs) / fs, 3),
     }
-    if label_is_hr:
-        channels = label if label.ndim > 1 else label[:, None]
-        names = parsed["label_columns"] or ["heart_rate_bpm", "HRV", "respiration_rate_bpm"][:channels.shape[1]]
-        payload["label_channels"] = {names[i]: signals.finite_list(signals.downsample(channels[:, i]), 3)
-                                     for i in range(min(len(names), channels.shape[1]))}
-    else:
-        label_wave = signals.pulse_waveform(label if label.ndim == 1 else label[:, 0], fs, is_diff)
-        label_wave = (label_wave - label_wave.mean()) / (label_wave.std() or 1)
-        payload["label"] = signals.finite_list(signals.downsample(label_wave))
-    freqs, power = signals.spectrum(wave, fs)
-    mask = freqs <= 4
-    payload["spectrum"] = {"freqs": signals.finite_list(freqs[mask]), "power": signals.finite_list(
-        power[mask] / (power[mask].max() or 1))}
+    if track:
+        payload["metrics_tracked"] = signals.window_metrics(rows, "tracked")
+    if label is not None:
+        label_wave = signals.zscore(signals.pulse_waveform(label, fs, label_diff))
+        payload["label"] = _wave(label_wave)
+        payload["label_beats"] = signals.finite_list(signals.beats(label_wave, fs) / fs, 3)
+    if gt is not None:
+        names = list(parsed["gt_columns"]) + [f"channel_{i}" for i in range(len(parsed["gt_columns"]), gt.shape[1])]
+        payload["gt_channels"] = {names[i]: signals.finite_list(signals.downsample(gt[:, i]), 3)
+                                  for i in range(gt.shape[1]) if names[i] != "ppg_valid"}
+        if "ppg_valid" in names[:gt.shape[1]]:
+            payload["invalid_spans"] = signals.invalid_spans(gt[:, names.index("ppg_valid")] > 0.5, fs)
+    window = window_s or 10.0
+    times, freqs, power = signals.spectrogram(filtered, fs, window, max((step_s or window) / 2, 0.5))
+    payload["spectrogram"] = {"times": signals.finite_list(times, 2), "freqs": signals.finite_list(freqs * 60, 2),
+                              "power": [signals.finite_list(row, 3) for row in power]}
     return payload
+
+
+def compare(paths, name=None, window_s=10.0, step_s=None, diff="auto", truth="measured", track=False):
+    """Several runs on the same recordings: a per-recording MAE matrix, or one recording's overlays."""
+    runs = [(path, load_pickle(path)) for path in paths]
+    if not name:
+        common = sorted(set.intersection(*(set(parsed["recordings"]) for _, parsed in runs))) if runs else []
+        matrix = [{"id": recording_id, **_recording_meta(recording_id),
+                   "mae": [signals.window_metrics(_rows(parsed, recording_id, window_s, step_s, diff, truth)).get("mae")
+                           for _, parsed in runs]}
+                  for recording_id in common]
+        return {"runs": [{"path": str(path), "name": _run_name(path, parsed), "split": parsed["split"]}
+                         for path, parsed in runs], "recordings": matrix}
+    result = []
+    for path, parsed in runs:
+        if name not in parsed["recordings"]:
+            continue
+        prediction = parsed["recordings"][name][0]
+        pred_diff, _ = _flags(parsed, diff)
+        rows = _rows(parsed, name, window_s, step_s, diff, truth, track)
+        result.append({"path": str(path), "name": _run_name(path, parsed), "windows": rows,
+                       "metrics": signals.window_metrics(rows), "duration": len(prediction) / parsed["fs"],
+                       "prediction": _wave(signals.zscore(signals.pulse_waveform(prediction, parsed["fs"], pred_diff)))})
+    return {"id": name, "runs": result}
+
+
+def sources():
+    """Every *_outputs.pickle under the results roots (for the comparison picker)."""
+    found = []
+    for experiment in scan():
+        root = Path(experiment["path"])
+        for folder in ("saved_test_outputs", "saved_outputs", "saved_valid_outputs"):
+            directory = root / folder
+            if directory.is_dir():
+                for file in sorted(directory.rglob("*_outputs.pickle")):
+                    found.append({"path": str(file), "experiment": experiment["name"],
+                                  "name": file.relative_to(root).as_posix(), "modified": file.stat().st_mtime})
+    return sorted(found, key=lambda item: item["modified"], reverse=True)
+
+
+def history(path, name, window_s=10.0, step_s=None, diff="auto", truth="measured"):
+    """Probe-recording predictions per epoch from saved_valid_outputs/probe_history.npz."""
+    path = check_path(path)
+    with np.load(path, allow_pickle=False) as data:
+        ids = [str(i) for i in data["ids"]]
+        index = ids.index(name) if name in ids else -1
+        epochs = [int(e) for e in data["epochs"]]
+        predictions = data[f"pred_{index}"].astype(np.float64) if f"pred_{index}" in data.files else None
+        label = data[f"label_{index}"].astype(np.float64) if f"label_{index}" in data.files else None
+        gt = data[f"gt_{index}"].astype(np.float64) if f"gt_{index}" in data.files else None
+    if predictions is None:
+        return {"id": name, "epochs": [], "probes": ids}
+    best = path.parent / "best_valid_outputs.pickle"
+    parsed = load_pickle(best) if best.is_file() else {"meta": {}, "fs": 30.0, "label_type": "", "label_is_hr": False}
+    fs = parsed["fs"]
+    pred_diff, label_diff = _flags(parsed, diff)
+    per_epoch = []
+    for epoch, prediction in zip(epochs, predictions):
+        if not np.isfinite(prediction).any():
+            continue  # probe added after this epoch
+        rows = signals.recording_windows(prediction, fs, window_s, step_s, pred_diff, label=label,
+                                         label_diff=label_diff, measured_hr=gt[:, 0] if gt is not None else None,
+                                         truth=truth)
+        per_epoch.append({"epoch": epoch, "windows": rows, "metrics": signals.window_metrics(rows),
+                          "prediction": _wave(signals.zscore(signals.pulse_waveform(prediction, fs, pred_diff)))})
+    return {"id": name, "fs": fs, "epochs": per_epoch, "probes": ids}
 
 
 def window_csv(path):
@@ -338,8 +408,8 @@ def window_csv(path):
             except (KeyError, ValueError):
                 continue
             table.setdefault(row.get("recording_id", "all"), []).append(item)
-    recordings = [{"id": name, **_recording_meta(name), **_metrics(rows), "duration": rows[-1]["end"]}
+    recordings = [{"id": name, **_recording_meta(name), **signals.window_metrics(rows), "duration": rows[-1]["end"]}
                   for name, rows in sorted(table.items())]
     points = [{"recording": name, "gt": r["gt"], "pred": r["pred"]} for name, rows in table.items() for r in rows]
-    return {"path": str(path), "overall": _metrics([r for rows in table.values() for r in rows]),
+    return {"path": str(path), "overall": signals.window_metrics([r for rows in table.values() for r in rows]),
             "recordings": recordings, "points": points, "windows_by_recording": table, "source": "csv"}

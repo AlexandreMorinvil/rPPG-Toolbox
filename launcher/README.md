@@ -38,7 +38,27 @@ Jobs run in a detached runner process, so they keep running when the launcher is
 - **Pre-launch checks** — environment (local Python/PyTorch/CUDA or Docker/Compose/image), configuration, and questions that need your decision: overwrite or use a new output sub-folder, reuse or rebuild an existing cache, Weights & Biases login (use an existing key, enter one for this run — verified with W&B and kept in memory only — switch to offline, or disable), building a missing Docker image, which GPU to use, and whether to queue or run in parallel when the GPU is busy.
 - **Jobs** — queued/running/paused/finished runs with phase, epoch, current progress bar and ETA, loss per epoch, parsed test metrics, errors with hints, the live console output, and actions to pause, stop, resume, view the config, reopen it in the editor, or open the results.
 - **Preprocessed data** — browse caches (`DataFileLists/*.csv`), play clips per 3-channel group, inspect array statistics and labels (pulse waveform with spectrum and heart rate, or vHRM HR/HRV/respiration channels). File lists written in Docker or another location are remapped when possible.
-- **Results** — experiment folders found under the results folders: summaries, CSV reports, plots, checkpoints (with *Evaluate…* to prefill an evaluation run), and prediction analysis from `*_outputs.pickle` (or vHRM `window_results.csv`): per-window heart rate, MAE/RMSE/MAPE/Pearson/SNR, scatter and Bland-Altman plots, per-recording HR over time, waveforms and spectra.
+- **Results** — experiment folders found under the results folders: summaries, CSV reports, plots, checkpoints (with *Evaluate…* to prefill an evaluation run), and prediction analysis from `*_outputs.pickle` (or vHRM `window_results.csv`). See *Prediction viewer* below.
+
+## Prediction viewer (Results → Predictions)
+
+Runs save compact per-frame signals; every plot is drawn on demand, so nothing is rendered for recordings you never open.
+
+- **Sources:** test outputs (`saved_test_outputs`), unsupervised outputs (`saved_outputs/<method>`), and the best-epoch validation predictions saved during training (`saved_valid_outputs`).
+- **Settings:** window and step for the sliding HR estimate (default 10 s / 2 s), and the ground truth: the measured vHRM HR when the file has it (newer runs), otherwise the HR of the PPG label. *Tracked HR* adds a causal Viterbi-tracked line that limits jumps to about 8 bpm/s.
+- **Overview:** MAE/RMSE/MAPE/Pearson/bias/% within ±5 bpm/SNR, scatter and Bland-Altman plots, and an MAE heatmap by movement × view (or participant). Click a cell to filter.
+- **Recordings table:** sortable, with MAE, max jump and % within ±5 bpm. *Worst*/*Best* jump to extremes; ↑/↓ step through rows.
+- **Recording detail**, on one time axis:
+  - HR over time: measured, label-derived, predicted and tracked. Click it to move the waveform window.
+  - Error per window.
+  - Pulse waveform: label vs prediction, optional unfiltered output, detected beats with the beat rate in view, and shaded spans where the PPG label is invalid.
+  - Spectrogram with the measured HR and its 2× harmonic.
+  - HRV and respiration channels.
+  - Every chart has a *PNG* button.
+- **Compare with…:** pick other runs that share recordings. You get an MAE matrix (recordings × runs), with their HR and waveforms overlaid on the selected recording.
+- **Validation probes:** for a training run, open the best-validation source. Probe recordings get an epoch selector and an MAE-by-epoch chart from `probe_history.npz`.
+
+What runs save is set in the run editor under **Visualization outputs** (`VISUALIZE.*`): the highlight PNGs, the best-epoch validation set, and the probe interval and selection. Docker users must rebuild the toolbox image before using configs that contain these keys.
 - **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, and extra results/preprocessed-data folders to browse.
 
 ## Early stopping

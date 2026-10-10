@@ -16,6 +16,8 @@ import pandas as pd
 import scipy.signal
 
 from evaluation.post_process import _calculate_SNR, _calculate_fft_hr, _calculate_peak_hr, _detrend
+from evaluation.prediction_store import ground_truth_files as _ground_truth_files
+from evaluation.prediction_store import parse_recording_id as _parse_recording_id
 
 GT_HR, GT_HRV, GT_BR, GT_PPG_VALID = range(4)
 
@@ -26,22 +28,6 @@ def _to_numpy(value):
 
 def _concatenate(chunks, chunk_ids):
     return np.concatenate([np.reshape(_to_numpy(chunks[chunk_id]), (-1,)) for chunk_id in chunk_ids])
-
-
-def _parse_recording_id(recording_id):
-    parts = recording_id.split("--")
-    if len(parts) == 5:
-        return dict(zip(("experiment", "participant", "segment_index", "movement", "view"), parts))
-    if len(parts) == 4:
-        return dict(zip(("participant", "segment_index", "movement", "view"), parts), experiment="")
-    return {"experiment": "", "participant": recording_id, "segment_index": "", "movement": "", "view": ""}
-
-
-def _ground_truth_files(file_list_path):
-    file_list = pd.read_csv(file_list_path)
-    if "gt_files" not in file_list:
-        raise ValueError(f"{file_list_path} has no gt_files column; re-run vHRM preprocessing.")
-    return {(row.recording_id, int(row.chunk)): row.gt_files for row in file_list.itertuples()}
 
 
 def _estimate_hr(signal, fs, method, is_diff):
