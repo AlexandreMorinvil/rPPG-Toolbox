@@ -18,12 +18,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from config import _C
 from neural_methods import wandb_logger
+from neural_methods.trainer.BaseTrainer import BaseTrainer
 from neural_methods.training_checkpoint import (
     TrainingPaused, atomic_save, resume_path, training_epochs,
 )
 
 
-class ToyTrainer:
+class ToyTrainer(BaseTrainer):
     def __init__(self, folder, source='', epochs=4):
         self.config = _C.clone()
         self.config.TRAIN.EPOCHS = epochs
@@ -58,11 +59,9 @@ class ToyTrainer:
             wandb_logger.log_train_step(loss.item(), None, epoch, 0, every=0)
             losses.append(loss.item())
         self.history['train_loss'].append(sum(losses) / len(losses))
-        valid = 0.1 + epoch
+        valid = self.validation_losses[epoch] if hasattr(self, 'validation_losses') else 0.1 + epoch
         self.history['valid_loss'].append(valid)
-        if self.min_valid_loss is None or valid < self.min_valid_loss:
-            self.min_valid_loss = valid
-            self.best_epoch = epoch
+        self.record_validation_loss(valid, epoch)
         torch.save(self.model.state_dict(), Path(self.model_dir) / f'toy_Epoch{epoch}.pth')
 
     def run(self):
@@ -78,6 +77,106 @@ def seed():
 
 
 class TrainingCheckpointTests(unittest.TestCase):
+    def early_trainer(self, folder, source='', save_resume=True):
+        trainer = ToyTrainer(folder, source, epochs=8)
+        trainer.config.TRAIN.EARLY_STOPPING.ENABLED = True
+        trainer.config.TRAIN.EARLY_STOPPING.PATIENCE = 2
+        trainer.config.TRAIN.EARLY_STOPPING.TOLERANCE = 0.1
+        trainer.config.TRAIN.SAVE_RESUME = save_resume
+        trainer.loaders['valid'] = trainer.loaders['train']
+        trainer.validation_losses = [1.0, 0.75, 0.7, 0.71, 0.1, 0.1, 0.1, 0.1]
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        return trainer
+
+    def test_early_stopping_commits_final_epoch_and_restores_best_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.early_trainer(directory)
+            trainer.run()
+            self.assertEqual(len(trainer.history['valid_loss']), 4)
+            self.assertEqual(trainer.best_epoch, 2)  # actual lowest loss, even below tolerance
+            path = resume_path(directory, 'toy')
+            checkpoint = torch.load(path, weights_only=False)
+            self.assertEqual(checkpoint['next_epoch'], 4)
+            self.assertEqual(checkpoint['early_stopping'],
+                             {'best_loss': 0.75, 'bad_epochs': 2, 'stopped': True})
+            metadata = json.loads(path.with_suffix('.json').read_text())
+            self.assertTrue(metadata['training_complete'])
+            self.assertTrue(metadata['early_stopped'])
+            resumed = self.early_trainer(Path(directory) / 'restored', str(path))
+            with patch.object(resumed, 'run_epoch') as run:
+                resumed.run()
+                run.assert_not_called()
+            self.assertEqual(resumed.history, trainer.history)
+            self.assertEqual(resumed.best_epoch, 2)
+            original = torch.load(Path(directory) / 'toy_Epoch2.pth', weights_only=True)
+            restored = torch.load(Path(resumed.model_dir) / 'toy_Epoch2.pth', weights_only=True)
+            self.assertTrue(all(torch.equal(original[key], restored[key]) for key in original))
+
+    def test_early_stopping_without_recovery_saving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.early_trainer(directory, save_resume=False)
+            trainer.run()
+            self.assertEqual(len(trainer.history['valid_loss']), 4)
+            self.assertFalse(resume_path(directory, 'toy').exists())
+
+    def test_early_stopping_pause_preserves_patience_and_continuity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            seed()
+            baseline = self.early_trainer(folder / 'baseline')
+            baseline.run()
+            seed()
+            partial = self.early_trainer(folder / 'partial')
+            control = folder / 'control.json'
+            with patch.dict(os.environ, {'RPPG_TRAINING_CONTROL': str(control)}):
+                iterator = training_epochs(partial, partial.loaders, partial.history)
+                for _ in range(3):
+                    partial.run_epoch(next(iterator))
+                control.write_text(json.dumps({'action': 'pause'}))
+                with self.assertRaises(TrainingPaused):
+                    next(iterator)
+            path = resume_path(partial.model_dir, 'toy')
+            checkpoint = torch.load(path, weights_only=False)
+            self.assertEqual(checkpoint['early_stopping']['bad_epochs'], 1)
+            seed()
+            resumed = self.early_trainer(folder / 'resumed', str(path))
+            resumed.run()
+            self.assertEqual(resumed.history, baseline.history)
+            self.assertTrue(resumed._early_stopping.stopped)
+            self.assertEqual(resumed.scheduler.state_dict(), baseline.scheduler.state_dict())
+            for key, value in baseline.model.state_dict().items():
+                self.assertTrue(torch.equal(value, resumed.model.state_dict()[key]))
+
+    def test_early_stopping_rejects_missing_validation_and_changed_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.early_trainer(directory)
+            trainer.loaders['valid'] = None
+            with self.assertRaisesRegex(ValueError, 'non-empty validation'):
+                trainer.run()
+            trainer.loaders['valid'] = trainer.loaders['train']
+            trainer.config.TEST.USE_LAST_EPOCH = True
+            with self.assertRaisesRegex(ValueError, 'TEST.USE_LAST_EPOCH'):
+                trainer.run()
+            trainer.config.TEST.USE_LAST_EPOCH = False
+            trainer.run()
+            resumed = self.early_trainer(directory, str(resume_path(directory, 'toy')))
+            resumed.config.TRAIN.EARLY_STOPPING.PATIENCE = 3
+            with self.assertRaisesRegex(ValueError, 'configuration/data differs'):
+                resumed.run()
+
+    def test_legacy_disabled_checkpoint_remains_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = ToyTrainer(directory)
+            trainer.run()
+            path = resume_path(directory, 'toy')
+            checkpoint = torch.load(path, weights_only=False)
+            checkpoint.pop('early_stopping')
+            self.assertNotIn('EARLY_STOPPING', checkpoint['signature']['train'])
+            torch.save(checkpoint, path)
+            resumed = ToyTrainer(directory, str(path))
+            resumed.run()
+            self.assertEqual(resumed.history, trainer.history)
+
     def test_pause_resume_matches_uninterrupted_training(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -182,7 +281,10 @@ class TrainingCheckpointTests(unittest.TestCase):
             cfg.MODEL.NAME = 'FactorizePhys'
             cfg.MODEL.MODEL_DIR = directory
             cfg.TRAIN.MODEL_FILE_NAME = 'tiny'
-            cfg.TRAIN.EPOCHS = 2
+            cfg.TRAIN.EPOCHS = 8
+            cfg.TRAIN.EARLY_STOPPING.ENABLED = True
+            cfg.TRAIN.EARLY_STOPPING.PATIENCE = 1
+            cfg.TRAIN.EARLY_STOPPING.TOLERANCE = 1e6
             cfg.TRAIN.PLOT_LOSSES_AND_LR = False
             cfg.TEST.USE_LAST_EPOCH = False
             cfg.NUM_OF_GPU_TRAIN = 0
@@ -217,6 +319,9 @@ class TrainingCheckpointTests(unittest.TestCase):
                 with patch.object(resumed, 'save_model', wraps=resumed.save_model) as save:
                     resumed.train(loaders)
                     self.assertEqual([call.args[0] for call in save.call_args_list], [1])
+                stopped = torch.load(source, weights_only=False)
+                self.assertEqual(stopped['next_epoch'], 2)
+                self.assertTrue(stopped['early_stopping']['stopped'])
                 cfg.TRAIN.PLOT_LOSSES_AND_LR = True
                 completed = module.FactorizePhysTrainer(cfg, loaders)
                 with patch.object(completed, 'save_model') as save, \

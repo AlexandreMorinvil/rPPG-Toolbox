@@ -9,6 +9,7 @@ import hashlib, json, os, re
 import yaml
 from yacs.config import CfgNode as CN
 from cache_naming import compact_name, flatten_settings, legacy_cache_matches, legacy_name, preprocessing_identity
+from neural_methods.early_stopping import validate_settings as validate_early_stopping
 
 _C = CN()
 
@@ -69,6 +70,10 @@ _C.TRAIN.OPTIMIZER.MOMENTUM = 0.9
 _C.TRAIN.MODEL_FILE_NAME = ''
 _C.TRAIN.PLOT_LOSSES_AND_LR = True
 _C.TRAIN.SAVE_RESUME = True
+_C.TRAIN.EARLY_STOPPING = CN()
+_C.TRAIN.EARLY_STOPPING.ENABLED = False
+_C.TRAIN.EARLY_STOPPING.PATIENCE = 10
+_C.TRAIN.EARLY_STOPPING.TOLERANCE = 0.0
 # DataLoader workers for train/valid/unsupervised batches (upstream default: 16).
 _C.TRAIN.DATA_LOADER_WORKERS = 16
 # Train.Data settings
@@ -538,6 +543,8 @@ def update_config(config, args):
     # update flag from config file
     _update_config_from_file(config, args.config_file)
     config.defrost()
+    if config.TOOLBOX_MODE == 'train_and_test':
+        validate_early_stopping(config.TRAIN.EARLY_STOPPING, config.TEST.USE_LAST_EPOCH)
     if config.MODEL.RESUME and config.TOOLBOX_MODE == 'train_and_test':
         # Resume must reuse the original clips/file lists, not rebuild a cache.
         for split in (config.TRAIN, config.VALID, config.TEST):

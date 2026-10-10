@@ -141,6 +141,7 @@ class BigSmallTrainer(BaseTrainer):
 
         # Epoch To Use For Test
         self.used_epoch = 0
+        self.best_epoch = 0
 
         # Indicies corresponding to used labels
         label_list = ['bp_wave', 'HR_bpm', 'systolic_bp', 'diastolic_bp', 'mean_bp', 
@@ -294,12 +295,8 @@ class BigSmallTrainer(BaseTrainer):
                 print('validation loss: ', valid_loss)
 
                 # Update used model
-                if self.model_to_use == 'best_epoch' and (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.used_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.used_epoch))
-                elif self.model_to_use == 'last_epoch':
-                    self.used_epoch = epoch
+                self.record_validation_loss(valid_loss, epoch)
+                self.used_epoch = self.best_epoch
             
             # VALIDATION (NOT ENABLED)
             else: 

@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -506,6 +507,15 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if not values.get("TEST.METRICS"):
             report.warn("No test metrics selected; the test phase will not report results.", "TEST.METRICS")
     if mode == "train_and_test":
+        if values.get("TRAIN.EARLY_STOPPING.ENABLED"):
+            if values["TEST.USE_LAST_EPOCH"]:
+                report.error("Early stopping requires 'Test the last epoch' to be off and a validation split.",
+                             "TEST.USE_LAST_EPOCH")
+            tolerance = values.get("TRAIN.EARLY_STOPPING.TOLERANCE")
+            if tolerance is not None and not math.isfinite(tolerance):
+                report.error("Improvement tolerance must be finite.", "TRAIN.EARLY_STOPPING.TOLERANCE")
+            report.note("Epochs is an upper limit. Early stopping preserves the lowest-loss checkpoint "
+                        "and its patience state across pause/resume.", "TRAIN.EARLY_STOPPING.ENABLED")
         if values.get("MODEL.RESUME"):
             host = _check_path(schema.FIELD_MAP["MODEL.RESUME"], values["MODEL.RESUME"], backend, report, env)
             if host is not None and not host.is_file():

@@ -392,6 +392,31 @@ are still used for inference and cannot fully resume old runs. Load only trusted
 checkpoints. See the [launcher recovery guide](launcher/README.md#pause-stop-and-resume-training)
 for workflow details, limits and Docker rebuild requirements.
 
+## Early stopping
+
+Early stopping is optional and disabled by default for all neural trainers. In the
+launcher, open **Training → Early stopping** and enable it. Turn off **Test the last
+epoch** and configure your validation split; testing then uses the checkpoint with
+the lowest validation loss, not the epoch that triggered stopping.
+
+- `TRAIN.EARLY_STOPPING.ENABLED`: enable validation-loss monitoring (default `false`).
+- `TRAIN.EARLY_STOPPING.PATIENCE`: consecutive epochs without a significant improvement
+  to tolerate (default `10`, minimum `1`).
+- `TRAIN.EARLY_STOPPING.TOLERANCE`: minimum absolute loss reduction needed to reset
+  patience (default `0.0`). Improvement must be **strictly greater** than this value.
+  Small reductions accumulate relative to the last significant improvement.
+
+For example, patience `5` and tolerance `0.001` stop after five consecutive validation
+epochs without a reduction greater than `0.001`. A tolerance of zero counts any strict
+reduction. The first finite loss establishes the baseline; equal, worsening, NaN and
+infinite losses consume patience. `TRAIN.EPOCHS` remains the maximum epoch budget.
+Set `TEST.USE_LAST_EPOCH: false` when using these settings in YAML.
+
+Early stopping also works with resume saving disabled. With `TRAIN.SAVE_RESUME: true`,
+the final epoch and patience state are committed before stopping. Pause/resume keeps
+the same patience history and requires unchanged early-stopping settings. Resuming an
+already early-stopped checkpoint skips training and retries plotting/testing only.
+
 # :zap: Inference With Unsupervised Methods 
 
 STEP 1: Download the UBFC-rPPG via [link](https://sites.google.com/view/ybenezeth/ubfcrppg)

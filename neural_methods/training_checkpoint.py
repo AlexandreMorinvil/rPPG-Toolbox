@@ -17,6 +17,7 @@ import torch
 import yaml
 
 from neural_methods import wandb_logger
+from neural_methods.early_stopping import EarlyStopping, validate_settings
 
 PAUSED_EXIT_CODE = 75
 FORMAT_VERSION = 1
@@ -56,6 +57,9 @@ def _signature(trainer, loaders):
     train = copy.deepcopy(cfg['TRAIN'])
     for key in ('PLOT_LOSSES_AND_LR', 'SAVE_RESUME'):
         train.pop(key, None)
+    # Preserve compatibility with checkpoints written before this optional feature.
+    if not train.get('EARLY_STOPPING', {}).get('ENABLED', False):
+        train.pop('EARLY_STOPPING', None)
     valid = copy.deepcopy(cfg['VALID'])
     for section in (train, valid):
         section['DATA'].pop('DO_PREPROCESS', None)
@@ -123,10 +127,32 @@ def training_epochs(trainer, loaders, histories):
     """
     enabled = trainer.config.TRAIN.SAVE_RESUME
     source = trainer.config.MODEL.RESUME
+    settings = trainer.config.TRAIN.EARLY_STOPPING
+    validate_settings(settings, trainer.config.TEST.USE_LAST_EPOCH)
+    stopping = EarlyStopping(settings.PATIENCE, settings.TOLERANCE) if settings.ENABLED else None
+    trainer._early_stopping = stopping
+    trainer._early_stopping_epoch = None
+    if stopping is not None and (loaders.get('valid') is None or len(loaders['valid']) == 0):
+        raise ValueError('Early stopping requires a non-empty validation loader.')
+
+    def stopped_after_epoch(epoch):
+        if stopping is None:
+            return False
+        if trainer._early_stopping_epoch != epoch:
+            raise RuntimeError('Early stopping requires record_validation_loss() after each epoch.')
+        if stopping.stopped:
+            print(f'[training] Early stopping at epoch {epoch}: validation loss did not improve '
+                  f'by more than {stopping.tolerance:g} for {stopping.patience} consecutive epochs. '
+                  f'Best epoch: {trainer.best_epoch}.', flush=True)
+        return stopping.stopped
+
     if source and not enabled:
         raise ValueError('MODEL.RESUME requires TRAIN.SAVE_RESUME: true.')
     if not enabled:
-        yield from range(trainer.max_epoch_num)
+        for epoch in range(trainer.max_epoch_num):
+            yield epoch
+            if stopped_after_epoch(epoch):
+                return
         return
 
     target = resume_path(trainer.model_dir, trainer.model_file_name)
@@ -153,6 +179,8 @@ def training_epochs(trainer, loaders, histories):
             scaler.load_state_dict(saved['scaler'])
         for name, value in saved['selection'].items():
             setattr(trainer, name, value)
+        if stopping is not None:
+            stopping.load_state_dict(saved['early_stopping'])
         for name, values in saved['histories'].items():
             if name in histories:
                 histories[name][:] = values
@@ -185,21 +213,30 @@ def training_epochs(trainer, loaders, histories):
             'scaler': scaler.state_dict() if scaler is not None else None,
             'selection': {key: getattr(trainer, key) for key in ('best_epoch', 'min_valid_loss', 'used_epoch')
                           if hasattr(trainer, key)},
+            'early_stopping': stopping.state_dict() if stopping is not None else None,
             'best_model': best_weights, 'best_saved_epoch': best_saved_epoch,
             'histories': histories, 'rng': _rng_state(loaders),
             'wandb_step': wandb_logger.training_step(),
         }
         atomic_save(payload, target, torch.save)
         metadata = {'format_version': FORMAT_VERSION, 'next_epoch': next_epoch,
-                    'epochs_total': trainer.max_epoch_num, 'training_complete': next_epoch == trainer.max_epoch_num}
+                    'epochs_total': trainer.max_epoch_num,
+                    'training_complete': next_epoch == trainer.max_epoch_num or bool(stopping and stopping.stopped),
+                    'early_stopped': bool(stopping and stopping.stopped)}
         atomic_save(metadata, target.with_suffix('.json'),
                     lambda value, handle: handle.write(json.dumps(value).encode('utf-8')))
         print(f'[training] Resume checkpoint saved (next epoch {next_epoch}): {target}', flush=True)
 
     # Also protect a crash/stop during the first epoch.
     commit(start_epoch)
+    if stopping is not None and stopping.stopped:
+        print('[training] Resume checkpoint already completed by early stopping; skipping training.', flush=True)
+        return
     _pause_if_requested(target)
     for epoch in range(start_epoch, trainer.max_epoch_num):
         yield epoch
+        stopped = stopped_after_epoch(epoch)
         commit(epoch + 1)
+        if stopped:
+            return
         _pause_if_requested(target)

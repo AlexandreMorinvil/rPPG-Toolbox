@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter, MaxNLocator
 import os
 import pickle
+import math
 
 from neural_methods import wandb_logger
 from neural_methods.training_checkpoint import training_epochs
@@ -37,6 +38,20 @@ class BaseTrainer:
             self.model.load_state_dict(torch.load(init_weights, map_location='cpu', weights_only=False))
             print(f'[training] Initialised model weights from {init_weights}', flush=True)
         return training_epochs(self, data_loader, histories)
+
+    def record_validation_loss(self, loss, epoch):
+        """Select the lowest finite loss and update shared early-stopping state."""
+        loss = float(loss)
+        if math.isfinite(loss) and (self.min_valid_loss is None or loss < self.min_valid_loss):
+            self.min_valid_loss = loss
+            self.best_epoch = epoch
+            print("Update best model! Best epoch: {}".format(epoch))
+        stopping = getattr(self, '_early_stopping', None)
+        if stopping is not None:
+            stopping.update(loss)
+            self._early_stopping_epoch = epoch
+            print(f'[training] Early stopping patience: {stopping.bad_epochs}/{stopping.patience} '
+                  f'(tolerance {stopping.tolerance:g})', flush=True)
 
     def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
         """Forward a per-batch metric to wandb honouring config.WANDB.* settings.

@@ -85,6 +85,16 @@ def _training_fields():
     s = "Training"
     when = {"modes": ["train_and_test"]}
     _add("TRAIN.EPOCHS", "int", 50, "Epochs", s, min=1, max=10000, when=when)
+    _add("TRAIN.EARLY_STOPPING.ENABLED", "bool", False, "Enable early stopping", s,
+         "Stop training when validation loss stops improving. Turn off 'Test the last epoch' and configure "
+         "a validation split; testing uses the best checkpoint.", when=when, group="Early stopping")
+    _add("TRAIN.EARLY_STOPPING.PATIENCE", "int", 10, "Patience (epochs)", s,
+         "Consecutive epochs without a significant improvement before stopping.",
+         min=1, max=10000, when=when, group="Early stopping")
+    _add("TRAIN.EARLY_STOPPING.TOLERANCE", "float", 0.0, "Improvement tolerance", s,
+         "Absolute loss reduction required to reset patience (strictly greater than this value). "
+         "Zero counts any reduction; small reductions accumulate relative to the last significant improvement.",
+         min=0.0, when=when, group="Early stopping")
     _add("TRAIN.BATCH_SIZE", "int", 4, "Batch size", s, "Also used for validation.", min=1, max=4096, when=when)
     _add("TRAIN.LR", "float", 1e-4, "Learning rate", s, "Peak learning rate (OneCycle for most trainers).",
          min=1e-8, max=1.0, when=when)
