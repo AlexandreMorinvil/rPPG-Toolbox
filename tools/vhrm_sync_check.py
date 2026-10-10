@@ -68,17 +68,20 @@ def _vhrm_crop_config(backend, large_box_coef):
 
 
 def _first_frame(video_path):
-    capture = cv2.VideoCapture(video_path)
+    """First frame as displayed (container rotation applied) and its size."""
+    capture, rotation = VHRMLoader._open_capture(video_path)
     success, frame = capture.read()
-    width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     capture.release()
     if not success:
         raise ValueError(f"Cannot read {video_path}")
-    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), width, height
+    frame = VHRMLoader._rotate_frame(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), rotation)
+    return frame, frame.shape[1], frame.shape[0]
 
 
 def mean_rgb_ffmpeg(video_path, box, width, height, fs, max_seconds, ffmpeg, use_cuda):
-    """Mean colour of the crop per output frame, decoded and resampled by FFmpeg."""
+    """Mean colour of the crop per output frame, decoded and resampled by FFmpeg.
+
+    FFmpeg auto-rotates, so box, width and height are in displayed-frame pixels."""
     filters = []
     if box is not None:
         x, y, w, h = (int(value) for value in box)
@@ -99,7 +102,11 @@ def mean_rgb_ffmpeg(video_path, box, width, height, fs, max_seconds, ffmpeg, use
 
 
 def mean_rgb_opencv(video_path, box, fs, max_seconds):
-    capture = cv2.VideoCapture(video_path)
+    """box is in displayed-frame pixels; the mean colour is taken from the stored frame."""
+    capture, rotation = VHRMLoader._open_capture(video_path)
+    if box is not None:
+        box = VHRMLoader._box_to_source(box, rotation, int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     source_fps = capture.get(cv2.CAP_PROP_FPS)
     values, source_index, next_time = [], 0, 0.0
     success, frame = capture.read()

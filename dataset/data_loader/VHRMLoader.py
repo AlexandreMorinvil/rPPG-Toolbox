@@ -52,6 +52,11 @@ MAX_GAP_PPG = 0.1
 MAX_GAP_SLOW = 3.0
 # Plausible R-R interval range for the R-peak based waveforms (seconds).
 RR_RANGE = (0.3, 2.0)
+# Clockwise display rotation (container metadata) -> cv2.rotate code. The vHRM cameras
+# record landscape frames tagged with a -90 degree display matrix (portrait).
+ROTATE_CODES = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+# Bump when the decoded frame geometry changes so cached clips are decoded again.
+FRAME_GEOMETRY = "display-rotation-v1"
 
 
 def slug(value):
@@ -522,6 +527,7 @@ class VHRMLoader(BaseLoader):
         mode, roi = self._crop_mode(recording, config_preprocess)
         settings = {
             "version": CACHE_VERSION,
+            "frame_geometry": FRAME_GEOMETRY,
             "fs": self.config_data.FS,
             "data_type": list(config_preprocess.DATA_TYPE),
             "data_aug": list(config_preprocess.DATA_AUG),
@@ -845,6 +851,41 @@ class VHRMLoader(BaseLoader):
 
     # ------------------------------------------------------------------ decoding
 
+    @staticmethod
+    def _open_capture(video_path):
+        """Open a video without auto-rotation; return it with its clockwise display rotation.
+
+        Whether OpenCV applies the container rotation depends on the build, so it is
+        disabled here and applied explicitly with _rotate_frame."""
+        capture = cv2.VideoCapture(video_path)
+        capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)
+        rotation = int(round(capture.get(cv2.CAP_PROP_ORIENTATION_META))) % 360
+        if rotation not in (0, *ROTATE_CODES):
+            capture.release()
+            raise ValueError(f"Unsupported display rotation {rotation} degrees: {video_path}")
+        return capture, rotation
+
+    @staticmethod
+    def _rotate_frame(frame, rotation):
+        return cv2.rotate(frame, ROTATE_CODES[rotation]) if rotation else frame
+
+    @staticmethod
+    def _box_to_source(box, rotation, source_width, source_height):
+        """Map a crop box [x, y, w, h] from the displayed frame to the stored (source) frame."""
+        display_width, display_height = ((source_height, source_width) if rotation in (90, 270)
+                                         else (source_width, source_height))
+        x, y, width, height = (int(value) for value in box)
+        left, top = max(x, 0), max(y, 0)
+        right, bottom = min(x + width, display_width), min(y + height, display_height)
+        width, height = right - left, bottom - top
+        if rotation == 90:
+            return [top, source_height - right, height, width]
+        if rotation == 180:
+            return [source_width - right, source_height - bottom, width, height]
+        if rotation == 270:
+            return [source_width - bottom, left, height, width]
+        return [left, top, width, height]
+
     def read_video(self, video_path, target_fps, config_preprocess, progress=None,
                    crop_mode=("face", None), crop_stats=None):
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
@@ -900,14 +941,20 @@ class VHRMLoader(BaseLoader):
 
     def _read_video_nvdec(self, video_path, target_fps, config_preprocess, progress=None,
                           crop_mode=("face", None), crop_stats=None):
-        capture = cv2.VideoCapture(video_path)
+        capture, rotation = self._open_capture(video_path)
         source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         success, first_frame = capture.read()
         capture.release()
         if not success or source_width <= 0 or source_height <= 0:
             raise ValueError("OpenCV could not read the reference frame for face detection")
-        first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+        # Face detection runs on the displayed (upright) frame; FFmpeg crops and resizes the
+        # stored frame (-noautorotate), and the rotation is applied to the decoded frames.
+        first_frame = self._rotate_frame(cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB), rotation)
+        transposed = rotation in (90, 270)
+        decoded_width, decoded_height = (
+            (config_preprocess.RESIZE.H, config_preprocess.RESIZE.W) if transposed
+            else (config_preprocess.RESIZE.W, config_preprocess.RESIZE.H))
 
         codec = self._probe_codec(video_path)
         decoder = {"hevc": "hevc_cuvid", "h264": "h264_cuvid"}.get(codec)
@@ -920,7 +967,7 @@ class VHRMLoader(BaseLoader):
         ]
         region = self._resolve_crop(first_frame, crop_mode, config_preprocess, None, crop_stats)
         if region is not None:
-            x, y, width, height = region
+            x, y, width, height = self._box_to_source(region, rotation, source_width, source_height)
             left, top, right, bottom = self._even_crop_bounds(
                 x, y, width, height, source_width, source_height)
             command.extend([
@@ -928,13 +975,13 @@ class VHRMLoader(BaseLoader):
                 f"{top}x{source_height - bottom}x{left}x{source_width - right}",
             ])
         command.extend([
-            "-resize", f"{config_preprocess.RESIZE.W}x{config_preprocess.RESIZE.H}",
+            "-resize", f"{decoded_width}x{decoded_height}",
             "-i", video_path,
             "-vf", f"fps={target_fps},hwdownload,format=nv12,format=rgb24",
             "-an", "-sn", "-dn", "-f", "rawvideo", "pipe:1",
         ])
 
-        frame_size = config_preprocess.RESIZE.W * config_preprocess.RESIZE.H * 3
+        frame_size = decoded_width * decoded_height * 3
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         frames = []
         try:
@@ -949,8 +996,8 @@ class VHRMLoader(BaseLoader):
                     frame_bytes += remainder
                 if len(frame_bytes) != frame_size:
                     raise RuntimeError("FFmpeg returned a partial video frame")
-                frames.append(np.frombuffer(frame_bytes, dtype=np.uint8).reshape(
-                    config_preprocess.RESIZE.H, config_preprocess.RESIZE.W, 3))
+                frames.append(self._rotate_frame(np.frombuffer(frame_bytes, dtype=np.uint8).reshape(
+                    decoded_height, decoded_width, 3), rotation))
                 if progress is not None:
                     progress.update(1)
             stderr = process.stderr.read().decode("utf-8", errors="replace").strip()
@@ -998,7 +1045,7 @@ class VHRMLoader(BaseLoader):
     def _read_video_opencv(self, video_path, target_fps, config_preprocess, progress=None,
                            crop_mode=("face", None), crop_stats=None):
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
-        capture = cv2.VideoCapture(video_path)
+        capture, rotation = self._open_capture(video_path)
         source_fps = capture.get(cv2.CAP_PROP_FPS)
         if not capture.isOpened() or source_fps <= 0 or target_fps <= 0:
             capture.release()
@@ -1017,7 +1064,7 @@ class VHRMLoader(BaseLoader):
         while success:
             frame_time = source_index / source_fps
             if frame_time + (0.5 / source_fps) >= next_sample_time:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = self._rotate_frame(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), rotation)
                 resolve_now = sampled_index == 0 or (
                     crop_mode[0] in ("face", "face_or_full")
                     and detection.DO_DYNAMIC_DETECTION
