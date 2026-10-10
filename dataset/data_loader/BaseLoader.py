@@ -7,6 +7,7 @@ Dataset already supported: UBFC-rPPG, PURE, SCAMPS, BP4D+, and UBFC-PHYS.
 """
 import csv
 import glob
+import json
 import os
 import re
 from math import ceil
@@ -30,6 +31,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from cache_naming import flatten_settings, preprocessing_identity, settings_path
 
 class BaseLoader(Dataset):
     """The base class for data loading based on pytorch Dataset.
@@ -563,6 +565,12 @@ class BaseLoader(Dataset):
         file_list_df = pd.DataFrame(file_list, columns=['input_files'])
         os.makedirs(os.path.dirname(self.file_list_path), exist_ok=True)
         file_list_df.to_csv(self.file_list_path)  # save file list to .csv
+
+        if self.config_data.DATASET != 'vHRM':
+            # Keep the complete settings readable without encoding them in filenames.
+            metadata = preprocessing_identity(flatten_settings(self.config_data, 'DATA'), 'DATA')
+            with settings_path(self.cached_path).open('w', encoding='utf-8') as handle:
+                json.dump(metadata, handle, indent=2, sort_keys=True)
 
     def build_file_list_retroactive(self, data_dirs, begin, end):
         """ If a file list has not already been generated for a specific data split build a list of files 

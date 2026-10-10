@@ -205,7 +205,8 @@ def label(input_path, fs=30.0, diff="auto"):
     series = data.reshape(-1)
     result["kind"] = "waveform"
     result["signal"] = signals.finite_list(series)
-    is_diff = diff in ("1", "true") or (diff == "auto" and "LabelTypeDiffNormalized" in str(path))
+    is_diff = diff in ("1", "true") or (diff == "auto" and
+              ("LabelTypeDiffNormalized" in str(path) or "_LDN_" in str(path)))
     wave = signals.pulse_waveform(series, fs, is_diff)
     freqs, power = signals.spectrum(wave, fs)
     mask = freqs <= 5

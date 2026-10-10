@@ -8,6 +8,7 @@
 import hashlib, json, os, re
 import yaml
 from yacs.config import CfgNode as CN
+from cache_naming import compact_name, flatten_settings, legacy_cache_matches, legacy_name, preprocessing_identity
 
 _C = CN()
 
@@ -467,7 +468,8 @@ def _vhrm_exp_data_name(data, generic_name):
     label setting inside the cache, so splits with different label settings share it.
     """
     if data.DATASET != 'vHRM':
-        return generic_name
+        prefix = 'UNSUPERVISED.DATA' if generic_name.endswith('_unsupervised') else 'DATA'
+        return compact_name(flatten_settings(data, prefix), prefix)
     preprocess = data.PREPROCESS
     crop = preprocess.CROP_FACE
     settings = {
@@ -505,6 +507,26 @@ def _vhrm_selection_suffix(data):
     return '_vHRM' + digest
 
 
+def _cache_directory(data, prefix, automatic):
+    """Prefer the compact cache, but reuse an existing legacy directory in place.
+
+    Do not rename clips: old CSVs, checkpoints and running jobs may reference them.
+    Explicit EXP_DATA_NAME values and existing vHRM names are never changed.
+    """
+    compact = os.path.join(data.CACHED_PATH, data.EXP_DATA_NAME)
+    if automatic and data.DATASET != 'vHRM' and not os.path.isdir(compact):
+        legacy = os.path.join(data.CACHED_PATH, legacy_name(flatten_settings(data, prefix), prefix))
+        if legacy_cache_matches(legacy, preprocessing_identity(flatten_settings(data, prefix), prefix)):
+            return legacy
+    return compact
+
+
+def _automatic_exp_data_name(data, prefix):
+    if data.DATASET == 'vHRM':
+        return _vhrm_exp_data_name(data, '')
+    return compact_name(flatten_settings(data, prefix), prefix)
+
+
 def update_config(config, args):
 
     # store default file list path for checking against later
@@ -524,25 +546,16 @@ def update_config(config, args):
         # A model trained in this run predicts the TRAIN label transform.
         config.TEST.DATA.VHRM.PREDICTION_IS_DIFF = config.TRAIN.DATA.PREPROCESS.LABEL_TYPE == 'DiffNormalized'
 
+    automatic_names = {split: not getattr(config, split).DATA.EXP_DATA_NAME
+                       for split in ('TRAIN', 'VALID', 'TEST', 'UNSUPERVISED')}
+
     # UPDATE TRAIN PATHS
     if config.TRAIN.DATA.FILE_LIST_PATH == default_TRAIN_FILE_LIST_PATH:
         config.TRAIN.DATA.FILE_LIST_PATH = os.path.join(config.TRAIN.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.TRAIN.DATA.EXP_DATA_NAME == '':
-        config.TRAIN.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.TRAIN.DATA, "_".join([config.TRAIN.DATA.DATASET, "SizeW{0}".format(
-            str(config.TRAIN.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.TRAIN.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
-            str(config.TRAIN.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.TRAIN.DATA.PREPROCESS.DATA_TYPE)),
-                                      "DataAug{0}".format("_".join(config.TRAIN.DATA.PREPROCESS.DATA_AUG)),
-                                      "LabelType{0}".format(config.TRAIN.DATA.PREPROCESS.LABEL_TYPE),
-                                      "Crop_face{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DO_CROP_FACE),
-                                      "Backend{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.BACKEND),
-                                      "Large_box{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.USE_LARGE_FACE_BOX),
-                                      "Large_size{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.LARGE_BOX_COEF),
-                                      "Dyamic_Det{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
-                                        "det_len{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
-                                        "Median_face_box{0}".format(config.TRAIN.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                              ]))
-    config.TRAIN.DATA.CACHED_PATH = os.path.join(config.TRAIN.DATA.CACHED_PATH, config.TRAIN.DATA.EXP_DATA_NAME)
+        config.TRAIN.DATA.EXP_DATA_NAME = _automatic_exp_data_name(config.TRAIN.DATA, 'TRAIN.DATA')
+    config.TRAIN.DATA.CACHED_PATH = _cache_directory(config.TRAIN.DATA, 'TRAIN.DATA', automatic_names['TRAIN'])
 
     name, ext = os.path.splitext(config.TRAIN.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
@@ -566,20 +579,8 @@ def update_config(config, args):
             config.VALID.DATA.FILE_LIST_PATH = os.path.join(config.VALID.DATA.CACHED_PATH, 'DataFileLists')
 
         if config.VALID.DATA.EXP_DATA_NAME == '':
-            config.VALID.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.VALID.DATA, "_".join([config.VALID.DATA.DATASET, "SizeW{0}".format(
-                str(config.VALID.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.VALID.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
-                str(config.VALID.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.VALID.DATA.PREPROCESS.DATA_TYPE)),
-                                        "DataAug{0}".format("_".join(config.VALID.DATA.PREPROCESS.DATA_AUG)),
-                                        "LabelType{0}".format(config.VALID.DATA.PREPROCESS.LABEL_TYPE),
-                                        "Crop_face{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DO_CROP_FACE),
-                                        "Backend{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.BACKEND),
-                                        "Large_box{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.USE_LARGE_FACE_BOX),
-                                        "Large_size{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.LARGE_BOX_COEF),
-                                        "Dyamic_Det{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
-                                          "det_len{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
-                                          "Median_face_box{0}".format(config.VALID.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                                ]))
-        config.VALID.DATA.CACHED_PATH = os.path.join(config.VALID.DATA.CACHED_PATH, config.VALID.DATA.EXP_DATA_NAME)
+            config.VALID.DATA.EXP_DATA_NAME = _automatic_exp_data_name(config.VALID.DATA, 'VALID.DATA')
+        config.VALID.DATA.CACHED_PATH = _cache_directory(config.VALID.DATA, 'VALID.DATA', automatic_names['VALID'])
 
         name, ext = os.path.splitext(config.VALID.DATA.FILE_LIST_PATH)
         if not ext:  # no file extension
@@ -604,20 +605,8 @@ def update_config(config, args):
         config.TEST.DATA.FILE_LIST_PATH = os.path.join(config.TEST.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.TEST.DATA.EXP_DATA_NAME == '':
-        config.TEST.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.TEST.DATA, "_".join([config.TEST.DATA.DATASET, "SizeW{0}".format(
-            str(config.TEST.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.TEST.DATA.PREPROCESS.RESIZE.H)), "ClipLength{0}".format(
-            str(config.TEST.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.TEST.DATA.PREPROCESS.DATA_TYPE)),
-                                      "DataAug{0}".format("_".join(config.TEST.DATA.PREPROCESS.DATA_AUG)),
-                                      "LabelType{0}".format(config.TEST.DATA.PREPROCESS.LABEL_TYPE),
-                                      "Crop_face{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DO_CROP_FACE),
-                                      "Backend{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.BACKEND),
-                                      "Large_box{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.USE_LARGE_FACE_BOX),
-                                      "Large_size{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.LARGE_BOX_COEF),
-                                      "Dyamic_Det{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
-                                        "det_len{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
-                                        "Median_face_box{0}".format(config.TEST.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX)
-                                              ]))
-    config.TEST.DATA.CACHED_PATH = os.path.join(config.TEST.DATA.CACHED_PATH, config.TEST.DATA.EXP_DATA_NAME)
+        config.TEST.DATA.EXP_DATA_NAME = _automatic_exp_data_name(config.TEST.DATA, 'TEST.DATA')
+    config.TEST.DATA.CACHED_PATH = _cache_directory(config.TEST.DATA, 'TEST.DATA', automatic_names['TEST'])
 
     name, ext = os.path.splitext(config.TEST.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
@@ -674,21 +663,8 @@ def update_config(config, args):
         config.UNSUPERVISED.DATA.FILE_LIST_PATH = os.path.join(config.UNSUPERVISED.DATA.CACHED_PATH, 'DataFileLists')
 
     if config.UNSUPERVISED.DATA.EXP_DATA_NAME == '':
-        config.UNSUPERVISED.DATA.EXP_DATA_NAME = _vhrm_exp_data_name(config.UNSUPERVISED.DATA, "_".join([config.UNSUPERVISED.DATA.DATASET, "SizeW{0}".format(
-            str(config.UNSUPERVISED.DATA.PREPROCESS.RESIZE.W)), "SizeH{0}".format(str(config.UNSUPERVISED.DATA.PREPROCESS.RESIZE.W)), "ClipLength{0}".format(
-            str(config.UNSUPERVISED.DATA.PREPROCESS.CHUNK_LENGTH)), "DataType{0}".format("_".join(config.UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE)),
-                                      "DataAug{0}".format("_".join(config.UNSUPERVISED.DATA.PREPROCESS.DATA_AUG)),
-                                      "LabelType{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.LABEL_TYPE),
-                                      "Crop_face{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DO_CROP_FACE),
-                                      "Backend{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.BACKEND),
-                                      "Large_box{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.USE_LARGE_FACE_BOX),
-                                      "Large_size{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.LARGE_BOX_COEF),
-                                      "Dyamic_Det{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION),
-                                        "det_len{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY),
-                                        "Median_face_box{0}".format(config.UNSUPERVISED.DATA.PREPROCESS.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX),
-                                        "unsupervised"
-                                              ]))
-    config.UNSUPERVISED.DATA.CACHED_PATH = os.path.join(config.UNSUPERVISED.DATA.CACHED_PATH, config.UNSUPERVISED.DATA.EXP_DATA_NAME)
+        config.UNSUPERVISED.DATA.EXP_DATA_NAME = _automatic_exp_data_name(config.UNSUPERVISED.DATA, 'UNSUPERVISED.DATA')
+    config.UNSUPERVISED.DATA.CACHED_PATH = _cache_directory(config.UNSUPERVISED.DATA, 'UNSUPERVISED.DATA', automatic_names['UNSUPERVISED'])
 
     name, ext = os.path.splitext(config.UNSUPERVISED.DATA.FILE_LIST_PATH)
     if not ext: # no file extension

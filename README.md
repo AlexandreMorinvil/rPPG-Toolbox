@@ -436,7 +436,13 @@ Here are some explanation of parameters:
   * `SELECT_TASKS`: If `True`, explicitly select tasks to load 
   * `DATA_PATH`: The input path of raw data
   * `CACHED_PATH`: The output path to preprocessed data. This path also houses a directory of .csv files containing data paths to files loaded by the dataloader. This filelist (found in default at CACHED_PATH/DataFileLists). These can be viewed for users to understand which files are used in each data split (train/val/test)
-  * `EXP_DATA_NAME` If it is "", the toolbox generates a EXP_DATA_NAME based on other defined parameters. Otherwise, it uses the user-defined EXP_DATA_NAME.  
+  * `EXP_DATA_NAME` If it is "", the toolbox generates a compact descriptive name with a settings hash. Otherwise, it uses the user-defined name unchanged.
+    * Example: `UBFC-rPPG_72x72_C128_DN_LDN_Y5F_F30_<12-character hash>`: dataset, width × height, frames per chunk, input transform, label transform, face detector, and sampling rate.
+    * Transform codes: `DN` = DiffNormalized, `STD` = Standardized, `RAW` = Raw. `FULL` means no chunking or no face crop (depending on its position); `_UNSUP` marks unsupervised processing.
+    * The SHA-256 digest distinguishes all preprocessing settings (including dataset-specific transforms and pseudo-label use) and sampling rate. Worker counts and split boundaries do not change the clip identity; split boundaries still appear in CSV names.
+    * Newly preprocessed generic caches include `preprocessing_settings.json` with the complete settings. The launcher and toolbox share the same naming implementation.
+    * Existing automatically named legacy cache folders are reused in place when no compact cache exists; files are not moved or renamed. New file lists and output folders use compact names. Legacy caches without metadata retain the old compatibility assumptions; recorded metadata mismatches prevent reuse. To force a fresh compact cache, choose a new cache root.
+    * vHRM already uses compact names and retains its existing video-cache and label-selection naming scheme.
   * `BEGIN" & "END`: The portion of the dataset used for training/validation/testing. For example, if the `DATASET` is PURE, `BEGIN` is 0.0 and `END` is 0.8 under the TRAIN, the first 80% PURE is used for training the network. If the `DATASET` is PURE, `BEGIN` is 0.8 and `END` is 1.0 under the VALID, the last 20% PURE is used as the validation set. It is worth noting that validation and training sets don't have overlapping subjects.  
   * `DATA_TYPE`: How to preprocess the video data
   * `DATA_AUG`: If present, the type of generative data augmentation applied to video data

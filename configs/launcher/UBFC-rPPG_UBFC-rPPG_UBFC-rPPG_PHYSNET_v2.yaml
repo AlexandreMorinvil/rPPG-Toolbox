@@ -1,0 +1,126 @@
+BASE: ['']
+TOOLBOX_MODE: train_and_test
+MODEL:
+  NAME: Physnet
+  DROP_RATE: 0.2
+  RESUME: ''
+  INIT_WEIGHTS: ''
+  PHYSNET:
+    FRAME_NUM: 128
+LOG:
+  PATH: C:/Run/UBFC_rPPG_physnet_v2
+DEVICE: cuda:0
+TRAIN:
+  EPOCHS: 20
+  BATCH_SIZE: 4
+  LR: 0.009
+  MODEL_FILE_NAME: UBFC-rPPG_UBFC-rPPG_UBFC-rPPG_physnet_v2
+  PLOT_LOSSES_AND_LR: true
+  DATA_LOADER_WORKERS: 4
+  SAVE_RESUME: true
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
+    CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
+    # Keep generated CSV paths below the Windows legacy path-length limit.
+    FILE_LIST_PATH: C:/UBFC_lists
+    # Training clips already exist; rebuild the missing file list from the cache.
+    DO_PREPROCESS: false
+    FS: 30
+    # Non-overlapping subject splits: 70% train, 15% validation, 15% test.
+    BEGIN: 0.0
+    END: 0.7
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [DiffNormalized]
+      LABEL_TYPE: DiffNormalized
+      DATA_AUG: [None]
+      USE_PSUEDO_PPG_LABEL: false
+      DO_CHUNK: true
+      CHUNK_LENGTH: 128
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+VALID:
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
+    CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
+    FILE_LIST_PATH: C:/UBFC_lists
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.7
+    END: 0.85
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [DiffNormalized]
+      LABEL_TYPE: DiffNormalized
+      DATA_AUG: [None]
+      USE_PSUEDO_PPG_LABEL: false
+      DO_CHUNK: true
+      CHUNK_LENGTH: 128
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+TEST:
+  DATA:
+    DATASET: UBFC-rPPG
+    DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
+    CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
+    FILE_LIST_PATH: C:/UBFC_lists
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.85
+    END: 1.0
+    DATA_FORMAT: NCDHW
+    PREPROCESS:
+      DATA_TYPE: [DiffNormalized]
+      LABEL_TYPE: DiffNormalized
+      DATA_AUG: [None]
+      USE_PSUEDO_PPG_LABEL: false
+      DO_CHUNK: true
+      CHUNK_LENGTH: 128
+      RESIZE:
+        W: 72
+        H: 72
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+  METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
+  USE_LAST_EPOCH: false
+INFERENCE:
+  BATCH_SIZE: 4
+  DATA_LOADER_WORKERS: 0
+  EVALUATION_METHOD: FFT
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: true
+    WINDOW_SIZE: 30
+WANDB:
+  ENABLED: false

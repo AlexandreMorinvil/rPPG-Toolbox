@@ -7,6 +7,7 @@ import os
 import re
 from pathlib import Path
 
+from cache_naming import compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
 from . import configs, paths, schema
 
 RAW_LAYOUTS = {
@@ -118,33 +119,13 @@ def _vhrm_shared_participants(values, first, second):
 
 
 def exp_data_name(values, prefix):
-    """Replicates config.py's automatic EXP_DATA_NAME."""
+    """Shared generic naming, with unchanged vHRM and explicit cache names."""
     name = values.get(prefix + ".EXP_DATA_NAME") or ""
     if name:
         return name
     if values.get(prefix + ".DATASET") == "vHRM":
         return vhrm_exp_data_name(values, prefix)
-    p = prefix + ".PREPROCESS"
-    size_h = values[p + ".RESIZE.H"] if prefix == "TEST.DATA" else values[p + ".RESIZE.W"]
-    parts = [
-        values.get(prefix + ".DATASET", ""),
-        f"SizeW{values[p + '.RESIZE.W']}",
-        f"SizeH{size_h}",
-        f"ClipLength{values[p + '.CHUNK_LENGTH']}",
-        "DataType" + "_".join(values[p + ".DATA_TYPE"]),
-        "DataAug" + "_".join(values[p + ".DATA_AUG"]),
-        f"LabelType{values[p + '.LABEL_TYPE']}",
-        f"Crop_face{values[p + '.CROP_FACE.DO_CROP_FACE']}",
-        f"Backend{values[p + '.CROP_FACE.BACKEND']}",
-        f"Large_box{values[p + '.CROP_FACE.USE_LARGE_FACE_BOX']}",
-        f"Large_size{values[p + '.CROP_FACE.LARGE_BOX_COEF']}",
-        f"Dyamic_Det{values[p + '.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION']}",
-        f"det_len{values[p + '.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY']}",
-        f"Median_face_box{values[p + '.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX']}",
-    ]
-    if prefix == "UNSUPERVISED.DATA":
-        parts.append("unsupervised")
-    return "_".join(str(part) for part in parts)
+    return compact_name(values, prefix)
 
 
 def _join(base, *parts):
@@ -170,7 +151,15 @@ def derived_locations(values, prefix):
         name += f"_{fold}" if fold else ""
         name += vhrm_selection_suffix(values, prefix)
         file_list = _join(file_list, name + ".csv")
-    return {"exp_data_name": exp, "cache_dir": _join(cached, exp), "file_list": file_list}
+    cache_dir = _join(cached, exp)
+    if not values.get(prefix + '.EXP_DATA_NAME') and values.get(prefix + '.DATASET') != 'vHRM':
+        legacy = _join(cached, legacy_name(values, prefix))
+        # Docker previews inspect the host mount but retain container paths.
+        compact_host = paths.container_to_host(cache_dir) or Path(cache_dir)
+        legacy_host = paths.container_to_host(legacy) or Path(legacy)
+        if not compact_host.is_dir() and legacy_cache_matches(legacy_host, preprocessing_identity(values, prefix)):
+            cache_dir = legacy
+    return {"exp_data_name": exp, "cache_dir": cache_dir, "file_list": file_list}
 
 
 def output_locations(values):
