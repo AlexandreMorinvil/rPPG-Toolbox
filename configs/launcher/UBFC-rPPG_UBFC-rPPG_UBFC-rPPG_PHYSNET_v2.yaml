@@ -22,9 +22,6 @@ TRAIN:
     DATASET: UBFC-rPPG
     DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
-    # Keep generated CSV paths below the Windows legacy path-length limit.
-    FILE_LIST_PATH: C:/UBFC_lists
-    # Training clips already exist; rebuild the missing file list from the cache.
     DO_PREPROCESS: false
     FS: 30
     # Non-overlapping subject splits: 70% train, 15% validation, 15% test.
@@ -56,7 +53,6 @@ VALID:
     DATASET: UBFC-rPPG
     DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
-    FILE_LIST_PATH: C:/UBFC_lists
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.7
@@ -87,7 +83,6 @@ TEST:
     DATASET: UBFC-rPPG
     DATA_PATH: C:/Datasets/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed/UBFC_rPPG_v2
-    FILE_LIST_PATH: C:/UBFC_lists
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.85
