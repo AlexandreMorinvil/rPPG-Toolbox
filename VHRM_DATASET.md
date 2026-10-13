@@ -30,7 +30,7 @@
 | `VIEWS` | `front`, `back-left`, `back-right`, or any combination. |
 | `CROP_MODE_BY_VIEW` | Image region per view. `face` keeps the last face box when detection fails. `face_or_full` uses the full frame when no face is found. `full` uses the whole frame. `roi:x,y,w,h` is a rectangle in pixels, or in fractions when every value is ≤ 1. |
 | `PPG_SOURCE` | Training waveform. `synthetic` uses `synthetic_ppg.csv`. `rpeak_sine` and `rpeak_gaussian` are rebuilt from the ECG R-peaks and shifted by `RPEAK_PULSE_DELAY_SEC`. |
-| `PPG_DELAY_SEC`, `LAG_TABLE_PATH` | Video/signal sync correction: one global value, plus optional per-segment values from `tools/vhrm_sync_check.py`. A positive value shifts the signals later. |
+| `PPG_DELAY_SEC`, `LAG_TABLE_PATH` | Video/signal sync correction: one global value, plus optional per-segment values from `tools/vhrm_sync_check.py`. A positive value shifts the signals later. These are added to the timing in `meta.json`: leave them at 0 / empty for participants whose offset was applied in the preprocessing tool (PPG alignment step, `video_signal_offset_sec` in `meta.json`), or the correction is counted twice. |
 | `HR_SOURCE` | Evaluation ground truth: `zephyr` (default), `polar` or `synthetic_hr`. |
 | `REQUIRE_PPG` | Drops clips without a valid training waveform. Use True for TRAIN/VALID and False for TEST (e.g. HH, which has no ECG). |
 
@@ -46,6 +46,8 @@ python tools/vhrm_inventory.py --data-path "F:/Datasets preparation"
 python tools/vhrm_inventory.py --config configs/train_configs/vHRM_vHRM_vHRM_PHYSNET_FRONT.yaml
 
 # 2. Check the video/label sync on calm front-view segments (writes a lag table).
+#    Preferred: measure and apply the offset in the preprocessing tool (PPG alignment step), which
+#    writes the corrected timing into each segment's meta.json; the cached labels follow it.
 python tools/vhrm_sync_check.py --data-path "F:/Datasets preparation" --experiments JZC baseline \
     --labels Resting Baseline_part1 --views front --output runs/sync/front.csv
 
@@ -70,7 +72,8 @@ Other example configs:
   preprocessing. Labels (`*_label<k>.npy`, the PPG) and ground truth (`*_gt<k>.npy`: HR, HRV, BR, PPG valid)
   are stored in `labels_<hash>/` folders, one per label setting.
 - **What triggers work:**
-  - Changing `PPG_SOURCE`, a delay or the lag table only rewrites labels.
+  - Changing `PPG_SOURCE`, a delay, the lag table or a segment's timing in `meta.json` (an offset applied
+    in the preprocessing tool) only rewrites labels.
   - Changing the image region, the size or the input transform decodes the videos again.
   - Only new or changed videos are decoded (`preprocessing_manifest.json`).
 - **File lists:** `DataFileLists/<cache>_<begin>_<end>_vHRM<hash>.csv`. The hash covers the selection and label

@@ -95,6 +95,19 @@ class SelectionTests(unittest.TestCase):
         participants = {r["participant"] for r in V.select_recordings(self.segments, node)}
         self.assertEqual(participants, {"jzc02", "jzc01-baseline"})
 
+    def test_labels_are_rebuilt_when_the_segment_timing_changes(self):
+        # Applying a video/signal offset in the preprocessing tool moves the anchor in meta.json.
+        loader = V.VHRMLoader.__new__(V.VHRMLoader)
+        loader.vhrm = _vhrm_node()
+        loader.lag_table = {}
+        loader.config_data = argparse.Namespace(FS=30)
+        preprocess = argparse.Namespace(LABEL_TYPE="DiffNormalized", DO_CHUNK=True, CHUNK_LENGTH=128)
+        recording = dict(V.select_recordings(self.segments, _vhrm_node())[0])
+        key = loader._label_key(recording, preprocess)
+        self.assertEqual(loader._label_key(dict(recording), preprocess), key)
+        recording["start_epoch"] -= 1.31
+        self.assertNotEqual(loader._label_key(recording, preprocess), key)
+
 
 class NamingAgreementTests(unittest.TestCase):
     """The launcher re-implements config.py's cache and file-list names."""

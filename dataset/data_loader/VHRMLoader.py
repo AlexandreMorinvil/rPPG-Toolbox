@@ -566,12 +566,16 @@ class VHRMLoader(BaseLoader):
         return settings
 
     def _label_key(self, recording, config_preprocess):
+        start_epoch = recording.get("start_epoch")
         settings = {
             "version": CACHE_VERSION,
             "fs": self.config_data.FS,
             "label_type": config_preprocess.LABEL_TYPE,
             "do_chunk": config_preprocess.DO_CHUNK,
             "chunk_length": config_preprocess.CHUNK_LENGTH,
+            # meta.json timing changes when a video/signal offset is applied in the
+            # preprocessing tool; the labels must then be resampled.
+            "start_epoch": round(float(start_epoch), 6) if start_epoch is not None else None,
             **self._label_settings(recording),
         }
         return _fingerprint(settings)[:10]
