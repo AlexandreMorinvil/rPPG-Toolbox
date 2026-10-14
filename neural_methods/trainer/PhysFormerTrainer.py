@@ -92,7 +92,8 @@ class PhysFormerTrainer(BaseTrainer):
         mean_valid_losses = []
         lrs = []
 
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(data_loader, train_loss=mean_training_losses,
+                          valid_loss=mean_valid_losses, lrs=lrs):
             print('')
             print(f"====Training Epoch: {epoch}====")
             loss_rPPG_avg = []
@@ -176,14 +177,7 @@ class PhysFormerTrainer(BaseTrainer):
                 valid_loss = self.valid(data_loader)
                 mean_valid_losses.append(valid_loss)
                 print(f'Validation RMSE:{valid_loss:.3f}, batch:{idx+1}')
-                if self.min_valid_loss is None:
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
-                elif (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
+                self.record_validation_loss(valid_loss, epoch)
         if not self.config.TEST.USE_LAST_EPOCH: 
             print("best trained epoch: {}, min_val_loss: {}".format(
                 self.best_epoch, self.min_valid_loss))
@@ -206,6 +200,7 @@ class PhysFormerTrainer(BaseTrainer):
                 gra_sharp = 2.0
                 rPPG, _, _, _ = self.model(data, gra_sharp)
                 rPPG = (rPPG-torch.mean(rPPG, axis=-1).view(-1, 1))/torch.std(rPPG).view(-1, 1)
+                self.capture_valid(val_batch, rPPG, label)
                 for _1, _2 in zip(rPPG, label):
                     hrs.append((self.get_hr(_1.cpu().detach().numpy(), sr=self.frame_rate_valid), self.get_hr(_2.cpu().detach().numpy(), sr=self.frame_rate_valid)))
             RMSE = np.mean([(i-j)**2 for i, j in hrs])**0.5

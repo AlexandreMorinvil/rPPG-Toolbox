@@ -50,8 +50,9 @@ def scan(max_depth=4):
                             and not e.name.startswith(".")]
             except OSError:
                 continue
-            if not lists_dir.is_dir():
-                stack.extend((child, depth + 1) for child in children)
+            # A shared cache root can have its own lists as well as nested
+            # dataset caches, each with a separate DataFileLists directory.
+            stack.extend((child, depth + 1) for child in children)
     return sets
 
 
@@ -205,7 +206,8 @@ def label(input_path, fs=30.0, diff="auto"):
     series = data.reshape(-1)
     result["kind"] = "waveform"
     result["signal"] = signals.finite_list(series)
-    is_diff = diff in ("1", "true") or (diff == "auto" and "LabelTypeDiffNormalized" in str(path))
+    is_diff = diff in ("1", "true") or (diff == "auto" and
+              ("LabelTypeDiffNormalized" in str(path) or "_LDN_" in str(path)))
     wave = signals.pulse_waveform(series, fs, is_diff)
     freqs, power = signals.spectrum(wave, fs)
     mask = freqs <= 5

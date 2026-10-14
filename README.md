@@ -400,6 +400,48 @@ Note 1: Preprocessing requires only once; thus turn it off on the yaml file when
 Note 2: The example yaml setting will allow 80% of SCAMPS to train and 20% of SCAMPS to valid. 
 After training, it will use the best model(with the least validation loss) to test on UBFC-rPPG.
 
+## Pausing and recovering training
+
+All neural trainers now save full resume checkpoints by default with
+`TRAIN.SAVE_RESUME: true`. In the launcher, use **Pause after epoch** to finish and save
+the current epoch/validation before releasing the GPU, or **Stop now** for immediate
+termination. Paused, stopped and failed jobs with a checkpoint offer **Resume training**.
+An unfinished epoch is replayed; completed epochs are not retrained. A crash during
+post-training plotting/testing can be recovered with **Retry plots / test**.
+
+For YAML-based recovery, set `MODEL.RESUME` to the saved `<prefix>_resume.pt` checkpoint
+and keep the original model, epoch budget, batch size and training/validation data.
+Preprocessing is automatically skipped. The file contains optimizer, scheduler, model
+selection, histories and RNG state as well as weights; existing epoch `.pth` weights
+are still used for inference and cannot fully resume old runs. Load only trusted
+checkpoints. See the [launcher recovery guide](launcher/README.md#pause-stop-and-resume-training)
+for workflow details, limits and Docker rebuild requirements.
+
+## Early stopping
+
+Early stopping is optional and disabled by default for all neural trainers. In the
+launcher, open **Training → Early stopping** and enable it. Turn off **Test the last
+epoch** and configure your validation split; testing then uses the checkpoint with
+the lowest validation loss, not the epoch that triggered stopping.
+
+- `TRAIN.EARLY_STOPPING.ENABLED`: enable validation-loss monitoring (default `false`).
+- `TRAIN.EARLY_STOPPING.PATIENCE`: consecutive epochs without a significant improvement
+  to tolerate (default `10`, minimum `1`).
+- `TRAIN.EARLY_STOPPING.TOLERANCE`: minimum absolute loss reduction needed to reset
+  patience (default `0.0`). Improvement must be **strictly greater** than this value.
+  Small reductions accumulate relative to the last significant improvement.
+
+For example, patience `5` and tolerance `0.001` stop after five consecutive validation
+epochs without a reduction greater than `0.001`. A tolerance of zero counts any strict
+reduction. The first finite loss establishes the baseline; equal, worsening, NaN and
+infinite losses consume patience. `TRAIN.EPOCHS` remains the maximum epoch budget.
+Set `TEST.USE_LAST_EPOCH: false` when using these settings in YAML.
+
+Early stopping also works with resume saving disabled. With `TRAIN.SAVE_RESUME: true`,
+the final epoch and patience state are committed before stopping. Pause/resume keeps
+the same patience history and requires unchanged early-stopping settings. Resuming an
+already early-stopped checkpoint skips training and retries plotting/testing only.
+
 # :zap: Inference With Unsupervised Methods 
 
 STEP 1: Download the UBFC-rPPG via [link](https://sites.google.com/view/ybenezeth/ubfcrppg)
@@ -444,7 +486,13 @@ Here are some explanation of parameters:
   * `SELECT_TASKS`: If `True`, explicitly select tasks to load 
   * `DATA_PATH`: The input path of raw data
   * `CACHED_PATH`: The output path to preprocessed data. This path also houses a directory of .csv files containing data paths to files loaded by the dataloader. This filelist (found in default at CACHED_PATH/DataFileLists). These can be viewed for users to understand which files are used in each data split (train/val/test)
-  * `EXP_DATA_NAME` If it is "", the toolbox generates a EXP_DATA_NAME based on other defined parameters. Otherwise, it uses the user-defined EXP_DATA_NAME.  
+  * `EXP_DATA_NAME` If it is "", the toolbox generates a compact descriptive name with a settings hash. Otherwise, it uses the user-defined name unchanged.
+    * Example: `UBFC-rPPG_72x72_C128_DN_LDN_Y5F_F30_<12-character hash>`: dataset, width × height, frames per chunk, input transform, label transform, face detector, and sampling rate.
+    * Transform codes: `DN` = DiffNormalized, `STD` = Standardized, `RAW` = Raw. `FULL` means no chunking or no face crop (depending on its position); `_UNSUP` marks unsupervised processing.
+    * The SHA-256 digest distinguishes all preprocessing settings (including dataset-specific transforms and pseudo-label use) and sampling rate. Worker counts and split boundaries do not change the clip identity; split boundaries still appear in CSV names.
+    * Newly preprocessed generic caches include `preprocessing_settings.json` with the complete settings. The launcher and toolbox share the same naming implementation.
+    * Existing automatically named legacy cache folders are reused in place when no compact cache exists; files are not moved or renamed. New file lists and output folders use compact names. Legacy caches without metadata retain the old compatibility assumptions; recorded metadata mismatches prevent reuse. To force a fresh compact cache, choose a new cache root.
+    * vHRM already uses compact names and retains its existing video-cache and label-selection naming scheme.
   * `BEGIN" & "END`: The portion of the dataset used for training/validation/testing. For example, if the `DATASET` is PURE, `BEGIN` is 0.0 and `END` is 0.8 under the TRAIN, the first 80% PURE is used for training the network. If the `DATASET` is PURE, `BEGIN` is 0.8 and `END` is 1.0 under the VALID, the last 20% PURE is used as the validation set. It is worth noting that validation and training sets don't have overlapping subjects.  
   * `DATA_TYPE`: How to preprocess the video data
   * `DATA_AUG`: If present, the type of generative data augmentation applied to video data

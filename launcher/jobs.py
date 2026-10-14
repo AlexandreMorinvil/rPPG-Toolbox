@@ -13,8 +13,8 @@ from pathlib import Path
 
 from . import configs, logparse, paths, preflight, probes, settings
 
-ACTIVE = ("queued", "starting", "running", "stopping")
-FINISHED = ("succeeded", "failed", "cancelled", "interrupted")
+ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
+FINISHED = ("succeeded", "failed", "cancelled", "interrupted", "paused")
 
 
 def _now():
@@ -51,7 +51,7 @@ class JobManager:
             except (OSError, ValueError):
                 continue
             self.jobs[job["id"]] = job
-            if job["status"] in ("starting", "running", "stopping"):
+            if job["status"] in ("starting", "running", "pausing", "stopping"):
                 self.parsers[job["id"]] = logparse.LogParser(job["mode"], job.get("epochs_total"))
                 self.offsets[job["id"]] = 0
             elif job["status"] == "queued" and job.get("needs_secret"):
@@ -77,13 +77,25 @@ class JobManager:
     @staticmethod
     def _public(job, full=False):
         data = dict(job)
+        checkpoint = job.get("resume_checkpoint_host")
+        available = bool(checkpoint and Path(checkpoint).is_file())
+        data["can_resume"] = job["status"] in ("paused", "failed", "cancelled", "interrupted") and available
+        data["can_pause"] = bool(job.get("training_recovery") and job["status"] == "running"
+                                 and job.get("progress", {}).get("phase") not in ("testing", "succeeded"))
+        if available:
+            try:
+                data["recovery"] = json.loads(Path(checkpoint).with_suffix(".json").read_text(encoding="utf-8"))
+                if data["recovery"].get("training_complete"):
+                    data["can_pause"] = False
+            except (OSError, ValueError):
+                pass
         if not full:
             data.pop("steps", None)
         return data
 
     def running_count(self):
         with self.lock:
-            return sum(1 for job in self.jobs.values() if job["status"] in ("starting", "running", "stopping"))
+            return sum(1 for job in self.jobs.values() if job["status"] in ("starting", "running", "pausing", "stopping"))
 
     def jobs_on_gpu(self, gpu):
         with self.lock:
@@ -128,6 +140,10 @@ class JobManager:
 
         steps = self._steps(job_id, backend, config_path, answers)
         outputs = result["validation"]["derived"].get("outputs", {})
+        recovery = mode == "train_and_test" and effective.get("TRAIN.SAVE_RESUME", True)
+        prefix = effective.get("TRAIN.MODEL_FILE_NAME", "") + "_resume.pt"
+        checkpoint_host = str(Path(outputs["model_dir_host"]) / prefix) if recovery and outputs.get("model_dir_host") else None
+        checkpoint = (outputs.get("model_dir", "").rstrip("/\\") + "/" + prefix) if recovery else None
         name = (payload.get("name") or "").strip() or self._default_name(effective)
         job = {
             "id": job_id,
@@ -159,8 +175,19 @@ class JobManager:
             "returncode": None,
             "error": None,
             "progress": {},
+            "training_recovery": recovery,
+            "resume_checkpoint_host": checkpoint_host,
+            "resume_checkpoint": checkpoint,
+            "resume_from": payload.get("resume_from"),
         }
         with self.lock:
+            if mode == "train_and_test" and any(
+                    j["status"] in ACTIVE and j.get("outputs", {}).get("model_dir_host") == outputs.get("model_dir_host")
+                    for j in self.jobs.values()):
+                self.secret_env.pop(job_id, None)
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise ValueError("Another active training job writes to this checkpoint folder. "
+                                 "Wait for it to finish or choose a different output folder.")
             self.jobs[job_id] = job
             self._save(job)
         return self._public(job)
@@ -188,8 +215,11 @@ class JobManager:
             steps.append({"title": "Build Docker image", "cwd": root, "argv": compose + ["build", "toolbox"]})
         container_config = f"{paths.JOB_CONFIG_MOUNT}/{job_id}.yaml"
         mount = f"{config_path.as_posix()}:{container_config}:ro"
+        control_dir = f"{paths.JOB_CONFIG_MOUNT}/{job_id}-control"
+        control_mount = f"{config_path.parent.as_posix()}:{control_dir}:ro"
         steps.append({"title": "Run main.py in Docker", "cwd": root, "argv": compose + [
             "run", "--rm", "-T", "--name", f"rppg-launcher-{job_id}", "-v", mount,
+            "-v", control_mount, "-e", f"RPPG_TRAINING_CONTROL={control_dir}/training-control.json",
             "toolbox", "--config_file", container_config,
         ]})
         return steps
@@ -223,13 +253,53 @@ class JobManager:
                 self.secret_env.pop(job_id, None)
                 self._save(job)
                 return self._public(job)
-            if job["status"] not in ("starting", "running"):
+            if job["status"] not in ("starting", "running", "pausing"):
                 raise ValueError(f"Job is {job['status']}")
             job["status"] = "stopping"
             job["cancel_requested"] = True
             self._save(job)
         threading.Thread(target=self._terminate, args=(dict(job),), daemon=True).start()
         return self._public(job)
+
+    def pause(self, job_id):
+        """Cooperative epoch-boundary pause, portable to Windows and Docker."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if not self._public(job)["can_pause"]:
+                raise ValueError("Only new, running training jobs with recovery enabled can pause, "
+                                 "before plotting/testing. Use Stop for immediate termination.")
+            target = self._dir(job_id) / "training-control.json"
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"action": "pause"}), encoding="utf-8")
+            os.replace(temporary, target)
+            job["status"] = "pausing"
+            job["pause_requested"] = True
+            self._save(job)
+            return self._public(job)
+
+    def resume_config(self, job_id):
+        """Prepare a new attempt; normal preflight still handles credentials/GPU checks."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if not self._public(job)["can_resume"]:
+                raise ValueError("No committed full-state checkpoint is available for this job. "
+                                 "Legacy epoch .pth files can only be evaluated, not fully resumed.")
+            if any(other["status"] in ACTIVE and other.get("outputs", {}).get("model_dir_host") ==
+                   job.get("outputs", {}).get("model_dir_host") for other in self.jobs.values()):
+                raise ValueError("Another active attempt is already using this checkpoint folder.")
+            data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
+            values = data["values"]
+            values["MODEL.RESUME"] = job["resume_checkpoint"]
+            values["TRAIN.SAVE_RESUME"] = True
+            for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
+                values[prefix + ".DO_PREPROCESS"] = False
+            data.update({"backend": job["backend"], "resume_from": job_id,
+                         "name": job["name"] + " (resumed)", "answers": {"outputs": "overwrite", "policy": "queue"}})
+            return data
 
     def _terminate(self, job):
         if job.get("container"):
@@ -259,7 +329,7 @@ class JobManager:
         with self.lock:
             jobs = list(self.jobs.values())
         for job in jobs:
-            if job["status"] in ("starting", "running", "stopping"):
+            if job["status"] in ("starting", "running", "pausing", "stopping"):
                 self._follow(job)
         self._start_queued()
 
@@ -268,12 +338,12 @@ class JobManager:
         with self.lock:
             queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"), key=lambda j: j["created"])
             for job in queued:
-                running = [j for j in self.jobs.values() if j["status"] in ("starting", "running", "stopping")]
+                running = [j for j in self.jobs.values() if j["status"] in ("starting", "running", "pausing", "stopping")]
                 if len(running) >= prefs["max_parallel_jobs"]:
                     return
                 if job["policy"] != "parallel" and job.get("gpu") is not None:
                     earlier = [j for j in self.jobs.values() if j is not job and j.get("gpu") == job["gpu"] and (
-                        j["status"] in ("starting", "running", "stopping") or
+                        j["status"] in ("starting", "running", "pausing", "stopping") or
                         (j["status"] == "queued" and j["created"] < job["created"] and j["policy"] != "parallel"))]
                     if earlier:
                         continue
@@ -288,6 +358,8 @@ class JobManager:
         env.update(job.get("env") or {})
         env.update(self.secret_env.pop(job["id"], {}))
         env.update({"PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg", "PYTHONIOENCODING": "utf-8"})
+        if job["backend"] == "local":
+            env["RPPG_TRAINING_CONTROL"] = str(job_dir / "training-control.json")
         kwargs = {"cwd": str(paths.TOOLBOX_ROOT), "env": env, "stdin": subprocess.DEVNULL,
                   "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
         if os.name == "nt":
@@ -335,6 +407,17 @@ class JobManager:
         self.offsets[job["id"]] = offset + len(data)
         parser = self.parsers.setdefault(job["id"], logparse.LogParser(job["mode"], job.get("epochs_total")))
         parser.feed(data.decode("utf-8", errors="replace"))
+        # config.py can rewrite weight prefixes for motion augmentation. Track
+        # the actual committed checkpoint rather than assuming the YAML prefix.
+        checkpoint = parser.state.get("resume_checkpoint")
+        if checkpoint and job.get("training_recovery"):
+            host, problem = paths.config_host_path(checkpoint, job["backend"])
+            folder = job.get("outputs", {}).get("model_dir_host")
+            if (not problem and host is not None and folder
+                    and host.parent == Path(folder).resolve()
+                    and host.name.endswith("_resume.pt")):
+                job["resume_checkpoint"] = checkpoint
+                job["resume_checkpoint_host"] = str(host)
         return True
 
     def _follow(self, job):
@@ -363,6 +446,9 @@ class JobManager:
                 job["finished"] = result.get("finished") or _now()
                 if job.get("cancel_requested"):
                     job["status"] = "cancelled"
+                elif code == 75 and job.get("pause_requested") and job.get("resume_checkpoint_host") and \
+                        Path(job["resume_checkpoint_host"]).is_file():
+                    job["status"] = "paused"
                 elif not finished:
                     job["status"] = "interrupted"
                     job["error"] = "The runner process ended without reporting an exit code."

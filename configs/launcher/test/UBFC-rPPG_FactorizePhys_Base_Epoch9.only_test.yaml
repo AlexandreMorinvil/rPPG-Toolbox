@@ -1,0 +1,21 @@
+# Recover testing after the original run completed training but failed in W&B
+# learning-rate replay. Keep the same model architecture and test split.
+BASE: ['UBFC-rPPG_FactorizePhys_Base.docker.yaml']
+TOOLBOX_MODE: only_test
+LOG:
+  PATH: C:/Run/UBFC-rPPG_FactorizePhys_Base_Epoch9_Test
+TRAIN:
+  DATA:
+    DO_PREPROCESS: false
+VALID:
+  DATA:
+    DO_PREPROCESS: false
+TEST:
+  DATA:
+    DO_PREPROCESS: false
+INFERENCE:
+  MODEL_PATH: C:/Run/UBFC-rPPG_FactorizePhys_Base/FactorizePhys_Base/PreTrainedModels/UBFC-rPPG_FactorizePhys_Base_Epoch9.pth
+WANDB:
+  RUN_NAME: FactorizePhys_Epoch9_Test
+  JOB_TYPE: test
+  NOTES: Evaluate the saved best epoch (9) after training completed and W&B learning-rate replay failed.

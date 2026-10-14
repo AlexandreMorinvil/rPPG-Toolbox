@@ -24,9 +24,18 @@
     <!-- ============================== Editor ============================== -->
     <section id="tab-editor" class="tab-panel active">
       <div class="toolbar">
-        <label>Start from
-          <select id="configSelect"></select>
-        </label>
+        <div class="config-start">
+          <span id="configStartLabel">Start from</span>
+          <input type="hidden" id="configSelect">
+          <details id="configPicker" class="config-picker">
+            <summary aria-labelledby="configStartLabel configSelectionLabel"><span id="configSelectionLabel">Choose a config…</span></summary>
+            <div class="config-picker-panel">
+              <input id="configSearch" type="search" placeholder="Search folders, files, models or datasets" aria-label="Search configs" autocomplete="off">
+              <div id="configCount" class="muted small" role="status"></div>
+              <div id="configTree" class="config-tree" aria-label="Config folders"></div>
+            </div>
+          </details>
+        </div>
         <button type="button" id="loadConfig">Load</button>
         <span class="sep"></span>
         <label>Blank
@@ -40,7 +49,9 @@
         </div>
         <button type="button" id="convertPaths" title="Translate data/cache/output paths for the selected backend">Convert paths</button>
         <span class="grow"></span>
-        <label class="check"><input type="checkbox" id="linkPreprocess" checked> Validation/test follow training preprocessing</label>
+        <label class="check"><input type="checkbox" id="linkPreprocess" disabled> Validation/test follow training preprocessing</label>
+        <button type="button" id="syncSettings" disabled>Sync settings…</button>
+        <span id="syncSummary" class="muted small" role="status"></span>
         <label class="check"><input type="checkbox" id="showAdvanced"> Advanced fields</label>
       </div>
       <div id="sourceInfo" class="source-info"></div>

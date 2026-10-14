@@ -1,5 +1,6 @@
 """HTTP server: static UI plus a token-protected JSON API."""
 
+import ipaddress
 import json
 import math
 import mimetypes
@@ -95,10 +96,13 @@ class LauncherServer(ThreadingHTTPServer):
     # On Windows SO_REUSEADDR lets a second launcher silently share the port.
     allow_reuse_address = os.name != "nt"
 
-    def __init__(self, address, allowed_hosts):
+    def __init__(self, address, allowed_hosts, allow_ip_hosts=False):
         super().__init__(address, Handler)
         self.token = secrets.token_urlsafe(24)
         self.allowed_hosts = allowed_hosts
+        # When True, any IP-literal Host header is accepted (LAN mode). DNS-rebinding attacks need a
+        # domain name in the Host header, so IP literals stay safe.
+        self.allow_ip_hosts = allow_ip_hosts
         self.manager = jobs.JobManager()
         self.env_tests = {}
         self.env_lock = threading.Lock()
@@ -128,7 +132,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(body, "application/json; charset=utf-8", status)
 
     def _host_ok(self):
-        return self.headers.get("Host", "") in self.server.allowed_hosts
+        host = self.headers.get("Host", "")
+        if host in self.server.allowed_hosts:
+            return True
+        if not self.server.allow_ip_hosts:
+            return False
+        name, sep, port = host.rpartition(":")
+        if not sep or port != str(self.server.server_port):
+            return False
+        try:
+            ipaddress.ip_address(name.strip("[]"))
+        except ValueError:
+            return False
+        return True
 
     def _token_ok(self, params):
         supplied = self.headers.get("X-Launcher-Token") or params.get("t", [""])[0]
@@ -203,6 +219,12 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("POST")
 
     # ---------------------------------------------------------------- API
+    @staticmethod
+    def _analysis_options(q):
+        """window (s), step (s), prediction-is-differenced flag and ground-truth source of a request."""
+        return (float(q("window", "10") or 0) or None, float(q("step", "0") or 0) or None,
+                q("diff", "auto"), q("truth", "measured"))
+
     def _api(self, method, route, params, body):
         q = lambda name, default=None: params.get(name, [default])[0]  # noqa: E731
         manager = self.server.manager
@@ -273,6 +295,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(manager.config_text(job_id).encode("utf-8"), "text/plain; charset=utf-8")
             elif method == "POST" and action == "cancel":
                 self._json({"job": manager.cancel(job_id)})
+            elif method == "POST" and action == "pause":
+                self._json({"job": manager.pause(job_id)})
+            elif method == "POST" and action == "resume":
+                self._json(manager.resume_config(job_id))
             elif method == "POST" and action == "remove":
                 manager.remove(job_id)
                 self._json({"ok": True})
@@ -334,11 +360,17 @@ class Handler(BaseHTTPRequestHandler):
             if path.lower().endswith(".csv"):
                 self._json(results.window_csv(path))
             else:
-                self._json(results.analyse(path, float(q("window", "10") or 0) or None,
-                                           float(q("step", "0") or 0) or None, q("diff", "auto")))
+                self._json(results.analyse(path, *self._analysis_options(q), track=q("track") == "1"))
         elif method == "GET" and route == "/api/results/recording":
-            self._json(results.recording(q("path", ""), q("id", ""), float(q("window", "10") or 0) or None,
-                                         float(q("step", "0") or 0) or None, q("diff", "auto")))
+            self._json(results.recording(q("path", ""), q("id", ""), *self._analysis_options(q),
+                                         track=q("track") == "1"))
+        elif method == "GET" and route == "/api/results/sources":
+            self._json({"sources": results.sources()})
+        elif method == "GET" and route == "/api/results/compare":
+            self._json(results.compare([p for p in q("paths", "").split("|") if p], q("id") or None,
+                                       *self._analysis_options(q), track=q("track") == "1"))
+        elif method == "GET" and route == "/api/results/history":
+            self._json(results.history(q("path", ""), q("id", ""), *self._analysis_options(q)))
         elif method == "GET" and route == "/api/cache":
             self._json({"sets": preprocessed.scan(), "roots": [str(r) for r in settings.cache_roots()]})
         elif method == "GET" and route == "/api/cache/samples":

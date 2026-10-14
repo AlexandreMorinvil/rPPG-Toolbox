@@ -10,6 +10,7 @@ from config import get_config
 from dataset import data_loader
 from neural_methods import trainer
 from neural_methods import wandb_logger
+from neural_methods.training_checkpoint import TrainingPaused, PAUSED_EXIT_CODE
 from unsupervised_methods.unsupervised_predictor import unsupervised_predict
 from torch.utils.data import DataLoader
 
@@ -189,6 +190,8 @@ if __name__ == "__main__":
             train_loader = data_loader.LADHLoader.LADHLoader
         elif config.TRAIN.DATA.DATASET == "SUMS":
             train_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TRAIN.DATA.DATASET == "vHRM":
+            train_loader = data_loader.VHRMLoader.VHRMLoader
         else:
             raise ValueError("Unsupported dataset! Currently supporting UBFC-rPPG, PURE, MMPD, \
                              SCAMPS, BP4D+ (Normal and BigSmall preprocessing), UBFC-PHYS and iBVP.")
@@ -204,7 +207,7 @@ if __name__ == "__main__":
                 device=config.DEVICE)
             data_loader_dict['train'] = DataLoader(
                 dataset=train_data_loader,
-                num_workers=16,
+                num_workers=config.TRAIN.DATA_LOADER_WORKERS,
                 batch_size=config.TRAIN.BATCH_SIZE,
                 shuffle=True,
                 worker_init_fn=seed_worker,
@@ -236,6 +239,8 @@ if __name__ == "__main__":
             valid_loader = data_loader.LADHLoader.LADHLoader
         elif config.VALID.DATA.DATASET == "SUMS":
             valid_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.VALID.DATA.DATASET == "vHRM":
+            valid_loader = data_loader.VHRMLoader.VHRMLoader
         elif config.VALID.DATA.DATASET is None and not config.TEST.USE_LAST_EPOCH:
             raise ValueError("Validation dataset not specified despite USE_LAST_EPOCH set to False!")
         else:
@@ -252,7 +257,7 @@ if __name__ == "__main__":
                 device=config.DEVICE)
             data_loader_dict["valid"] = DataLoader(
                 dataset=valid_data,
-                num_workers=16,
+                num_workers=config.TRAIN.DATA_LOADER_WORKERS,
                 batch_size=config.TRAIN.BATCH_SIZE,  # batch size for val is the same as train
                 shuffle=False,
                 worker_init_fn=seed_worker,
@@ -329,6 +334,8 @@ if __name__ == "__main__":
             unsupervised_loader = data_loader.UBFCPHYSLoader.UBFCPHYSLoader
         elif config.UNSUPERVISED.DATA.DATASET == "iBVP":
             unsupervised_loader = data_loader.iBVPLoader.iBVPLoader
+        elif config.UNSUPERVISED.DATA.DATASET == "vHRM":
+            unsupervised_loader = data_loader.VHRMLoader.VHRMLoader
         else:
             raise ValueError("Unsupported dataset! Currently supporting UBFC-rPPG, PURE, MMPD, \
                              SCAMPS, BP4D+, UBFC-PHYS and iBVP.")
@@ -340,7 +347,7 @@ if __name__ == "__main__":
             device=config.DEVICE)
         data_loader_dict["unsupervised"] = DataLoader(
             dataset=unsupervised_data,
-            num_workers=16,
+            num_workers=config.TRAIN.DATA_LOADER_WORKERS,
             batch_size=1,
             shuffle=False,
             worker_init_fn=seed_worker,
@@ -362,5 +369,7 @@ if __name__ == "__main__":
             unsupervised_method_inference(config, data_loader_dict)
         else:
             print("TOOLBOX_MODE only support train_and_test or only_test !", end='\n\n')
+    except TrainingPaused:
+        raise SystemExit(PAUSED_EXIT_CODE)
     finally:
         wandb_logger.finish()

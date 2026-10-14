@@ -96,7 +96,10 @@ class FactorizePhysTrainer(BaseTrainer):
         mean_valid_losses = []
         mean_appx_error = []
         lrs = []
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(
+            data_loader, train_loss=mean_training_losses, valid_loss=mean_valid_losses,
+            lrs=lrs, appx_error=mean_appx_error
+        ):
             print('')
             print(f"====Training Epoch: {epoch}====")
             running_loss = 0.0
@@ -169,14 +172,7 @@ class FactorizePhysTrainer(BaseTrainer):
                 valid_loss = self.valid(data_loader)
                 mean_valid_losses.append(valid_loss)
                 print('validation loss: ', valid_loss)
-                if self.min_valid_loss is None:
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
-                elif (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
+                self.record_validation_loss(valid_loss, epoch)
         if not self.config.TEST.USE_LAST_EPOCH: 
             print("best trained epoch: {}, min_val_loss: {}".format(
                 self.best_epoch, self.min_valid_loss))
@@ -218,6 +214,7 @@ class FactorizePhysTrainer(BaseTrainer):
                     pred_ppg, vox_embed = self.model(data)
                 pred_ppg = (pred_ppg - torch.mean(pred_ppg)) / torch.std(pred_ppg)  # normalize
                 loss = self.criterion(pred_ppg, labels)
+                self.capture_valid(valid_batch, pred_ppg, labels)
 
                 valid_loss.append(loss.item())
                 valid_step += 1

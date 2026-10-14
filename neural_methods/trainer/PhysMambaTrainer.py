@@ -59,7 +59,7 @@ class PhysMambaTrainer(BaseTrainer):
         if data_loader["train"] is None:
             raise ValueError("No data for train")
 
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(data_loader):
             print('')
             print(f"====Training Epoch: {epoch}====")
             self.model.train()
@@ -99,14 +99,7 @@ class PhysMambaTrainer(BaseTrainer):
             if not self.config.TEST.USE_LAST_EPOCH: 
                 valid_loss = self.valid(data_loader)
                 print('validation loss: ', valid_loss)
-                if self.min_valid_loss is None:
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
-                elif (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
+                self.record_validation_loss(valid_loss, epoch)
             torch.cuda.empty_cache()
         if not self.config.TEST.USE_LAST_EPOCH: 
             print("best trained epoch: {}, min_val_loss: {}".format(self.best_epoch, self.min_valid_loss)) 
@@ -132,6 +125,7 @@ class PhysMambaTrainer(BaseTrainer):
                 rPPG = (rPPG - torch.mean(rPPG)) / torch.std(rPPG)  # normalize
                 BVP_label = (BVP_label - torch.mean(BVP_label)) / torch.std(BVP_label)  # normalize
                 loss_ecg = self.criterion_Pearson(rPPG, BVP_label)
+                self.capture_valid(valid_batch, rPPG, BVP_label)
                 valid_loss.append(loss_ecg.item())
                 valid_step += 1
                 vbar.set_postfix(loss=loss_ecg.item())

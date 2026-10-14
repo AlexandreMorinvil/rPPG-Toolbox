@@ -21,6 +21,7 @@ UNSUPERVISED = re.compile(r"^===Unsupervised Method \( (\w+) \) Predicting ===")
 WANDB_URL = re.compile(r"(https://wandb\.ai/\S+/runs/\S+)")
 OUTPUT_PICKLE = re.compile(r"^Saving outputs to:\s*(.+)$")
 SAVED_MODEL = re.compile(r"^Saved Model Path:\s*(.+)$")
+RESUME_CHECKPOINT = re.compile(r"^\[training\] Resume checkpoint saved \(next epoch \d+\):\s*(.+)$")
 EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)|Killed)(?::\s*(.*))?$")
 
 HINTS = (
@@ -192,6 +193,10 @@ class LogParser:
             return
         if SAVED_MODEL.match(stripped):
             self.state["checkpoints"] += 1
+            return
+        match = RESUME_CHECKPOINT.match(stripped)
+        if match:
+            self.state["resume_checkpoint"] = match.group(1).strip()
             return
         match = WANDB_URL.search(stripped)
         if match:

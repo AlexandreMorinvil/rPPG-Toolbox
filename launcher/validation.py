@@ -1,10 +1,14 @@
 """Static validation of launcher configs (types, ranges, cross-field rules, paths)."""
 
 import csv
+import hashlib
+import json
+import math
 import os
 import re
 from pathlib import Path
 
+from cache_naming import compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
 from . import configs, paths, schema
 
 RAW_LAYOUTS = {
@@ -15,7 +19,7 @@ RAW_LAYOUTS = {
     "iBVP": ("*_*", "recording folders"),
     "LADH": ("p_*", "participant folders"),
     "SUMS": ("0602*", "recording folders"),
-    "vHRM": ("*/labelled_segments/*/meta.json", "labelled segments"),
+    "vHRM": ("*/*/labelled_segments/*/meta.json", "labelled segments (<experiment>/<participant>/...)"),
 }
 MOTION_AUG_DATASETS = {"UBFC-rPPG", "PURE", "iBVP", "PhysDrive"}
 MOTION_NAME_PATTERN = re.compile(r"^[^_]+(_[^_]+)?(_[^_]+)?_[^_]+$")
@@ -49,32 +53,80 @@ class Report:
         }
 
 
+def _vhrm_items(values, key):
+    return sorted(str(item).strip().lower() for item in (values.get(key) or []))
+
+
+def _short_hash(settings, length):
+    return hashlib.sha1(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()[:length]
+
+
+def vhrm_exp_data_name(values, prefix):
+    """Replicates config.py's _vhrm_exp_data_name (compact vHRM cache-folder name)."""
+    p = prefix + ".PREPROCESS"
+    crop = p + ".CROP_FACE"
+    settings = {
+        "fs": values[prefix + ".FS"], "data_type": list(values[p + ".DATA_TYPE"]),
+        "data_aug": list(values[p + ".DATA_AUG"]), "do_chunk": values[p + ".DO_CHUNK"],
+        "chunk": values[p + ".CHUNK_LENGTH"], "resize": [values[p + ".RESIZE.W"], values[p + ".RESIZE.H"]],
+        "crop": values[crop + ".DO_CROP_FACE"], "backend": values[crop + ".BACKEND"],
+        "large_box": values[crop + ".USE_LARGE_FACE_BOX"], "coef": float(values[crop + ".LARGE_BOX_COEF"]),
+        "dynamic": values[crop + ".DETECTION.DO_DYNAMIC_DETECTION"],
+        "frequency": values[crop + ".DETECTION.DYNAMIC_DETECTION_FREQUENCY"],
+        "median": values[crop + ".DETECTION.USE_MEDIAN_FACE_BOX"],
+        "dtype": values[prefix + ".VHRM.CACHE_DTYPE"],
+        "crop_modes": _vhrm_items(values, prefix + ".VHRM.CROP_MODE_BY_VIEW"),
+    }
+    return "vHRM_{0}x{1}_C{2}_{3}_FS{4}_{5}".format(
+        values[p + ".RESIZE.W"], values[p + ".RESIZE.H"], values[p + ".CHUNK_LENGTH"],
+        "+".join(values[p + ".DATA_TYPE"]), values[prefix + ".FS"], _short_hash(settings, 8))
+
+
+def vhrm_selection_suffix(values, prefix):
+    """Replicates config.py's _vhrm_selection_suffix (file-list name of a vHRM split)."""
+    if values.get(prefix + ".DATASET") != "vHRM":
+        return ""
+    v = prefix + ".VHRM."
+    selection = {key: _vhrm_items(values, v + key) for key in (
+        "EXPERIMENTS", "PARTICIPANTS", "EXCLUDE_PARTICIPANTS", "LABELS", "EXCLUDE_LABELS", "LABEL_ALIASES",
+        "VIEWS", "VIEW_ALIASES")}
+    selection.update({
+        "ppg_source": values[v + "PPG_SOURCE"], "rpeak_delay": float(values[v + "RPEAK_PULSE_DELAY_SEC"]),
+        "rpeak_sigma": float(values[v + "RPEAK_GAUSSIAN_SIGMA"]), "delay": float(values[v + "PPG_DELAY_SEC"]),
+        "lag_table": values[v + "LAG_TABLE_PATH"], "hr_source": values[v + "HR_SOURCE"],
+        "require_ppg": values[v + "REQUIRE_PPG"],
+    })
+    return "_vHRM" + _short_hash(selection, 8)
+
+
+def _vhrm_shared_participants(values, first, second):
+    """Participants two vHRM splits can both select, judged from their include/exclude lists.
+
+    Empty when neither split lists participants explicitly (undecidable here; run
+    tools/vhrm_inventory.py --config to check the actual selection).
+    """
+    def lists(prefix):
+        return (set(_vhrm_items(values, prefix + ".VHRM.PARTICIPANTS")),
+                set(_vhrm_items(values, prefix + ".VHRM.EXCLUDE_PARTICIPANTS")))
+
+    (first_in, first_out), (second_in, second_out) = lists(first), lists(second)
+    if first_in and second_in:
+        return (first_in - first_out) & (second_in - second_out)
+    if second_in:
+        return second_in - second_out - first_out
+    if first_in:
+        return first_in - first_out - second_out
+    return set()
+
+
 def exp_data_name(values, prefix):
-    """Replicates config.py's automatic EXP_DATA_NAME."""
+    """Shared generic naming, with unchanged vHRM and explicit cache names."""
     name = values.get(prefix + ".EXP_DATA_NAME") or ""
     if name:
         return name
-    p = prefix + ".PREPROCESS"
-    size_h = values[p + ".RESIZE.H"] if prefix == "TEST.DATA" else values[p + ".RESIZE.W"]
-    parts = [
-        values.get(prefix + ".DATASET", ""),
-        f"SizeW{values[p + '.RESIZE.W']}",
-        f"SizeH{size_h}",
-        f"ClipLength{values[p + '.CHUNK_LENGTH']}",
-        "DataType" + "_".join(values[p + ".DATA_TYPE"]),
-        "DataAug" + "_".join(values[p + ".DATA_AUG"]),
-        f"LabelType{values[p + '.LABEL_TYPE']}",
-        f"Crop_face{values[p + '.CROP_FACE.DO_CROP_FACE']}",
-        f"Backend{values[p + '.CROP_FACE.BACKEND']}",
-        f"Large_box{values[p + '.CROP_FACE.USE_LARGE_FACE_BOX']}",
-        f"Large_size{values[p + '.CROP_FACE.LARGE_BOX_COEF']}",
-        f"Dyamic_Det{values[p + '.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION']}",
-        f"det_len{values[p + '.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY']}",
-        f"Median_face_box{values[p + '.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX']}",
-    ]
-    if prefix == "UNSUPERVISED.DATA":
-        parts.append("unsupervised")
-    return "_".join(str(part) for part in parts)
+    if values.get(prefix + ".DATASET") == "vHRM":
+        return vhrm_exp_data_name(values, prefix)
+    return compact_name(values, prefix)
 
 
 def _join(base, *parts):
@@ -92,13 +144,23 @@ def derived_locations(values, prefix):
         fold = values.get(prefix + ".FOLD.FOLD_NAME") or ""
         name = f"{exp}_{float(values[prefix + '.BEGIN'])}_{float(values[prefix + '.END'])}"
         name += f"_{fold}" if fold else ""
+        name += vhrm_selection_suffix(values, prefix)
         file_list = _join(cached, "DataFileLists", name + ".csv")
     elif not os.path.splitext(file_list)[1]:
         fold = values.get(prefix + ".FOLD.FOLD_NAME") or ""
         name = f"{exp}_{float(values[prefix + '.BEGIN'])}_{float(values[prefix + '.END'])}"
         name += f"_{fold}" if fold else ""
+        name += vhrm_selection_suffix(values, prefix)
         file_list = _join(file_list, name + ".csv")
-    return {"exp_data_name": exp, "cache_dir": _join(cached, exp), "file_list": file_list}
+    cache_dir = _join(cached, exp)
+    if not values.get(prefix + '.EXP_DATA_NAME') and values.get(prefix + '.DATASET') != 'vHRM':
+        legacy = _join(cached, legacy_name(values, prefix))
+        # Docker previews inspect the host mount but retain container paths.
+        compact_host = paths.container_to_host(cache_dir) or Path(cache_dir)
+        legacy_host = paths.container_to_host(legacy) or Path(legacy)
+        if not compact_host.is_dir() and legacy_cache_matches(legacy_host, preprocessing_identity(values, prefix)):
+            cache_dir = legacy
+    return {"exp_data_name": exp, "cache_dir": cache_dir, "file_list": file_list}
 
 
 def output_locations(values):
@@ -211,8 +273,6 @@ def _check_split(values, prefix, backend, report, env, active_fields):
         report.warn(f"{section}: {dataset} ignores motion augmentation.", p + ".DATA_AUG")
 
     if dataset == "vHRM":
-        if values[p + ".LABEL_TYPE"] != "Raw":
-            report.error("vHRM heart-rate labels require label transform Raw.", p + ".LABEL_TYPE")
         if values[p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX"]:
             report.error("vHRM streaming preprocessing does not support the median face box.",
                          p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX")
@@ -321,7 +381,7 @@ def _check_model(values, report, splits):
         elif types and types != profile["types"] and not profile.get("strict_types"):
             report.warn(f"{model} is usually trained with input transform {profile['types']} ({section}).",
                         p + ".DATA_TYPE")
-        if dataset != "vHRM" and values[p + ".LABEL_TYPE"] and values[p + ".LABEL_TYPE"] != profile["label"]:
+        if values[p + ".LABEL_TYPE"] and values[p + ".LABEL_TYPE"] != profile["label"]:
             report.warn(f"{model} is usually trained with label transform {profile['label']} ({section}).",
                         p + ".LABEL_TYPE")
         chunk = values[p + ".CHUNK_LENGTH"]
@@ -373,9 +433,6 @@ def _check_split_consistency(values, report, splits):
                                  ("PREPROCESS.RESIZE.H", "error"), ("PREPROCESS.RESIZE.W", "error"),
                                  ("PREPROCESS.LABEL_TYPE", "warn"), ("FS", "warn"),
                                  ("PREPROCESS.CHUNK_LENGTH", "error" if profile.get("frame_num") else "warn")):
-            if other == "TEST.DATA" and values.get("TEST.DATA.DATASET") == "vHRM" and suffix in (
-                    "PREPROCESS.LABEL_TYPE", "PREPROCESS.CHUNK_LENGTH"):
-                continue
             if values[f"{train}.{suffix}"] != values[f"{other}.{suffix}"]:
                 label = schema.FIELD_MAP[f"{other}.{suffix}"]["label"]
                 message = f"{section}: {label} differs from training data ({values[f'{other}.{suffix}']} vs " \
@@ -383,16 +440,25 @@ def _check_split_consistency(values, report, splits):
                 (report.error if severity == "error" else report.warn)(message, f"{other}.{suffix}")
         same_source = values[f"{train}.DATASET"] == values[f"{other}.DATASET"] and \
             values[f"{train}.DATA_PATH"] == values[f"{other}.DATA_PATH"]
-        if same_source:
+        if same_source and values[f"{train}.DATASET"] == "vHRM":
+            # vHRM splits are chosen by participant lists rather than BEGIN/END fractions.
+            shared = _vhrm_shared_participants(values, train, other)
+            if shared:
+                report.warn(f"{section} shares participants with the training data (data leakage): "
+                            f"{', '.join(sorted(shared))}.", f"{other}.VHRM.PARTICIPANTS")
+        elif same_source:
             if max(values[f"{train}.BEGIN"], values[f"{other}.BEGIN"]) < min(values[f"{train}.END"],
                                                                            values[f"{other}.END"]):
                 report.warn(f"{section} overlaps the training split of the same dataset (data leakage).",
                             f"{other}.BEGIN")
     if values.get("TEST.DATA.DATASET") == "vHRM":
-        diff = values["TRAIN.DATA.PREPROCESS.LABEL_TYPE"] == "DiffNormalized"
-        if diff != values["TEST.DATA.VHRM.PREDICTION_IS_DIFF"]:
-            report.warn("vHRM: 'model predicts a differenced signal' should match the training label transform "
-                        f"({values['TRAIN.DATA.PREPROCESS.LABEL_TYPE']}).", "TEST.DATA.VHRM.PREDICTION_IS_DIFF")
+        report.note("vHRM: test HR is derived from the training label transform "
+                    f"({values['TRAIN.DATA.PREPROCESS.LABEL_TYPE']}) and scored against the measured HR.")
+        if "VALID.DATA" in splits and values.get("VALID.DATA.DATASET") == "vHRM":
+            shared = _vhrm_shared_participants(values, "VALID.DATA", "TEST.DATA")
+            if shared:
+                report.warn(f"Test data shares participants with the validation data: {', '.join(sorted(shared))}.",
+                            "TEST.DATA.VHRM.PARTICIPANTS")
 
 
 def validate(values, extras=None, backend="docker", type_errors=None, platform=None):
@@ -441,6 +507,23 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if not values.get("TEST.METRICS"):
             report.warn("No test metrics selected; the test phase will not report results.", "TEST.METRICS")
     if mode == "train_and_test":
+        if values.get("TRAIN.EARLY_STOPPING.ENABLED"):
+            if values["TEST.USE_LAST_EPOCH"]:
+                report.error("Early stopping requires 'Test the last epoch' to be off and a validation split.",
+                             "TEST.USE_LAST_EPOCH")
+            tolerance = values.get("TRAIN.EARLY_STOPPING.TOLERANCE")
+            if tolerance is not None and not math.isfinite(tolerance):
+                report.error("Improvement tolerance must be finite.", "TRAIN.EARLY_STOPPING.TOLERANCE")
+            report.note("Epochs is an upper limit. Early stopping preserves the lowest-loss checkpoint "
+                        "and its patience state across pause/resume.", "TRAIN.EARLY_STOPPING.ENABLED")
+        if values.get("MODEL.RESUME"):
+            host = _check_path(schema.FIELD_MAP["MODEL.RESUME"], values["MODEL.RESUME"], backend, report, env)
+            if host is not None and not host.is_file():
+                report.error(f"Resume checkpoint not found: {host}", "MODEL.RESUME")
+            if not values.get("TRAIN.SAVE_RESUME", True):
+                report.error("Resuming requires resumable training state to be enabled.", "TRAIN.SAVE_RESUME")
+            report.note("Resume restores the last completed epoch. Unfinished epochs are replayed; "
+                        "only load trusted local checkpoints.", "MODEL.RESUME")
         aug_used = any(values[f"{s}.PREPROCESS.DATA_AUG"] != ["None"] for s in ("TRAIN.DATA", "VALID.DATA",
                                                                                   "TEST.DATA"))
         if aug_used and not MOTION_NAME_PATTERN.match(values["TRAIN.MODEL_FILE_NAME"] or ""):
@@ -452,8 +535,6 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if host is not None and not host.is_file():
             report.error(f"Checkpoint not found: {host}", "INFERENCE.MODEL_PATH")
         report.note("Make sure preprocessing (size, transforms, clip length) matches how the checkpoint was trained.")
-    if mode == "unsupervised_method" and values.get("UNSUPERVISED.DATA.DATASET") == "vHRM":
-        report.error("vHRM is only supported for neural evaluation.", "UNSUPERVISED.DATA.DATASET")
     if mode == "unsupervised_method":
         types = values["UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE"]
         if not types:

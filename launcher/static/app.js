@@ -11,6 +11,7 @@ const S = {
   extras: {},
   backend: 'docker',
   source: null,
+  syncLinks: {},
   validation: null,
   validateTimer: null,
   validateSeq: 0,
@@ -20,7 +21,7 @@ const S = {
   selectedJob: null,
   log: null,
   cache: { sets: [], samples: [], sample: null, frames: null, meta: null, frame: 0, timer: null, label: null },
-  results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae' },
+  results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae', compare: [] },
 };
 
 // ------------------------------------------------------------------ helpers
@@ -192,20 +193,80 @@ const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
 // ------------------------------------------------------------------ editor
 function populateConfigSelect() {
-  const select = $('configSelect');
-  const groups = { docker: 'Docker configs (docker/configs)', local: 'Local configs (configs)' };
-  select.replaceChildren();
-  for (const [group, label] of Object.entries(groups)) {
-    const og = h('optgroup', { label });
-    for (const item of S.boot.configs.filter(c => c.group === group)) {
-      const rel = item.path.replace(/^(docker\/)?configs\//, '');
-      const detail = item.error ? 'unreadable' : [item.mode, item.model, item.train || item.test].filter(Boolean).join(' · ');
-      og.append(h('option', { value: item.path }, `${rel}  —  ${detail}`));
-    }
-    if (og.children.length) select.append(og);
-  }
+  const selected = $('configSelect').value;
+  const first = S.boot.configs.find(c => c.group === 'docker') || S.boot.configs[0];
+  selectConfig(S.boot.configs.some(c => c.path === selected) ? selected : first?.path || '');
   const blank = $('blankMode');
   blank.replaceChildren(...S.boot.schema.modes.map(m => h('option', { value: m }, S.boot.schema.mode_labels[m])));
+}
+
+function selectConfig(path) {
+  $('configSelect').value = path;
+  $('configSelectionLabel').textContent = path || 'No configs available';
+  $('configPicker').querySelector('summary').title = path || 'No configs available';
+  $('loadConfig').disabled = !path;
+  renderConfigTree();
+}
+
+function renderConfigTree() {
+  const tree = $('configTree');
+  const expanded = new Set([...tree.querySelectorAll('details[open]')].map(el => el.dataset.path));
+  const query = $('configSearch').value.trim().toLowerCase();
+  const selected = $('configSelect').value;
+  const groups = { docker: ['Docker configs', 'docker/configs'], local: ['Local configs', 'configs'] };
+  let count = 0;
+  tree.replaceChildren();
+
+  const renderFolder = (folder, name, path, root = false) => {
+    const details = h('details', {
+      class: 'config-folder', 'data-path': path,
+      open: !!query || root || expanded.has(path) || selected.startsWith(path + '/'),
+    });
+    details.append(h('summary', {}, h('span', { class: 'config-folder-name' }, name),
+      root ? h('span', { class: 'config-root-path' }, path + '/') : null,
+      h('span', { class: 'config-folder-count' }, folder.count)));
+    const children = h('div', { class: 'config-folder-children' });
+    for (const [childName, child] of [...folder.folders].sort(([a], [b]) => a.localeCompare(b))) {
+      children.append(renderFolder(child, childName, path + '/' + childName));
+    }
+    for (const item of folder.files.sort((a, b) => a.path.localeCompare(b.path))) {
+      const detail = item.error ? 'Unreadable config' : [S.boot.schema.mode_labels[item.mode] || item.mode,
+        item.model, item.train, item.test !== item.train ? item.test : ''].filter(Boolean).join(' · ');
+      children.append(h('button', {
+        type: 'button', class: 'config-file' + (item.path === selected ? ' selected' : ''),
+        'aria-pressed': String(item.path === selected), title: item.path + (item.error ? '\n' + item.error : ''),
+        onclick: () => {
+          selectConfig(item.path);
+          $('configPicker').open = false;
+          $('configPicker').querySelector('summary').focus();
+        },
+      }, h('span', { class: 'config-file-name' }, item.path.split('/').pop()),
+      h('span', { class: 'config-file-detail' + (item.error ? ' bad' : '') }, detail)));
+    }
+    details.append(children);
+    return details;
+  };
+
+  for (const [group, [label, rootPath]] of Object.entries(groups)) {
+    const root = { folders: new Map(), files: [], count: 0 };
+    for (const item of S.boot.configs.filter(c => c.group === group)) {
+      const searchable = [item.path, label, item.mode, S.boot.schema.mode_labels[item.mode], item.model, item.train, item.test].join(' ').toLowerCase();
+      if (query && !query.split(/\s+/).every(term => searchable.includes(term))) continue;
+      count++;
+      const parts = item.path.slice(rootPath.length + 1).split('/');
+      let folder = root;
+      folder.count++;
+      for (const part of parts.slice(0, -1)) {
+        if (!folder.folders.has(part)) folder.folders.set(part, { folders: new Map(), files: [], count: 0 });
+        folder = folder.folders.get(part);
+        folder.count++;
+      }
+      folder.files.push(item);
+    }
+    if (root.count) tree.append(renderFolder(root, label, rootPath, true));
+  }
+  $('configCount').textContent = query ? `${count} of ${S.boot.configs.length} configs match` : `${count} configs · Expand a folder to browse`;
+  if (!count) tree.append(h('p', { class: 'muted pad' }, query ? 'No matching configs. Try another search.' : 'No config files found.'));
 }
 
 async function loadConfig(path) {
@@ -240,6 +301,8 @@ async function newBlank(mode) {
 
 function setValues(values, extras, backend, label, source) {
   S.values = values;
+  S.syncLinks = {};
+  S.resumeFrom = null;
   S.extras = extras || {};
   S.source = source;
   setBackend(backend, false);
@@ -264,6 +327,7 @@ function fieldVisible(field) {
 }
 
 function renderForm() {
+  updateSyncControls();
   const form = $('configForm');
   const scroll = form.scrollTop;
   form.replaceChildren();
@@ -382,6 +446,15 @@ function renderField(field) {
       control.append(input);
       if (field.type === 'path') control.append(h('button', { type: 'button', class: 'small', onclick: () => browseDialog(field) }, 'Browse…'));
   }
+  if (syncEnabled() && S.syncLinks[key]) {
+    control.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
+    wrap.classList.add('linked-field');
+    wrap.append(h('div', { class: 'sync-link' }, h('span', {}, 'Linked to training'),
+      h('button', { type: 'button', class: 'small', 'aria-label': `Unlink ${field.label} from training`, onclick: () => {
+        delete S.syncLinks[key];
+        renderForm();
+      } }, 'Unlink')));
+  }
   wrap.append(control);
   if (field.help) wrap.append(h('div', { class: 'help' }, field.help));
   wrap.append(h('div', { class: 'path-info' }), h('div', { class: 'msgs' }));
@@ -395,28 +468,170 @@ function renderFieldInPlace(key) {
 }
 
 function onFieldChange(key, value) {
+  if (syncEnabled() && S.syncLinks[key]) return;
   const previous = S.values[key];
   S.values[key] = value;
-  const linked = linkPreprocessing(key, value);
+  if (key === 'TOOLBOX_MODE' && value !== 'train_and_test') S.syncLinks = {};
+  const linked = syncTrainingValue(key, value);
   if (key === 'MODEL.NAME' && value && value !== previous) offerModelDefaults(value);
   if (isStructural(key) || linked.length) renderForm();
   scheduleValidate();
 }
 
-function linkPreprocessing(key, value) {
-  if (!$('linkPreprocess').checked || !key.startsWith('TRAIN.DATA.')) return [];
-  const suffix = key.slice('TRAIN.DATA.'.length);
-  if (!(suffix.startsWith('PREPROCESS.') || suffix === 'DATA_FORMAT' || suffix === 'FS')) return [];
+// Links are editor-session state only; saved values remain ordinary YAML.
+const SYNC_TARGETS = ['VALID.DATA', 'TEST.DATA'];
+const SYNC_VHRM_FIELDS = new Set([
+  'VHRM.VIEWS', 'VHRM.CROP_MODE_BY_VIEW', 'VHRM.PPG_SOURCE',
+  'VHRM.RPEAK_PULSE_DELAY_SEC', 'VHRM.RPEAK_GAUSSIAN_SIGMA',
+  'VHRM.HR_SOURCE', 'VHRM.VIDEO_DECODER', 'VHRM.CACHE_DTYPE',
+  'VHRM.SHOW_VIDEO_PROGRESS',
+]);
+
+function syncEnabled() {
+  return S.values?.TOOLBOX_MODE === 'train_and_test';
+}
+
+function preprocessingSyncField(field) {
+  const suffix = field.key.slice('TRAIN.DATA.'.length);
+  return suffix.startsWith('PREPROCESS.') || suffix === 'DATA_FORMAT' || suffix === 'FS';
+}
+
+function syncFields() {
+  return S.fields.filter(field => {
+    if (!field.key.startsWith('TRAIN.DATA.')) return false;
+    const suffix = field.key.slice('TRAIN.DATA.'.length);
+    return (preprocessingSyncField(field) || suffix === 'DO_PREPROCESS' || SYNC_VHRM_FIELDS.has(suffix))
+      && SYNC_TARGETS.every(split => S.fieldMap[`${split}.${suffix}`]?.type === field.type);
+  });
+}
+
+function syncTarget(source, split) {
+  return split + source.slice('TRAIN.DATA'.length);
+}
+
+function cloneSyncValue(value) {
+  if (Array.isArray(value)) return value.map(cloneSyncValue);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cloneSyncValue(v)]));
+  return value;
+}
+
+function syncTrainingValue(key, value) {
+  if (!syncEnabled()) return [];
   const changed = [];
-  for (const split of ['VALID.DATA', 'TEST.DATA']) {
-    const target = `${split}.${suffix}`;
-    if (!(target in S.fieldMap)) continue;
-    if (split === 'TEST.DATA' && S.values['TEST.DATA.DATASET'] === 'vHRM' &&
-        ['PREPROCESS.LABEL_TYPE', 'PREPROCESS.CHUNK_LENGTH', 'PREPROCESS.DO_CHUNK', 'PREPROCESS.NUM_WORKERS'].includes(suffix)) continue;
-    S.values[target] = Array.isArray(value) ? [...value] : value;
+  for (const [target, source] of Object.entries(S.syncLinks)) {
+    if (source !== key) continue;
+    S.values[target] = cloneSyncValue(value);
     changed.push(target);
   }
   return changed;
+}
+
+function updateSyncControls() {
+  const preset = syncFields().filter(preprocessingSyncField);
+  const total = preset.length * SYNC_TARGETS.length;
+  const linked = preset.reduce((n, field) => n + SYNC_TARGETS.filter(split => S.syncLinks[syncTarget(field.key, split)] === field.key).length, 0);
+  const count = Object.keys(S.syncLinks).length;
+  const box = $('linkPreprocess');
+  box.disabled = !syncEnabled();
+  box.checked = total > 0 && linked === total;
+  box.indeterminate = count > 0 && !box.checked;
+  $('syncSettings').disabled = !syncEnabled();
+  $('syncSummary').textContent = count ? `${count} linked field${count === 1 ? '' : 's'}` : '';
+}
+
+function applySyncLinks(links) {
+  if (!syncEnabled()) return;
+  S.syncLinks = { ...links };
+  for (const [target, source] of Object.entries(S.syncLinks)) S.values[target] = cloneSyncValue(S.values[source]);
+  closeModal();
+  renderForm();
+  scheduleValidate(0);
+}
+
+function previewSyncLinks(links, back) {
+  if (!syncEnabled()) return;
+  const changes = Object.entries(links).filter(([target, source]) => !sameValue(S.values[target], S.values[source]));
+  const removed = Object.keys(S.syncLinks).filter(target => !links[target]).length;
+  const body = h('div', { class: 'form-stack' },
+    h('p', {}, `${Object.keys(links).length} destination fields will follow training. ${changes.length} current values will change. ${removed} links will be removed (values retained).`),
+    h('p', { class: 'muted small' }, 'Check frame rates and transforms carefully when datasets differ. Links also apply to currently hidden validation/model-specific fields.'));
+  if (changes.length) {
+    const table = h('table', { class: 'grid-table sync-preview' }, h('thead', {}, h('tr', {},
+      h('th', {}, 'Destination'), h('th', {}, 'Current value'), h('th', {}, 'Training value'))));
+    const rows = h('tbody');
+    for (const [target, source] of changes) rows.append(h('tr', {}, h('td', {}, target),
+      h('td', {}, JSON.stringify(S.values[target]) ?? 'unset'), h('td', {}, JSON.stringify(S.values[source]) ?? 'unset')));
+    table.append(rows);
+    body.append(h('div', { class: 'table-wrap' }, table));
+  }
+  openModal('Preview training sync', body, [
+    { label: back ? 'Back' : 'Cancel', onClick: back || closeModal },
+    { label: 'Apply links', primary: true, onClick: () => applySyncLinks(links) },
+  ], true);
+}
+
+function togglePreprocessingSync() {
+  if (!syncEnabled()) return;
+  const enable = $('linkPreprocess').checked;
+  const links = { ...S.syncLinks };
+  for (const field of syncFields().filter(preprocessingSyncField)) {
+    for (const split of SYNC_TARGETS) {
+      const target = syncTarget(field.key, split);
+      if (enable) links[target] = field.key;
+      else delete links[target];
+    }
+  }
+  // The checkbox reflects committed links, even if the preview is cancelled.
+  updateSyncControls();
+  if (enable) previewSyncLinks(links);
+  else applySyncLinks(links);
+}
+
+function syncSettingsDialog(draft = { ...S.syncLinks }) {
+  if (!syncEnabled()) return;
+  const body = h('div', { class: 'form-stack' },
+    h('p', {}, 'Choose which training parameters validation and test should follow. Linked destination fields are read-only until unlinked.'),
+    h('p', { class: 'muted small' }, 'Dataset identities, participants, split boundaries, paths and cache/output identifiers are excluded. Links reset when you load/create a config or leave training mode; they are not saved in YAML.'),
+    S.values['TEST.USE_LAST_EPOCH'] ? h('p', { class: 'msg info' }, 'Validation is currently unused. Its selected links still update its stored values.') : null);
+  const fields = syncFields();
+  const table = h('table', { class: 'grid-table sync-options' }, h('thead', {}, h('tr', {},
+    h('th', {}, 'Training parameter'), h('th', {}, 'Validation'), h('th', {}, 'Test'))));
+  const rows = h('tbody');
+  const boxes = [];
+  for (const field of fields) {
+    const suffix = field.key.slice('TRAIN.DATA.'.length);
+    const row = h('tr', {}, h('td', {}, h('strong', {}, field.label), h('div', { class: 'muted small' }, suffix),
+      !isActive(field, S.values) ? h('div', { class: 'muted small' }, 'Not used by the current training model/dataset') : null));
+    for (const split of SYNC_TARGETS) {
+      const target = syncTarget(field.key, split);
+      const box = h('input', { type: 'checkbox', 'aria-label': `${field.label}: sync ${split === 'VALID.DATA' ? 'validation' : 'test'} with training`, onchange: () => {
+        if (box.checked) draft[target] = field.key;
+        else delete draft[target];
+      } });
+      box.checked = draft[target] === field.key;
+      boxes.push({ box, field, target });
+      row.append(h('td', {}, box));
+    }
+    rows.append(row);
+  }
+  const selectPreset = () => {
+    for (const { box, field, target } of boxes) {
+      if (!preprocessingSyncField(field)) continue;
+      box.checked = true;
+      draft[target] = field.key;
+    }
+  };
+  body.append(h('div', { class: 'row' },
+    h('button', { type: 'button', class: 'small', onclick: selectPreset }, 'Select preprocessing settings'),
+    h('button', { type: 'button', class: 'small', onclick: () => {
+      for (const { box, target } of boxes) { box.checked = false; delete draft[target]; }
+    } }, 'Clear all')));
+  table.append(rows);
+  body.append(h('div', { class: 'sync-options-wrap' }, table));
+  openModal('Sync settings', body, [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Preview changes', primary: true, onClick: () => previewSyncLinks(draft, () => syncSettingsDialog(draft)) },
+  ], true);
 }
 
 function offerModelDefaults(model) {
@@ -434,18 +649,18 @@ function applyModelDefaults(model) {
   const p = S.boot.schema.model_profiles[model];
   const v = S.values;
   for (const split of activeSplits(v)) {
-    const vhrm = v[split + '.DATASET'] === 'vHRM';
     v[split + '.DATA_FORMAT'] = p.format;
     v[split + '.PREPROCESS.DATA_TYPE'] = [...p.types];
     v[split + '.PREPROCESS.RESIZE.H'] = p.size;
     v[split + '.PREPROCESS.RESIZE.W'] = p.size;
-    if (!vhrm) v[split + '.PREPROCESS.LABEL_TYPE'] = p.label;
-    if (!vhrm || p.frame_num) v[split + '.PREPROCESS.CHUNK_LENGTH'] = p.chunk;
-    if (vhrm) v[split + '.VHRM.PREDICTION_IS_DIFF'] = p.label === 'DiffNormalized';
+    v[split + '.PREPROCESS.LABEL_TYPE'] = p.label;
+    v[split + '.PREPROCESS.CHUNK_LENGTH'] = p.chunk;
+    if (split === 'TEST.DATA' && v[split + '.DATASET'] === 'vHRM') v[split + '.VHRM.PREDICTION_IS_DIFF'] = p.label === 'DiffNormalized';
   }
   if (p.frame_num) v[p.frame_num] = p.chunk;
   if (p.channels_key) v[p.channels_key] = 3 * p.types.length;
   if (model === 'FactorizePhys' && p.size === 72) v['MODEL.FactorizePhys.TYPE'] = 'Standard';
+  for (const source of new Set(Object.values(S.syncLinks))) syncTrainingValue(source, v[source]);
   renderForm();
   scheduleValidate(0);
   toast(`Applied ${model} preprocessing defaults.`, 'ok');
@@ -564,7 +779,7 @@ function saveConfigDialog() {
       const result = await api('/api/config/save', { method: 'POST', body: { location: location.value, name: name.value, values: S.values, extras: S.extras, overwrite } });
       S.boot.configs = result.configs;
       populateConfigSelect();
-      $('configSelect').value = result.path;
+      selectConfig(result.path);
       S.source = result.path;
       $('sourceInfo').textContent = `Saved as ${result.path}`;
       closeModal();
@@ -626,10 +841,10 @@ async function browseDialog(field) {
 }
 
 // ------------------------------------------------------------------ launch
-async function launchDialog() {
+async function launchDialog(initial = {}) {
   if (!S.values) return;
   if (S.validation?.errors.length) { toast('Fix the validation errors first.', 'error'); return; }
-  S.preflight = { answers: {}, secrets: {}, name: '', result: null, busy: false };
+  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', result: null, busy: false };
   openModal('Pre-launch checks', h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, 'Checking environment…')),
     [{ label: 'Cancel', onClick: closeModal }, { label: 'Re-check', id: 'pfRecheck', onClick: () => refreshPreflight() },
       { label: 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
@@ -701,7 +916,7 @@ async function doLaunch() {
   if (!pf?.result?.can_launch) return;
   $('pfLaunch').disabled = true;
   try {
-    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, source: S.source } });
+    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, source: S.source, resume_from: S.resumeFrom } });
     closeModal();
     S.selectedJob = result.job.id;
     S.log = null;
@@ -714,7 +929,7 @@ async function doLaunch() {
 }
 
 // -------------------------------------------------------------------- jobs
-const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' };
+const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', pausing: 'Finishing epoch before pause', paused: 'Paused (GPU released)' };
 
 function jobFraction(job) {
   const p = job.progress || {};
@@ -739,7 +954,7 @@ async function pollJobs() {
     S.jobs = data.jobs;
     S.gpus = data.gpus;
   } catch (error) { return; }
-  const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'stopping'].includes(j.status)).length;
+  const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
   $('jobsBadge').textContent = active;
   $('jobsBadge').classList.toggle('hidden', !active);
   $('gpuStrip').replaceChildren(...S.gpus.map(g => h('span', { class: 'gpu', title: g.name },
@@ -753,7 +968,7 @@ async function pollJobs() {
 function renderJobList() {
   const filter = $('jobFilter').value;
   const list = $('jobList');
-  const jobs = S.jobs.filter(j => filter === 'all' || (filter === 'active') === ['queued', 'starting', 'running', 'stopping'].includes(j.status));
+  const jobs = S.jobs.filter(j => filter === 'all' || (filter === 'active') === ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status));
   if (!S.selectedJob && jobs.length) S.selectedJob = jobs[0].id;
   list.replaceChildren(...jobs.map(job => {
     const fraction = jobFraction(job);
@@ -784,11 +999,13 @@ function updateJobDetail(force = false) {
   }
   const p = job.progress || {};
   const actions = [];
-  if (['queued', 'running', 'starting'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop'));
+  if (job.can_pause) actions.push(h('button', { type: 'button', onclick: () => pauseJob(job) }, 'Pause after epoch'));
+  if (job.can_resume) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => resumeJob(job) }, job.recovery?.training_complete ? 'Retry plots / test' : 'Resume training'));
+  if (['queued', 'running', 'starting', 'pausing'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop now'));
   actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, 'View config'));
   actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
   if ((job.outputs || {}).log_path_host) actions.push(h('button', { type: 'button', onclick: () => openResultsForJob(job) }, 'Results'));
-  if (!['queued', 'running', 'starting', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
+  if (!['queued', 'running', 'starting', 'pausing', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
   $('jdHead').replaceChildren(
     h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, job.name),
       h('div', { class: 'muted' }, `${job.mode} · ${job.model || ''} · ${[job.datasets?.train, job.datasets?.test].filter(Boolean).join(' → ')} · ${job.backend}${job.gpu !== null && job.gpu !== undefined ? ' · GPU ' + job.gpu : ''} · created ${fmtDate(job.created)}`)),
@@ -802,6 +1019,9 @@ function updateJobDetail(force = false) {
     bar ? ['Current step', `${bar.desc || 'progress'}: ${bar.n}/${bar.total}${bar.eta ? ' · ETA ' + bar.eta : ''}`] : null,
     p.best_epoch !== null && p.best_epoch !== undefined ? ['Best epoch', String(p.best_epoch)] : null,
     ['Elapsed', elapsed(job) || '–'],
+    job.status === 'pausing' ? ['Pause', 'Waiting for the current epoch and validation to finish; Stop now discards the unfinished epoch.'] : null,
+    job.recovery ? ['Recovery', `${job.recovery.next_epoch} / ${job.recovery.epochs_total} epochs committed${job.recovery.training_complete ? ' — training complete' : ''}`] : null,
+    job.resume_from ? ['Resumed from', job.resume_from] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
     p.last_line ? ['Last line', h('code', { class: 'clip' }, p.last_line)] : null,
@@ -864,7 +1084,7 @@ async function pollLog() {
         if ($('logFollow')?.checked) pre.scrollTop = pre.scrollHeight;
       }
     }
-    if (job && !['queued', 'starting', 'running', 'stopping'].includes(job.status) && data.next >= data.size) log.done = true;
+    if (job && !['queued', 'starting', 'running', 'pausing', 'stopping'].includes(job.status) && data.next >= data.size) log.done = true;
   } catch (error) {
     /* job removed or log not yet available */
   } finally {
@@ -873,8 +1093,24 @@ async function pollLog() {
 }
 
 async function cancelJob(job) {
-  if (!confirm(`Stop "${job.name}"?`)) return;
+  if (!confirm(`Stop "${job.name}" immediately? Any unfinished epoch is discarded. A full-state checkpoint, if available, can resume from the last completed epoch.`)) return;
   try { await api(`/api/jobs/${job.id}/cancel`, { method: 'POST', body: {} }); pollJobs(); } catch (error) { toast(error.message, 'error'); }
+}
+
+async function pauseJob(job) {
+  if (!confirm(`Pause "${job.name}" after the current epoch and validation? The checkpoint is saved and the GPU is released. This can take the rest of the epoch.`)) return;
+  try { await api(`/api/jobs/${job.id}/pause`, { method: 'POST', body: {} }); pollJobs(); } catch (error) { toast(error.message, 'error'); }
+}
+
+async function resumeJob(job) {
+  try {
+    const data = await api(`/api/jobs/${job.id}/resume`, { method: 'POST', body: {} });
+    setValues(data.values, data.extras, data.backend, `Resume "${job.name}" from its last committed epoch`, data.path);
+    S.resumeFrom = data.resume_from;
+    S.validation = null;
+    showTab('editor');
+    await launchDialog(data);
+  } catch (error) { toast(error.message, 'error'); }
 }
 
 async function removeJob(job) {
@@ -1185,53 +1421,146 @@ function useCheckpoint(hostPath) {
   showTab('editor');
 }
 
+// ------------------------------------------------------- prediction viewer
+const LINE = { gt: '#1c2024', label: '#8b8d98', pred: '#e5484d', tracked: '#3e63dd', raw: '#b9bbc6', band: '#30a46c' };
+// Index 0 is the current run (same red as its prediction); others avoid the tracked-HR blue.
+const RUN_COLORS = ['#e5484d', '#f76b15', '#8e4ec6', '#12a594', '#ad7f58', '#d6409f', '#30a46c'];
+
+function sourceKind(name) {
+  if (/(^|\/)saved_valid_outputs\//.test(name)) return 'validation, best epoch';
+  if (/(^|\/)saved_outputs\//.test(name)) return 'unsupervised';
+  if (/(^|\/)saved_test_outputs\//.test(name)) return 'test';
+  return '';
+}
+
+// Light-to-red background for an error value (0 = neutral, >= max = darkest).
+function errorColor(value, max) {
+  if (!Number.isFinite(value)) return {};
+  const t = Math.min(1, Math.max(0, value / (max || 1)));
+  const from = [241, 243, 245], to = [205, 43, 49];
+  const rgb = from.map((c, i) => Math.round(c + (to[i] - c) * t));
+  return { style: `background: rgb(${rgb.join(',')}); color: ${t > 0.55 ? '#fff' : 'inherit'}` };
+}
+
+function chartBlock(title, canvas, fileName, ...extra) {
+  return h('div', { class: 'chart-block' },
+    h('div', { class: 'chart-head' }, h('h4', {}, title), ...extra,
+      h('button', { type: 'button', class: 'small', title: 'Download this chart as PNG', onclick: () => Charts.download(canvas, fileName) }, 'PNG')),
+    canvas);
+}
+
 function renderPredictionControls(body, files) {
-  const sources = files.filter(f => f.kind === 'pickle' || /window_results\.csv$/.test(f.name));
+  const sources = files.filter(f => f.kind === 'pickle' || /window_results\.csv$/.test(f.name))
+    .sort((a, b) => (a.kind === 'pickle' ? 0 : 1) - (b.kind === 'pickle' ? 0 : 1));
   if (!sources.length) { body.replaceChildren(h('p', { class: 'muted' }, 'No *_outputs.pickle or window_results.csv in this folder.')); return; }
-  const source = h('select', {}, ...sources.map(f => h('option', { value: f.path }, f.name)));
+  S.results.historyPath = files.find(f => /probe_history\.npz$/.test(f.name))?.path || null;
+  S.results.compare = [];
+  const source = h('select', {}, ...sources.map(f => h('option', { value: f.path }, f.name + (sourceKind(f.name) ? `  (${sourceKind(f.name)})` : ''))));
   const windowInput = h('input', { type: 'number', min: '0', step: '1', value: '10', title: '0 = whole recording' });
-  const stepInput = h('input', { type: 'number', min: '0', step: '1', value: '0', title: '0 = same as the window' });
+  const stepInput = h('input', { type: 'number', min: '0', step: '1', value: '2', title: '0 = same as the window' });
+  const truth = h('select', { title: 'Reference heart rate' }, h('option', { value: 'measured' }, 'measured HR (when saved)'), h('option', { value: 'label' }, 'HR of the PPG label'));
   const diff = h('select', {}, h('option', { value: 'auto' }, 'auto'), h('option', { value: '1' }, 'yes'), h('option', { value: '0' }, 'no'));
+  const track = h('input', { type: 'checkbox', title: 'Add a causal Viterbi-tracked HR line (limits jumps to ~8 bpm/s)' });
   const out = h('div', { id: 'analysisOut' });
   const run = async () => {
     out.replaceChildren(h('p', { class: 'muted' }, 'Analysing…'));
     try {
-      const params = { path: source.value, window: windowInput.value || '0', step: stepInput.value || '0', diff: diff.value };
+      const params = { path: source.value, window: windowInput.value || '0', step: stepInput.value || '0', diff: diff.value,
+        truth: truth.value, track: track.checked ? '1' : '0' };
       S.results.analysis = await api('/api/results/predictions', { params });
       S.results.analysisParams = params;
       renderAnalysis(out);
+      if (S.results.compare.length) loadComparison();
     } catch (error) { out.replaceChildren(h('div', { class: 'msg error' }, error.message)); }
   };
   body.replaceChildren(h('div', { class: 'toolbar' },
     h('label', {}, 'Source ', source), h('label', {}, 'Window (s) ', windowInput), h('label', {}, 'Step (s) ', stepInput),
-    h('label', {}, 'Prediction is differenced ', diff), h('button', { type: 'button', class: 'primary', onclick: run }, 'Analyse')),
-    h('p', { class: 'muted small' }, 'Heart rate is estimated per window with the toolbox method (integrate if differenced, detrend, 0.6–3.3 Hz band-pass, FFT peak).'), out);
+    h('label', {}, 'Ground truth ', truth), h('label', {}, 'Prediction is differenced ', diff),
+    h('label', {}, track, ' Tracked HR'), h('button', { type: 'button', class: 'primary', onclick: run }, 'Analyse')),
+    h('p', { class: 'muted small' }, 'Heart rate per sliding window with the toolbox method (integrate if differenced, detrend, 0.6–3.3 Hz band-pass, FFT peak). ',
+      'Measured HR is the vHRM sensor HR saved with newer runs; older outputs fall back to the HR of the PPG label. ',
+      'Use ↑/↓ to step through recordings.'), out);
   run();
 }
 
 function renderAnalysis(out) {
   const a = S.results.analysis;
   const o = a.overall || {};
-  const cards = [['Windows', o.windows, 0], ['MAE (bpm)', o.mae], ['RMSE (bpm)', o.rmse], ['MAPE (%)', o.mape], ['Pearson', o.pearson, 3], ['Bias (bpm)', o.bias], ['SNR (dB)', o.snr]];
+  const cards = [['Windows', o.windows, 0], ['MAE (bpm)', o.mae], ['RMSE (bpm)', o.rmse], ['MAPE (%)', o.mape], ['Pearson', o.pearson, 3],
+    ['Bias (bpm)', o.bias], ['Within ±5 bpm (%)', o.within5, 0], ['SNR (dB)', o.snr]];
+  const reference = a.source === 'csv' ? 'window_results.csv' : a.truth === 'measured' ? 'measured HR' : 'HR of the PPG label';
+  const info = [a.split && `split: ${a.split}`, a.meta?.epoch !== undefined && a.meta?.epoch !== null && `epoch ${a.meta.epoch}`,
+    a.meta?.model && `model: ${a.meta.model}`, `reference: ${reference}`, a.has_gt === false && a.source !== 'csv' && 'no measured HR saved in this file'].filter(Boolean);
   const scatter = h('canvas', { class: 'chart' });
   const ba = h('canvas', { class: 'chart' });
-  const filters = h('div', { class: 'toolbar' });
+  const filters = h('div', { class: 'toolbar flat' });
+  const heat = h('div', { class: 'table-wrap' });
+  const grouping = h('select', {}, ...[['movement', 'view'], ['participant', 'movement'], ['participant', 'view']]
+    .map(([r, c]) => h('option', { value: `${r}|${c}` }, `${r} × ${c}`)));
   const table = h('div', { class: 'table-wrap' });
+  const compareCard = h('div', { id: 'compareCard' });
   const detail = h('div', { id: 'recordingDetail' });
-  out.replaceChildren(h('div', { class: 'cards' }, ...cards.map(([label, v, d]) => h('div', { class: 'metric' }, h('span', {}, label), h('b', {}, num(v, d ?? 2))))),
-    h('div', { class: 'two-col' }, h('div', { class: 'card' }, h('h4', {}, 'Predicted vs ground-truth HR'), scatter), h('div', { class: 'card' }, h('h4', {}, 'Bland-Altman'), ba)),
-    h('div', { class: 'card' }, h('h4', {}, 'Recordings'), filters, table), detail);
   const hasMeta = a.recordings.some(r => r.participant);
-  const state = { participant: '', movement: '', view: '' };
+  out.replaceChildren(h('div', { class: 'cards' }, ...cards.map(([label, v, d]) => h('div', { class: 'metric' }, h('span', {}, label), h('b', {}, num(v, d ?? 2))))),
+    h('p', { class: 'muted small' }, info.join(' · ')),
+    h('div', { class: 'two-col' }, h('div', { class: 'card' }, chartBlock('Predicted vs ground-truth HR', scatter, 'scatter')),
+      h('div', { class: 'card' }, chartBlock('Bland-Altman', ba, 'bland_altman'))),
+    hasMeta ? h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, 'MAE by scenario (bpm)'), grouping,
+      h('span', { class: 'muted small' }, 'Click a cell to filter; click again to clear.')), heat) : null,
+    compareCard,
+    h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, 'Recordings'),
+      h('button', { type: 'button', class: 'small', onclick: () => pickExtreme(-1) }, 'Worst'),
+      h('button', { type: 'button', class: 'small', onclick: () => pickExtreme(1) }, 'Best'),
+      a.source === 'csv' ? null : h('button', { type: 'button', class: 'small', onclick: openComparePicker }, 'Compare with…')),
+    filters, table), detail);
+  const state = S.results.filter = { participant: '', movement: '', view: '' };
+  const selects = {};
   if (hasMeta) {
     for (const key of ['participant', 'movement', 'view']) {
       const values = [...new Set(a.recordings.map(r => r[key]))].sort();
-      const select = h('select', { onchange: e => { state[key] = e.target.value; draw(); } }, h('option', { value: '' }, `All ${key}s`), ...values.map(v => h('option', { value: v }, v)));
-      filters.append(select);
+      selects[key] = h('select', { onchange: e => { state[key] = e.target.value; draw(); } }, h('option', { value: '' }, `All ${key}s`), ...values.map(v => h('option', { value: v }, v)));
+      filters.append(selects[key]);
     }
+    grouping.addEventListener('change', () => draw());
   }
+  const meta = Object.fromEntries(a.recordings.map(r => [r.id, r]));
+  const drawHeat = rows => {
+    const [rowKey, colKey] = grouping.value.split('|');
+    const ids = new Set(rows.map(r => r.id));
+    const cells = {};
+    for (const p of a.points) {
+      if (!ids.has(p.recording)) continue;
+      const m = meta[p.recording];
+      const k = `${m[rowKey]}|${m[colKey]}`;
+      (cells[k] ||= { sum: 0, n: 0, recs: new Set() });
+      cells[k].sum += Math.abs(p.pred - p.gt); cells[k].n += 1; cells[k].recs.add(p.recording);
+    }
+    const rowValues = [...new Set(rows.map(r => r[rowKey]))].sort();
+    const colValues = [...new Set(rows.map(r => r[colKey]))].sort();
+    const maes = Object.values(cells).map(c => c.sum / c.n);
+    const max = Math.max(10, ...maes);
+    const toggle = (r, c) => {
+      const active = state[rowKey] === r && state[colKey] === c;
+      state[rowKey] = active ? '' : r; state[colKey] = active ? '' : c;
+      for (const [k, sel] of Object.entries(selects)) sel.value = state[k];
+      draw();
+    };
+    heat.replaceChildren(h('table', { class: 'grid-table heat' }, h('tr', {}, h('th', {}, `${rowKey} \\ ${colKey}`), ...colValues.map(c => h('th', {}, c))),
+      ...rowValues.map(r => h('tr', {}, h('th', {}, r), ...colValues.map(c => {
+        const cell = cells[`${r}|${c}`];
+        if (!cell) return h('td', { class: 'muted' }, '');
+        const mae = cell.sum / cell.n;
+        return h('td', { ...errorColor(mae, max), class: 'heat-cell' + (state[rowKey] === r && state[colKey] === c ? ' active' : ''),
+          title: `${cell.n} windows, ${cell.recs.size} recordings`, onclick: () => toggle(r, c) }, num(mae, 1));
+      })))));
+  };
   const draw = () => {
     const rows = a.recordings.filter(r => Object.entries(state).every(([k, v]) => !v || r[k] === v));
+    if (hasMeta) {
+      // The grid keeps all its own rows/columns; only the other filters narrow it.
+      const [rowKey, colKey] = grouping.value.split('|');
+      drawHeat(a.recordings.filter(r => Object.entries(state).every(([k, v]) => !v || k === rowKey || k === colKey || r[k] === v)));
+    }
     const ids = new Set(rows.map(r => r.id));
     const pts = a.points.filter(p => ids.has(p.recording));
     const selected = S.results.recording;
@@ -1244,18 +1573,82 @@ function renderAnalysis(out) {
     const bias = d.reduce((s, v) => s + v, 0) / (d.length || 1);
     const sd = Math.sqrt(d.reduce((s, v) => s + (v - bias) ** 2, 0) / Math.max(1, d.length - 1));
     Charts.draw(ba, { height: 260, xLabel: 'mean of GT and prediction (bpm)', yLabel: 'prediction − GT (bpm)', legend: false,
-      series: [{ type: 'points', x: mean, y: d, labels: pts.map(p => p.recording), color: '#3e63dd' }],
+      series: [{ type: 'points', x: mean, y: d, labels: pts.map(p => p.recording), color: '#3e63dd' },
+        { type: 'points', x: highlight.map(p => (p.gt + p.pred) / 2), y: highlight.map(p => p.pred - p.gt), color: '#e5484d', radius: 4, labels: highlight.map(p => p.recording) }],
       hlines: [{ y: bias, color: '#e5484d', label: `bias ${num(bias)}` }, { y: bias + 1.96 * sd, dash: [4, 3], label: `+1.96 SD ${num(bias + 1.96 * sd)}` }, { y: bias - 1.96 * sd, dash: [4, 3], label: `−1.96 SD ${num(bias - 1.96 * sd)}` }] });
     const sortKey = S.results.sort;
-    rows.sort((x, y) => sortKey === 'id' ? x.id.localeCompare(y.id) : (y[sortKey] ?? -Infinity) - (x[sortKey] ?? -Infinity));
-    const cols = [['id', 'Recording'], ['windows', 'Windows'], ['duration', 'Duration (s)'], ['mean_gt', 'GT HR'], ['mean_pred', 'Pred HR'], ['mae', 'MAE'], ['rmse', 'RMSE'], ['bias', 'Bias'], ['pearson', 'r'], ['snr', 'SNR']];
+    const ascending = ['id', 'within5'].includes(sortKey);
+    rows.sort((x, y) => sortKey === 'id' ? x.id.localeCompare(y.id) : ascending ? (x[sortKey] ?? Infinity) - (y[sortKey] ?? Infinity) : (y[sortKey] ?? -Infinity) - (x[sortKey] ?? -Infinity));
+    S.results.visible = rows.map(r => r.id);
+    const cols = [['id', 'Recording'], ['windows', 'Windows'], ['duration', 'Duration (s)'], ['mean_gt', 'GT HR'], ['mean_pred', 'Pred HR'], ['mae', 'MAE'],
+      ...(a.track ? [['mae_tracked', 'MAE tracked']] : []), ['rmse', 'RMSE'], ['bias', 'Bias'], ['within5', '±5 bpm %'], ['max_jump', 'Max jump'], ['pearson', 'r'], ['snr', 'SNR']];
+    const maxMae = Math.max(10, ...rows.map(r => r.mae).filter(Number.isFinite));
     table.replaceChildren(h('table', { class: 'grid-table clickable' },
       h('tr', {}, ...cols.map(([k, label]) => h('th', { class: k === sortKey ? 'sorted' : '', onclick: () => { S.results.sort = k; draw(); } }, label))),
       ...rows.map(r => h('tr', { class: r.id === selected ? 'active' : '', onclick: () => selectRecording(r.id) },
-        ...cols.map(([k]) => h('td', {}, k === 'id' ? r.id : num(r[k], k === 'windows' ? 0 : k === 'pearson' ? 3 : 1)))))));
+        ...cols.map(([k]) => h('td', k === 'mae' ? errorColor(r.mae, maxMae) : {}, k === 'id' ? r.id : num(r[k], k === 'windows' || k === 'within5' ? 0 : k === 'pearson' ? 3 : 1)))))));
   };
   S.results.redraw = draw;
   draw();
+}
+
+function pickExtreme(direction) {
+  const a = S.results.analysis;
+  const ids = new Set(S.results.visible || []);
+  const rows = a.recordings.filter(r => ids.has(r.id) && Number.isFinite(r.mae)).sort((x, y) => (y.mae - x.mae) * -direction);
+  if (rows.length) selectRecording(rows[0].id);
+}
+
+function stepRecording(delta) {
+  const ids = S.results.visible || [];
+  if (!ids.length) return;
+  const index = ids.indexOf(S.results.recording);
+  const next = ids[Math.max(0, Math.min(ids.length - 1, index < 0 ? 0 : index + delta))];
+  if (next !== S.results.recording) selectRecording(next);
+}
+
+async function openComparePicker() {
+  let list;
+  try { list = (await api('/api/results/sources')).sources; } catch (error) { toast(error.message, 'error'); return; }
+  const current = S.results.analysisParams.path;
+  const choices = list.filter(s => s.path !== current);
+  if (!choices.length) { toast('No other prediction outputs found under the results folders.', 'warn'); return; }
+  const chosen = new Set(S.results.compare);
+  const filter = h('input', { type: 'search', placeholder: 'Filter…' });
+  const box = h('div', { class: 'browse-list' });
+  const render = () => {
+    const q = filter.value.toLowerCase();
+    box.replaceChildren(...choices.filter(s => !q || (s.experiment + ' ' + s.name).toLowerCase().includes(q)).map(s => h('label', { class: 'browse-item option' },
+      h('input', { type: 'checkbox', checked: chosen.has(s.path), onchange: e => { e.target.checked ? chosen.add(s.path) : chosen.delete(s.path); } }),
+      h('span', {}, h('b', {}, s.experiment), ' / ', s.name, h('small', {}, fmtDate(s.modified) + (sourceKind(s.name) ? ' · ' + sourceKind(s.name) : ''))))));
+  };
+  filter.addEventListener('input', render);
+  render();
+  openModal('Compare with other runs', h('div', { class: 'form-stack' },
+    h('p', { class: 'muted small' }, 'Runs are compared on the recordings they share, with the current window, step and ground-truth settings.'), filter, box), [
+    { label: 'Clear comparison', onClick: () => { S.results.compare = []; closeModal(); $('compareCard').replaceChildren(); if (S.results.recording) selectRecording(S.results.recording); } },
+    { label: 'Compare', primary: true, onClick: () => { S.results.compare = [...chosen]; closeModal(); loadComparison(); } }], true);
+}
+
+async function loadComparison() {
+  const card = $('compareCard');
+  if (!card || !S.results.compare.length) return;
+  card.replaceChildren(h('div', { class: 'card' }, h('p', { class: 'muted' }, 'Comparing runs…')));
+  let data;
+  try {
+    data = await api('/api/results/compare', { params: { ...S.results.analysisParams, paths: [S.results.analysisParams.path, ...S.results.compare].join('|') } });
+  } catch (error) { card.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
+  S.results.compareRuns = data.runs;
+  const max = Math.max(10, ...data.recordings.flatMap(r => r.mae).filter(Number.isFinite));
+  const meanOf = i => { const v = data.recordings.map(r => r.mae[i]).filter(Number.isFinite); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN; };
+  card.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'chart-head' }, h('h4', {}, `Model comparison — MAE (bpm) on ${data.recordings.length} shared recordings`),
+    h('button', { type: 'button', class: 'small', onclick: openComparePicker }, 'Change…')),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+      h('tr', {}, h('th', {}, 'Recording'), ...data.runs.map((run, i) => h('th', { title: run.path }, h('span', { class: 'swatch', style: `background:${RUN_COLORS[i % RUN_COLORS.length]}` }), run.name))),
+      h('tr', {}, h('th', {}, 'Mean'), ...data.runs.map((_, i) => h('th', errorColor(meanOf(i), max), num(meanOf(i), 1)))),
+      ...data.recordings.map(r => h('tr', { class: r.id === S.results.recording ? 'active' : '', onclick: () => selectRecording(r.id) }, h('td', {}, r.id),
+        ...r.mae.map(v => h('td', errorColor(v, max), num(v, 1)))))))));
+  if (S.results.recording) selectRecording(S.results.recording);
 }
 
 async function selectRecording(id) {
@@ -1264,54 +1657,146 @@ async function selectRecording(id) {
   const a = S.results.analysis;
   const detail = $('recordingDetail');
   detail.replaceChildren(h('p', { class: 'muted' }, 'Loading recording…'));
-  let data;
+  let data, compare = null, history = null;
   if (a.source === 'csv') {
     data = { id, windows: a.windows_by_recording[id] || [], metrics: a.recordings.find(r => r.id === id) };
   } else {
     try {
-      data = await api('/api/results/recording', { params: { ...S.results.analysisParams, id } });
+      const params = { ...S.results.analysisParams, id };
+      [data, compare, history] = await Promise.all([
+        api('/api/results/recording', { params }),
+        S.results.compare.length ? api('/api/results/compare', { params: { ...params, paths: [params.path, ...S.results.compare].join('|') } }) : null,
+        S.results.historyPath && (a.split === 'valid' || /saved_valid_outputs/.test(a.path)) ? api('/api/results/history', { params: { ...params, path: S.results.historyPath } }) : null,
+      ]);
     } catch (error) { detail.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
   }
-  const hr = h('canvas', { class: 'chart' });
-  const parts = [h('h4', {}, `${id} — MAE ${num(data.metrics?.mae)} bpm`), hr];
-  const center = data.windows.map(w => (w.start + w.end) / 2);
-  Charts.draw(hr, { height: 230, xLabel: 'time (s)', yLabel: 'heart rate (bpm)', series: [
-    { label: 'ground truth', x: center, y: data.windows.map(w => w.gt), color: '#222', markers: true },
-    { label: 'predicted', x: center, y: data.windows.map(w => w.pred), color: '#e5484d', markers: true }] });
-  if (data.prediction) {
-    const wave = h('canvas', { class: 'chart' });
-    const span = h('select', {}, ...[10, 30, 60, 0].map(s => h('option', { value: s }, s ? `${s} s` : 'all')));
-    const offset = h('input', { type: 'range', min: '0', max: String(Math.max(0, Math.floor(data.duration))), value: '0', step: '1' });
-    const step = data.duration / data.prediction.length;
-    const t = data.prediction.map((_, i) => i * step);
-    const drawWave = () => {
-      const s = +span.value, o = +offset.value;
-      const series = [{ label: 'prediction (processed)', x: t, y: data.prediction, color: '#e5484d' }];
-      if (data.label) series.unshift({ label: 'label (processed)', x: t, y: data.label, color: '#222' });
-      Charts.draw(wave, { height: 200, xLabel: 'time (s)', series, xMin: s ? o : undefined, xMax: s ? Math.min(data.duration, o + s) : undefined });
-    };
-    span.addEventListener('change', drawWave);
-    offset.addEventListener('input', drawWave);
-    span.value = '30';
-    const spectrum = h('canvas', { class: 'chart' });
-    parts.push(h('div', { class: 'toolbar' }, h('label', {}, 'Span ', span), h('label', { class: 'grow' }, 'Start ', offset)), wave,
-      h('h4', {}, 'Prediction spectrum (whole recording)'), spectrum);
-    detail.replaceChildren(h('div', { class: 'card' }, ...parts));
-    drawWave();
-    const gtMean = data.metrics?.mean_gt;
-    Charts.draw(spectrum, { height: 150, xLabel: 'Hz', yLabel: 'power', legend: false, series: [{ x: data.spectrum.freqs, y: data.spectrum.power, color: '#3e63dd' }],
-      vlines: Number.isFinite(gtMean) ? [{ x: gtMean / 60, color: '#222', dash: [4, 3] }] : [] });
-    if (data.label_channels) {
-      for (const [name, values] of Object.entries(data.label_channels).slice(1)) {
-        const c = h('canvas', { class: 'chart' });
-        detail.firstChild.append(h('h4', {}, name), c);
-        const x = values.map((_, i) => i * data.duration / values.length);
-        Charts.draw(c, { height: 130, xLabel: 'time (s)', legend: false, series: [{ x, y: values, color: '#30a46c' }] });
-      }
+  if (S.results.recording !== id) return;  // a newer selection is loading
+  renderRecording(detail, data, compare?.runs?.slice(1) || [], history?.epochs?.length ? history : null);
+}
+
+function renderRecording(detail, data, others, history) {
+  const view = S.results.view ||= { span: 30, offset: 0, raw: false, beats: true };
+  const state = { epoch: null };
+  const duration = data.duration || Math.max(0, ...data.windows.map(w => w.end));
+  view.offset = Math.min(view.offset, Math.max(0, duration - (view.span || duration)));
+  const m = data.metrics || {}, mt = data.metrics_tracked;
+  const chips = [['MAE', m.mae, 1], ['bias', m.bias, 1], ['RMSE', m.rmse, 1], ['r', m.pearson, 2], ['within ±5', m.within5, 0, '%'], ['max jump', m.max_jump, 1],
+    ...(mt ? [['tracked MAE', mt.mae, 1], ['tracked max jump', mt.max_jump, 1]] : [])];
+  const centre = w => (w.start + w.end) / 2;
+  const hr = h('canvas', { class: 'chart' }), err = h('canvas', { class: 'chart' }), wave = h('canvas', { class: 'chart' }), spec = h('canvas', { class: 'chart' });
+  const caption = h('span', { class: 'muted small' });
+  const hasGtLine = data.truth === 'measured' && data.gt_channels?.heart_rate_bpm;
+  const activeWindows = () => state.epoch ? state.epoch.windows : data.windows;
+  const activePrediction = () => state.epoch ? state.epoch.prediction : data.prediction;
+  const viewRange = () => view.span ? [view.offset, Math.min(duration, view.offset + view.span)] : [0, duration];
+  const invalid = (data.invalid_spans || []).map(([x0, x1]) => ({ x0, x1, color: '#8b8d98', alpha: 0.18 }));
+
+  const drawHr = () => {
+    const windows = activeWindows();
+    const series = [];
+    if (hasGtLine) {
+      const values = data.gt_channels.heart_rate_bpm;
+      series.push({ label: 'measured HR', x: values.map((_, i) => i * duration / values.length), y: values, color: LINE.gt, width: 2 });
+    } else {
+      series.push({ label: data.truth === 'measured' ? 'ground truth' : 'label HR (reference)', x: data.windows.map(centre), y: data.windows.map(w => w.gt), color: LINE.gt, width: 2, markers: true });
     }
-  } else {
-    detail.replaceChildren(h('div', { class: 'card' }, ...parts, h('p', { class: 'muted small' }, 'Waveforms need the output pickle.')));
+    if (hasGtLine && data.windows.some(w => Number.isFinite(w.label_hr))) series.push({ label: 'label HR', x: data.windows.map(centre), y: data.windows.map(w => w.label_hr), color: LINE.label, dash: [5, 4] });
+    series.push({ label: state.epoch ? `predicted (epoch ${state.epoch.epoch})` : 'predicted', x: windows.map(centre), y: windows.map(w => w.pred), color: LINE.pred, markers: true });
+    if (!state.epoch && windows.some(w => Number.isFinite(w.tracked))) series.push({ label: 'tracked', x: windows.map(centre), y: windows.map(w => w.tracked), color: LINE.tracked });
+    others.forEach((run, i) => series.push({ label: run.name, x: run.windows.map(centre), y: run.windows.map(w => w.pred), color: RUN_COLORS[(i + 1) % RUN_COLORS.length], dash: [3, 2] }));
+    const [x0, x1] = viewRange();
+    Charts.draw(hr, { height: 250, xLabel: 'time (s)', yLabel: 'heart rate (bpm)', xMin: 0, xMax: duration, series,
+      vspans: [...invalid, ...(data.prediction ? [{ x0, x1, color: '#3e63dd', alpha: 0.1 }] : [])],
+      onClick: data.prediction ? x => { if (view.span) { view.offset = Math.max(0, Math.min(duration - view.span, x - view.span / 2)); offset.value = view.offset; drawWave(); drawHr(); } } : undefined });
+    const errors = windows.map(w => w.pred - w.gt);
+    const errSeries = [{ label: 'prediction − GT', x: windows.map(centre), y: errors, color: LINE.pred, markers: true }];
+    if (!state.epoch && windows.some(w => Number.isFinite(w.tracked))) errSeries.push({ label: 'tracked − GT', x: windows.map(centre), y: windows.map(w => w.tracked - w.gt), color: LINE.tracked });
+    Charts.draw(err, { height: 130, xLabel: 'time (s)', yLabel: 'error (bpm)', xMin: 0, xMax: duration, series: errSeries,
+      hbands: [{ y0: -5, y1: 5, color: LINE.band, alpha: 0.15 }], hlines: [{ y: 0 }], vspans: invalid });
+  };
+
+  const valueAt = (values, t) => values[Math.max(0, Math.min(values.length - 1, Math.round(t / duration * values.length)))];
+  const beatRate = times => times.length > 1 ? 60 / ((times[times.length - 1] - times[0]) / (times.length - 1)) : NaN;
+  const drawWave = () => {
+    const prediction = activePrediction();
+    if (!prediction) return;
+    const [x0, x1] = viewRange();
+    const t = prediction.map((_, i) => i * duration / prediction.length);
+    const series = [];
+    if (view.raw && data.prediction_raw && !state.epoch) series.push({ label: 'prediction (unfiltered)', x: t, y: data.prediction_raw, color: LINE.raw, width: 1 });
+    if (data.label) series.push({ label: 'PPG label', x: data.label.map((_, i) => i * duration / data.label.length), y: data.label, color: LINE.gt });
+    series.push({ label: state.epoch ? `prediction (epoch ${state.epoch.epoch})` : 'prediction', x: t, y: prediction, color: LINE.pred });
+    others.forEach((run, i) => run.prediction && series.push({ label: run.name, x: run.prediction.map((_, k) => k * run.duration / run.prediction.length), y: run.prediction, color: RUN_COLORS[(i + 1) % RUN_COLORS.length], width: 1 }));
+    const inView = times => (times || []).filter(v => v >= x0 && v <= x1);
+    const parts = [];
+    if (view.beats && !state.epoch) {
+      const pb = inView(data.pred_beats);
+      series.push({ type: 'marks', shape: 'up', x: pb, y: pb.map(v => valueAt(data.prediction, v)), color: LINE.pred });
+      parts.push(`prediction: ${pb.length} beats, ${num(beatRate(pb), 0)} bpm`);
+      if (data.label_beats) {
+        const lb = inView(data.label_beats);
+        series.push({ type: 'marks', shape: 'down', x: lb, y: lb.map(v => valueAt(data.label, v)), color: LINE.gt });
+        parts.push(`label: ${lb.length} beats, ${num(beatRate(lb), 0)} bpm`);
+      }
+      const windows = activeWindows().filter(w => centre(w) >= x0 && centre(w) <= x1 && Number.isFinite(w.gt));
+      if (windows.length) parts.push(`reference ${num(windows.reduce((s, w) => s + w.gt, 0) / windows.length, 0)} bpm`);
+    }
+    caption.textContent = `${num(x0, 0)}–${num(x1, 0)} s` + (parts.length ? ' · in view: ' + parts.join(' · ') : '');
+    Charts.draw(wave, { height: 230, xLabel: 'time (s)', yLabel: 'z', series, xMin: x0, xMax: x1, vspans: invalid });
+  };
+
+  const parts = [h('div', { class: 'chart-head' }, h('h3', {}, data.id),
+    h('div', { class: 'chips' }, ...chips.map(([label, v, d, unit]) => h('span', { class: 'stat' }, label, ' ', h('b', {}, num(v, d) + (unit && Number.isFinite(v) ? unit : '')))))),
+    chartBlock('Heart rate over time' + (data.prediction ? ' — click to move the waveform window' : ''), hr, `${data.id}_hr`),
+    chartBlock('Error per window (green band = ±5 bpm)', err, `${data.id}_error`)];
+
+  let offset = h('input', { type: 'range' });
+  if (data.prediction) {
+    const span = h('select', {}, ...[10, 20, 30, 60, 0].map(s => h('option', { value: s }, s ? `${s} s` : 'all')));
+    span.value = String(view.span);
+    offset = h('input', { type: 'range', min: '0', max: String(Math.max(0, Math.floor(duration))), value: String(view.offset), step: '1' });
+    const raw = h('input', { type: 'checkbox', checked: view.raw });
+    const beats = h('input', { type: 'checkbox', checked: view.beats });
+    span.addEventListener('change', () => { view.span = +span.value; view.offset = Math.min(view.offset, Math.max(0, duration - view.span)); drawWave(); drawHr(); });
+    offset.addEventListener('input', () => { view.offset = +offset.value; drawWave(); drawHr(); });
+    raw.addEventListener('change', () => { view.raw = raw.checked; drawWave(); });
+    beats.addEventListener('change', () => { view.beats = beats.checked; drawWave(); });
+    parts.push(chartBlock('Pulse waveform (z-scored, band-passed)', wave, `${data.id}_bvp`,
+      h('label', { class: 'small' }, 'Span ', span), h('label', { class: 'small grow' }, 'Start ', offset),
+      h('label', { class: 'small' }, raw, ' unfiltered'), h('label', { class: 'small' }, beats, ' beats')), caption);
   }
+  if (history) {
+    const select = h('select', {}, h('option', { value: '' }, 'best epoch (saved file)'), ...history.epochs.map((e, i) => h('option', { value: i }, `epoch ${e.epoch} — MAE ${num(e.metrics?.mae, 1)}`)));
+    select.addEventListener('change', () => { state.epoch = select.value === '' ? null : history.epochs[+select.value]; drawHr(); drawWave(); });
+    const trend = h('canvas', { class: 'chart' });
+    parts.splice(1, 0, h('div', { class: 'card inset' }, h('div', { class: 'chart-head' }, h('h4', {}, 'Probe recording — predictions during training'), h('label', { class: 'small' }, 'Show ', select)), trend));
+    requestAnimationFrame(() => Charts.draw(trend, { height: 120, xLabel: 'epoch', yLabel: 'MAE (bpm)', legend: false,
+      series: [{ x: history.epochs.map(e => e.epoch), y: history.epochs.map(e => e.metrics?.mae ?? NaN), color: LINE.pred, markers: true }] }));
+  }
+  if (data.spectrogram?.times?.length) parts.push(chartBlock('Prediction spectrogram (white: measured HR and 2× harmonic)', spec, `${data.id}_spectrogram`));
+  const aux = Object.entries(data.gt_channels || {}).filter(([name]) => name !== 'heart_rate_bpm');
+  const auxCanvases = aux.map(() => h('canvas', { class: 'chart' }));
+  aux.forEach(([name], i) => parts.push(chartBlock(name, auxCanvases[i], `${data.id}_${name}`)));
+  if (!data.prediction) parts.push(h('p', { class: 'muted small' }, 'Waveforms need the output pickle.'));
+  detail.replaceChildren(h('div', { class: 'card' }, ...parts));
+
+  drawHr();
+  drawWave();
+  if (data.spectrogram?.times?.length) {
+    const sp = data.spectrogram;
+    const series = [];
+    if (hasGtLine) {
+      const values = data.gt_channels.heart_rate_bpm;
+      const x = values.map((_, i) => i * duration / values.length);
+      series.push({ label: 'measured HR', x, y: values, color: '#ffffff', width: 1.5 }, { label: '2×', x, y: values.map(v => v * 2), color: '#ffffff', dash: [3, 3], width: 1 });
+    } else {
+      series.push({ label: 'reference HR', x: data.windows.map(centre), y: data.windows.map(w => w.gt), color: '#ffffff', width: 1.5 });
+    }
+    Charts.draw(spec, { height: 210, xLabel: 'time (s)', yLabel: 'frequency (bpm)', xMin: 0, xMax: duration, yMin: 0, yMax: 240,
+      heatmap: { x: sp.times, y: sp.freqs, z: sp.power }, series, legend: false });
+  }
+  aux.forEach(([name, values], i) => Charts.draw(auxCanvases[i], { height: 130, xLabel: 'time (s)', legend: false, xMin: 0, xMax: duration,
+    series: [{ x: values.map((_, k) => k * duration / values.length), y: values, color: '#30a46c' }] }));
 }
 
 // ---------------------------------------------------------------- settings
@@ -1395,9 +1880,25 @@ async function init() {
   renderForm();
 
   $('loadConfig').addEventListener('click', () => loadConfig($('configSelect').value));
+  $('configSearch').addEventListener('input', renderConfigTree);
+  $('configPicker').addEventListener('toggle', () => {
+    if ($('configPicker').open) $('configSearch').focus();
+  });
+  document.addEventListener('click', e => {
+    if (!$('configPicker').contains(e.target)) $('configPicker').open = false;
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('configPicker').open) {
+      $('configPicker').open = false;
+      $('configPicker').querySelector('summary').focus();
+      e.preventDefault();
+    }
+  });
   $('newBlank').addEventListener('click', () => newBlank($('blankMode').value));
   document.querySelectorAll('input[name="backend"]').forEach(r => r.addEventListener('change', () => setBackend(r.value)));
   $('convertPaths').addEventListener('click', convertPaths);
+  $('linkPreprocess').addEventListener('change', togglePreprocessingSync);
+  $('syncSettings').addEventListener('click', () => syncSettingsDialog());
   $('showAdvanced').addEventListener('change', renderForm);
   $('previewYaml').addEventListener('click', previewYaml);
   $('saveConfig').addEventListener('click', saveConfigDialog);
@@ -1425,6 +1926,11 @@ async function init() {
     } else if (e.key === ' ') { e.preventDefault(); togglePlayback(); }
   });
 
+  document.addEventListener('keydown', e => {
+    if (!$('tab-results').classList.contains('active') || !S.results.analysis || !$('recordingDetail') ||
+        ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || !$('modal').classList.contains('hidden')) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); stepRecording(e.key === 'ArrowDown' ? 1 : -1); }
+  });
   $('resultFilter').addEventListener('input', renderResultList);
   $('refreshResults').addEventListener('click', loadResults);
 

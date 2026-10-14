@@ -53,7 +53,9 @@ class PhysnetTrainer(BaseTrainer):
         mean_training_losses = []
         mean_valid_losses = []
         lrs = []
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(
+            data_loader, train_loss=mean_training_losses, valid_loss=mean_valid_losses, lrs=lrs
+        ):
             print('')
             print(f"====Training Epoch: {epoch}====")
             running_loss = 0.0
@@ -95,14 +97,7 @@ class PhysnetTrainer(BaseTrainer):
                 valid_loss = self.valid(data_loader)
                 mean_valid_losses.append(valid_loss)
                 print('validation loss: ', valid_loss)
-                if self.min_valid_loss is None:
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
-                elif (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.best_epoch))
+                self.record_validation_loss(valid_loss, epoch)
         if not self.config.TEST.USE_LAST_EPOCH: 
             print("best trained epoch: {}, min_val_loss: {}".format(
                 self.best_epoch, self.min_valid_loss))
@@ -131,6 +126,7 @@ class PhysnetTrainer(BaseTrainer):
                 BVP_label = (BVP_label - torch.mean(BVP_label)) / \
                             torch.std(BVP_label)  # normalize
                 loss_ecg = self.loss_model(rPPG, BVP_label)
+                self.capture_valid(valid_batch, rPPG, BVP_label)
                 valid_loss.append(loss_ecg.item())
                 valid_step += 1
                 vbar.set_postfix(loss=loss_ecg.item())

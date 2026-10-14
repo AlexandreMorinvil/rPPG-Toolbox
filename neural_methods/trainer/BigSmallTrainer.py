@@ -141,6 +141,7 @@ class BigSmallTrainer(BaseTrainer):
 
         # Epoch To Use For Test
         self.used_epoch = 0
+        self.best_epoch = 0
 
         # Indicies corresponding to used labels
         label_list = ['bp_wave', 'HR_bpm', 'systolic_bp', 'diastolic_bp', 'mean_bp', 
@@ -184,7 +185,7 @@ class BigSmallTrainer(BaseTrainer):
         print('')
 
         # Init min validation loss as infinity
-        min_valid_loss = np.inf # minimum validation loss
+        self.min_valid_loss = np.inf # minimum validation loss (checkpointed)
 
         # ARRAYS TO SAVE (LOSS ARRAYS)
         train_loss_dict = dict()
@@ -203,7 +204,8 @@ class BigSmallTrainer(BaseTrainer):
         lrs = []
 
         # ITERATE THROUGH EPOCHS
-        for epoch in range(self.max_epoch_num):
+        for epoch in self.training_epochs(data_loader, train_loss=mean_training_losses,
+                          valid_loss=mean_valid_losses, lrs=lrs):
             print(f"====Training Epoch: {epoch}====")
 
             # INIT PARAMS FOR TRAINING
@@ -234,7 +236,7 @@ class BigSmallTrainer(BaseTrainer):
                 loss.backward()
 
                 # Append the current learning rate to the list
-                lrs.append(self.scheduler.get_last_lr())
+                lrs.append([group['lr'] for group in self.optimizer.param_groups])
 
                 self.optimizer.step()
                 # self.scaler.scale(loss).backward() # Loss scaling
@@ -293,12 +295,8 @@ class BigSmallTrainer(BaseTrainer):
                 print('validation loss: ', valid_loss)
 
                 # Update used model
-                if self.model_to_use == 'best_epoch' and (valid_loss < min_valid_loss):
-                    min_valid_loss = valid_loss
-                    self.used_epoch = epoch
-                    print("Update best model! Best epoch: {}".format(self.used_epoch))
-                elif self.model_to_use == 'last_epoch':
-                    self.used_epoch = epoch
+                self.record_validation_loss(valid_loss, epoch)
+                self.used_epoch = self.best_epoch
             
             # VALIDATION (NOT ENABLED)
             else: 
@@ -310,7 +308,7 @@ class BigSmallTrainer(BaseTrainer):
             self.plot_losses_and_lrs(mean_training_losses, mean_valid_losses, lrs, self.config)
 
         # PRINT MODEL TO BE USED FOR TESTING
-        print("Used model trained epoch:{}, val_loss:{}".format(self.used_epoch, min_valid_loss))
+        print("Used model trained epoch:{}, val_loss:{}".format(self.used_epoch, self.min_valid_loss))
         print('')
 
 
