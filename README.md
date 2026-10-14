@@ -18,6 +18,31 @@
 rPPG-Toolbox not only benchmarks the **existing state-of-the-art neural and unsupervised methods**, but it also supports flexible and rapid development of your own algorithms.
 ![Overview of the toolbox](./figures/toolbox_overview.png)
 
+# Local CUDA Setup (Conda)
+
+For local training or inference on an NVIDIA GPU, install a CUDA-enabled
+PyTorch build in the environment before installing the remaining dependencies.
+`requirements.txt` intentionally does not install PyTorch, so installing it
+alone may leave you with a CPU-only build and GPU acceleration unavailable.
+
+For example, in the `rppg` environment on Windows with an RTX 50-series GPU:
+
+```powershell
+conda activate rppg
+python -m pip install --upgrade "torch==2.14.1+cu130" "torchvision==0.29.1+cu130" --index-url https://download.pytorch.org/whl/cu130
+python -m pip install -r requirements.txt
+python -c "import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+```
+
+The `+cu130` builds include the CUDA runtime; a separately installed CUDA
+toolkit is not needed for normal PyTorch use. The NVIDIA driver must support
+CUDA 13.0 or newer. Choose a CUDA-enabled PyTorch build appropriate for your
+GPU if using a different NVIDIA generation. CPU-only use does not require this
+GPU setup step. On managed Windows systems, Application Control/Code Integrity
+must allow the PyTorch and torchvision native binaries to load. If importing
+PyTorch or torchvision fails with Windows error 4551 while loading
+`torch_cuda.dll` or a torchvision `.pyd`, ask the system administrator to
+authorize the official PyTorch binaries.
 
 # Docker Training and Evaluation
 
@@ -624,4 +649,3 @@ If you find our [paper](https://arxiv.org/abs/2210.00716) or this toolbox useful
 # Acknowledgement 
 
 This research project is supported by a Google PhD Fellowship for Xin Liu and a research grant from Cisco for the University of Washington as well as a career start-up funding grant from the Department of Computer Science at UNC Chapel Hill. This research is also supported by Tsinghua University Initiative Scientific Research Program, Beijing Natural Science Foundation,  and the Natural Science Foundation of China (NSFC). We also would like to acknowledge all the contributors from the open-source community. 
-
