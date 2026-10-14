@@ -15,9 +15,62 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from config import _vhrm_node, get_config  # noqa: E402
 from dataset.data_loader import VHRMLoader as V  # noqa: E402
+from dataset.data_loader.BaseLoader import BaseLoader  # noqa: E402
 from launcher import configs, validation  # noqa: E402
 
 EXAMPLE_CONFIGS = sorted((ROOT / "configs").rglob("*vHRM*.yaml"))
+
+
+def pulsing_skin(seconds, fs=30, hr_hz=1.2, seed=0):
+    """Mean RGB of skin whose blood volume pulses at hr_hz, and that blood volume.
+
+    More blood absorbs more light, so every channel darkens along the pulsatility
+    vector of skin (de Haan & van Leest, 2014)."""
+    times = np.arange(int(seconds * fs)) / fs
+    blood_volume = np.sin(2 * np.pi * hr_hz * times)
+    rng = np.random.default_rng(seed)
+    rgb = np.array([150.0, 100.0, 80.0]) * (
+        1.0 - 0.004 * blood_volume[:, None] * np.array([0.33, 0.77, 0.53])
+        + 0.03 * np.sin(2 * np.pi * 0.05 * times)[:, None]       # slow illumination drift
+        + 0.0005 * rng.standard_normal((len(times), 3)))
+    return rgb, blood_volume
+
+
+class PosPseudoLabelTests(unittest.TestCase):
+    def test_pulse_rate_and_ppg_polarity(self):
+        rgb, blood_volume = pulsing_skin(60)
+        label = V.pos_pseudo_ppg(rgb, 30)
+        self.assertTrue(np.all(np.isfinite(label)))
+        self.assertLessEqual(np.nanmax(np.abs(label)), 1.0 + 1e-9)
+        spectrum = np.abs(np.fft.rfft(label))
+        self.assertAlmostEqual(np.fft.rfftfreq(len(label), 1 / 30)[np.argmax(spectrum)], 1.2, delta=0.05)
+        middle = slice(60, -60)
+        self.assertGreater(np.corrcoef(label[middle], blood_volume[middle])[0, 1], 0.9)
+
+    def test_matches_the_toolbox_pseudo_labels_up_to_sign(self):
+        rgb, _ = pulsing_skin(40)
+        reference = BaseLoader.generate_pos_psuedo_labels(None, rgb.reshape(-1, 1, 1, 3), fs=30)
+        label = V.pos_pseudo_ppg(rgb, 30)
+        middle = slice(90, -90)
+        self.assertGreater(np.corrcoef(label[middle], -reference[middle])[0, 1], 0.999)
+
+    def test_frames_without_a_valid_window_are_missing(self):
+        rgb, _ = pulsing_skin(60)
+        rgb[600:900] = 0.0                                     # black frames
+        label = V.pos_pseudo_ppg(rgb, 30)
+        self.assertTrue(np.all(np.isnan(label[660:840])))
+        self.assertTrue(np.all(np.isfinite(label[:550])))
+        self.assertTrue(np.all(np.isnan(V.pos_pseudo_ppg(rgb[:40], 30))))
+
+    def test_build_signals_uses_the_video_trace_without_sync_shift(self):
+        rgb, _ = pulsing_skin(20)
+        recording = {"participant_dir": "missing", "segment_dir": "missing", "start_epoch": 0.0}
+        settings = {"ppg_source": "pos_pseudo", "sync_delay": 2.5, "hr_source": "zephyr",
+                    "rpeak_delay": 0.0, "rpeak_sigma": 0.0}
+        signals = V.build_signals(recording, 650, 30, settings, rgb)
+        np.testing.assert_allclose(signals["ppg"][:600], V.pos_pseudo_ppg(rgb, 30))
+        self.assertTrue(np.all(np.isnan(signals["ppg"][600:])))
+        self.assertTrue(np.all(np.isnan(signals["hr"])))
 
 
 class LabelHelperTests(unittest.TestCase):
@@ -126,6 +179,22 @@ class NamingAgreementTests(unittest.TestCase):
                     locations = validation.derived_locations(values, prefix)
                     self.assertEqual(locations["exp_data_name"], split.EXP_DATA_NAME)
                     self.assertEqual(Path(locations["file_list"]).name, Path(split.FILE_LIST_PATH).name)
+
+
+class LauncherPseudoLabelTests(unittest.TestCase):
+    def test_generic_pseudo_label_switch_is_redirected_and_pos_test_labels_warned(self):
+        path = next(path for path in EXAMPLE_CONFIGS if path.parent.name == "launcher")
+        values, errors, _ = configs.normalize(configs.flatten(configs.read_yaml_tree(path)))
+        self.assertFalse(errors)
+        values["TRAIN.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL"] = True
+        for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
+            values[prefix + ".VHRM.PPG_SOURCE"] = "pos_pseudo"
+        report = validation.validate(values, backend="local")
+        self.assertIn("TRAIN.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL", {entry["key"] for entry in report["errors"]})
+        warned = {entry["key"] for entry in report["warnings"]}
+        self.assertIn("TEST.DATA.VHRM.PPG_SOURCE", warned)
+        self.assertNotIn("TRAIN.DATA.VHRM.PPG_SOURCE", warned)
+        self.assertNotIn("TRAIN.DATA.VHRM.PPG_SOURCE", {entry["key"] for entry in report["errors"]})
 
 
 if __name__ == "__main__":

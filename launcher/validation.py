@@ -276,6 +276,12 @@ def _check_split(values, prefix, backend, report, env, active_fields):
         if values[p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX"]:
             report.error("vHRM streaming preprocessing does not support the median face box.",
                          p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX")
+        if values[p + ".USE_PSUEDO_PPG_LABEL"] and prefix != "UNSUPERVISED.DATA":
+            report.error(f"{section}: vHRM ignores this option; set Training waveform to pos_pseudo instead.",
+                         p + ".USE_PSUEDO_PPG_LABEL")
+        if prefix == "TEST.DATA" and values[prefix + ".VHRM.PPG_SOURCE"] == "pos_pseudo":
+            report.warn(f"{section}: label-based metrics will compare against POS, not a pulse sensor; "
+                        "metrics against the measured HR are unaffected.", prefix + ".VHRM.PPG_SOURCE")
     if prefix == "UNSUPERVISED.DATA" and values[p + ".USE_PSUEDO_PPG_LABEL"]:
         report.error("Pseudo PPG labels are not supported for unsupervised methods.", p + ".USE_PSUEDO_PPG_LABEL")
 
