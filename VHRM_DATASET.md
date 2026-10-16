@@ -108,6 +108,12 @@ python main.py --config_file configs/infer_configs/vHRM_UNSUPERVISED_UV.yaml
 python main.py --config_file configs/train_configs/vHRM_vHRM_vHRM_PHYSNET_UV128.yaml
 python main.py --config_file configs/train_configs/vHRM_vHRM_vHRM_TSCAN_UV72.yaml
 python main.py --config_file configs/infer_configs/UBFC-rPPG_UNSUPERVISED_UV.yaml
+
+# PhysNet on UBFC-rPPG, same subjects / splits (60/20/20) / training: UV 128 px, UV 72 px, and the face crop
+# (YOLO5Face, 128 px, original videos) as the reference.
+python main.py --config_file configs/train_configs/UBFC-rPPG_UBFC-rPPG_PHYSNET_UV128.yaml
+python main.py --config_file configs/train_configs/UBFC-rPPG_UBFC-rPPG_PHYSNET_UV72.yaml
+python main.py --config_file configs/train_configs/UBFC-rPPG_UBFC-rPPG_PHYSNET_FACE128.yaml
 python tools/vhrm_inventory.py --config configs/infer_configs/vHRM_UNSUPERVISED_UV.yaml   # selection dry-run
 python tools/vhrm_inventory.py --data-path <converted experiments root> --uv                 # every segment
 ```
