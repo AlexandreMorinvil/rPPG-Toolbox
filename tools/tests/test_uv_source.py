@@ -244,8 +244,11 @@ class NamingTests(unittest.TestCase):
                 config = get_config(argparse.Namespace(config_file=str(path)))
                 values, errors, _ = configs.normalize(configs.flatten(configs.read_yaml_tree(path)))
                 self.assertFalse(errors)
-                for prefix, split in (("TRAIN.DATA", config.TRAIN.DATA), ("TEST.DATA", config.TEST.DATA),
-                                      ("UNSUPERVISED.DATA", config.UNSUPERVISED.DATA)):
+                splits = [("TRAIN.DATA", config.TRAIN.DATA), ("TEST.DATA", config.TEST.DATA),
+                          ("UNSUPERVISED.DATA", config.UNSUPERVISED.DATA)]
+                if config.TOOLBOX_MODE == "train_and_test" and not config.TEST.USE_LAST_EPOCH:
+                    splits.append(("VALID.DATA", config.VALID.DATA))
+                for prefix, split in splits:
                     if not split.DATASET or not split.UV.ENABLED:
                         continue
                     self.assertFalse(split.PREPROCESS.CROP_FACE.DO_CROP_FACE)
@@ -254,6 +257,13 @@ class NamingTests(unittest.TestCase):
                     self.assertEqual(Path(locations["file_list"]).name, Path(split.FILE_LIST_PATH).name)
                     if split.DATASET == "vHRM":
                         self.assertTrue(split.EXP_DATA_NAME.startswith("vHRMUV_"))
+
+    def test_uv_training_configs_have_a_validation_split(self):
+        for path in sorted((ROOT / "configs" / "train_configs").glob("*_UV*.yaml")):
+            with self.subTest(config=path.name), contextlib.redirect_stdout(io.StringIO()):
+                config = get_config(argparse.Namespace(config_file=str(path)))
+                self.assertFalse(config.TEST.USE_LAST_EPOCH)
+                self.assertTrue(config.VALID.DATA.DATASET and config.VALID.DATA.UV.ENABLED)
 
     def test_invalid_settings_are_rejected(self):
         data = self.data()

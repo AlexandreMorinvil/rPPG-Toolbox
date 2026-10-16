@@ -1,4 +1,5 @@
-# PhysNet trained on UBFC-rPPG read as 128x128 body UV maps (vHRM Studio mirror conversion), subjects split 80/20.
+# PhysNet trained on UBFC-rPPG read as 128x128 body UV maps (vHRM Studio mirror conversion).
+# Subjects split 60/20/20: TRAIN, VALID (picks the best epoch), TEST.
 BASE: ['']
 TOOLBOX_MODE: "train_and_test"
 TRAIN:
@@ -17,6 +18,36 @@ TRAIN:
     CACHED_PATH: "C:/rPPG_cache"
     EXP_DATA_NAME: ""
     BEGIN: 0.0
+    END: 0.6
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean                     # neural models: no 0/value jumps
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 128
+        W: 128
+VALID:
+  DATA:
+    FS: 30
+    DATASET: UBFC-rPPG
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example/UBFC_vhrm"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.6
     END: 0.8
     UV:
       ENABLED: True
@@ -39,7 +70,7 @@ TRAIN:
         W: 128
 TEST:
   METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR']
-  USE_LAST_EPOCH: True
+  USE_LAST_EPOCH: False                       # test the best epoch on VALID
   DATA:
     FS: 30
     DATASET: UBFC-rPPG
