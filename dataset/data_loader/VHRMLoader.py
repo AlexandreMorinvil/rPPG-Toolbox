@@ -8,7 +8,9 @@ Expected layout (produced by the vHRM video research tool):
             meta.json, cam<N>_Camera_<View>.mp4, zephyr_1.csv, synthetic_ppg/*.csv
 
 One recording is one (segment, camera view). Videos are resampled to DATA.FS and cached
-as clips shared by every split. Labels are a PPG waveform sampled on the absolute time of
+as clips shared by every split. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
+converted by vHRM Studio: each camera is read from `cam<N>_Camera_<View>_skin_uv.h5` (the compact
+body UV map, pooled to RESIZE and resampled to DATA.FS) instead of the video. Labels are a PPG waveform sampled on the absolute time of
 each frame; a ground-truth sidecar holds the measured HR, HRV, and respiration rate used
 for evaluation. Labels live in a sub-folder per label setting, so changing the waveform
 source or the sync correction never requires decoding the videos again.
@@ -31,6 +33,7 @@ import torch
 from tqdm import tqdm
 
 from dataset.data_loader.BaseLoader import BaseLoader
+from dataset.data_loader import uv_source
 
 CACHE_VERSION = 2
 KNOWN_VIEWS = ("front", "back-left", "back-right")
@@ -119,8 +122,16 @@ def _sorted_glob(directory, pattern):
     return sorted(glob.glob(os.path.join(directory, pattern)))
 
 
-def discover_segments(data_path, experiments=()):
-    """List every labelled segment under DATA_PATH, without filtering views or labels."""
+def source_suffix(data):
+    """File suffix that replaces a camera's video extension: the UV HDF5 suffix in UV mode, else None."""
+    uv = getattr(data, "UV", None)
+    return (uv.H5_SUFFIX or uv_source.H5_SUFFIX) if uv is not None and uv.ENABLED else None
+
+
+def discover_segments(data_path, experiments=(), suffix=None):
+    """List every labelled segment under DATA_PATH, without filtering views or labels.
+
+    suffix: read each camera from `<video stem><suffix>` (UV mode) instead of the video file."""
     if not os.path.isdir(data_path):
         raise ValueError(f"vHRM data path does not exist: {data_path}")
     experiments = {slug(experiment) for experiment in experiments}
@@ -148,7 +159,10 @@ def discover_segments(data_path, experiments=()):
                 cameras = []
                 for camera in metadata.get("cameras", []):
                     label = str(camera.get("label", ""))
-                    video_path = os.path.join(segment_entry.path, camera.get("video_file", ""))
+                    video_file = camera.get("video_file", "")
+                    if suffix and video_file:
+                        video_file = os.path.splitext(video_file)[0] + suffix
+                    video_path = os.path.join(segment_entry.path, video_file)
                     cameras.append({
                         "view": slug(label.removeprefix("Camera_")),
                         "camera_label": label,
@@ -255,7 +269,8 @@ def select_recordings(segments, vhrm, warn=print):
                      f"(map it with VIEW_ALIASES).")
                 continue
             if not camera["exists"]:
-                warn(f"vHRM: missing video for view {view!r} in {segment['segment_dir']}.")
+                warn(f"vHRM: missing {os.path.basename(camera['path']) or 'video'} for view {view!r} "
+                     f"in {segment['segment_dir']}.")
                 continue
             recording_id = "--".join((
                 segment["experiment"], segment["participant"], segment["segment_index"], label, view))
@@ -451,7 +466,9 @@ def _file_signature(path):
 
 
 class VHRMLoader(BaseLoader):
-    """Load vHRM videos with a PPG training label and measured HR for evaluation."""
+    """Load vHRM videos (or their body UV maps) with a PPG training label and measured HR for evaluation."""
+
+    HANDLES_UV_INPUT = True
 
     def __init__(self, name, data_path, config_data, device=None):
         vhrm = config_data.VHRM
@@ -483,7 +500,7 @@ class VHRMLoader(BaseLoader):
     # ------------------------------------------------------------------ selection
 
     def get_raw_data(self, data_path):
-        segments = discover_segments(data_path, self.vhrm.EXPERIMENTS)
+        segments = discover_segments(data_path, self.vhrm.EXPERIMENTS, source_suffix(self.config_data))
         recordings = select_recordings(segments, self.vhrm)
         if not recordings:
             raise ValueError(f"{self.dataset_name}: no vHRM recordings match the VHRM selection "
@@ -538,7 +555,10 @@ class VHRMLoader(BaseLoader):
             "roi": list(roi) if roi else None,
             "cache_dtype": self.cache_dtype_name,
         }
-        if mode in ("face", "face_or_full"):
+        if self.uv_enabled:
+            settings.update({"input": "uv", "uv": uv_source.uv_settings(self.config_data.UV),
+                             "crop_mode": None, "roi": None})
+        elif mode in ("face", "face_or_full"):
             settings.update({
                 "crop_backend": crop.BACKEND,
                 "large_box": crop.USE_LARGE_FACE_BOX,
@@ -685,8 +705,11 @@ class VHRMLoader(BaseLoader):
             crop_mode = self._crop_mode(recording, config_preprocess)
             crop_stats = {"mode": crop_mode[0], "attempts": 0, "failures": 0}
             try:
-                frames = self.read_video(recording["path"], self.config_data.FS, config_preprocess,
-                                         decode_progress, crop_mode, crop_stats)
+                if self.uv_enabled:
+                    frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats)
+                else:
+                    frames = self.read_video(recording["path"], self.config_data.FS, config_preprocess,
+                                             decode_progress, crop_mode, crop_stats)
             finally:
                 decode_progress.close()
             decoded_seconds = len(frames) / self.config_data.FS
@@ -706,6 +729,19 @@ class VHRMLoader(BaseLoader):
                 f"[{recording_id}] Complete: {chunk_count} clips in {time.perf_counter() - started_at:.1f}s.")
         except Exception:
             print(f"ERROR: [{recording_id}] preprocessing failed:\n{traceback.format_exc()}")
+
+    def _read_uv(self, recording, config_preprocess, progress, crop_stats):
+        """Body UV frames of the recording's HDF5 file, resampled to DATA.FS (same timing as the video path)."""
+        frames, info = uv_source.load_uv_video(
+            recording["path"], self.config_data.UV, config_preprocess.RESIZE.W,
+            target_fps=self.config_data.FS, progress=progress)
+        crop_stats.update({"mode": "uv", "mean_valid_fraction": round(info["mean_valid_fraction"], 4),
+                           "empty_frames": info["empty_frames"], "bad_rows": info["bad_rows"]})
+        if info["mean_valid_fraction"] < 0.01 or info["empty_frames"] > len(frames) / 2:
+            print(f"WARNING: [{recording['index']}] the UV map is mostly empty: "
+                  f"{100 * info['mean_valid_fraction']:.2f} % valid pixels on average, "
+                  f"{info['empty_frames']}/{len(frames)} frames without any.")
+        return frames
 
     def _progress_message(self, message):
         if self.show_video_progress:

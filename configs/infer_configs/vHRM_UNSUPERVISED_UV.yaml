@@ -1,0 +1,54 @@
+# Unsupervised baselines (POS, CHROM, ...) on the compact body UV map of the vHRM Studio files, all three views,
+# scored against Zephyr HR. DATA_PATH is the folder holding the converted experiments (here data_example, whose
+# baseline_vhrm folder is the converted baseline experiment); only EXPERIMENTS are read.
+# UV.CHARTS: [] = every visible body part; ['head'] compares with the face crop of vHRM_UNSUPERVISED_FRONT.yaml.
+BASE: ['']
+TOOLBOX_MODE: "unsupervised_method"
+TRAIN:
+  DATA_LOADER_WORKERS: 2
+UNSUPERVISED:
+  METHOD: ["POS", "CHROM", "GREEN", "LGI", "PBV", "OMIT"]
+  METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR']
+  DATA:
+    FS: 30
+    DATASET: vHRM
+    DO_PREPROCESS: True                       # incremental: only new or changed .h5 files are read
+    DATA_FORMAT: NDHWC
+    DATA_PATH: "C:/Users/alexa/Projects/data_example"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 1.0
+    VHRM:
+      EXPERIMENTS: ['baseline_vhrm']
+      LABELS: []
+      VIEWS: ['front', 'back-left', 'back-right']
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: False
+    UV:
+      ENABLED: True
+      LAYOUT: packed                          # the compact semantic atlas (22 charts)
+      CHARTS: []                              # e.g. ['head'], ['arm_l', 'arm_r'], ...
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: none                              # unsupervised: invalid pixels stay 0 and are not averaged
+    PREPROCESS:
+      DATA_TYPE: ['Raw']
+      DATA_AUG: ['None']
+      LABEL_TYPE: Raw
+      DO_CHUNK: True
+      CHUNK_LENGTH: 900                       # 30 s clips
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 64                                 # any square size; 1024 / 64 = 16x16 texels per pixel
+        W: 64
+DEVICE: cpu
+LOG:
+  PATH: runs/vHRM_unsupervised_uv
+INFERENCE:
+  EVALUATION_METHOD: "FFT"
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: True
+    WINDOW_SIZE: 30

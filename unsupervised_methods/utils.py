@@ -25,6 +25,28 @@ def detrend(input_signal, lambda_value):
     return filtered_signal
 
 
+def masked_spatial_mean(frames):
+    """Per-frame mean RGB of the valid pixels (any channel non-zero), as (T, 1, 1, 3) frames.
+
+    UV-map frames are 0 where no skin was seen, and that set changes from frame to frame: a plain mean
+    over H*W would scale the trace by the visible fraction. Every method then averages a single pixel.
+    Frames without any valid pixel are interpolated from their neighbours."""
+    frames = np.asarray(frames, dtype=np.float64)
+    valid = np.any(frames != 0, axis=-1)
+    counts = valid.sum(axis=(1, 2))
+    sums = frames.sum(axis=(1, 2))
+    rgb = np.full((len(frames), 3), np.nan)
+    seen = counts > 0
+    rgb[seen] = sums[seen] / counts[seen, None]
+    if not seen.any():
+        rgb[:] = 1.0
+    elif not seen.all():
+        steps = np.arange(len(frames))
+        for channel in range(3):
+            rgb[~seen, channel] = np.interp(steps[~seen], steps[seen], rgb[seen, channel])
+    return rgb[:, None, None, :]
+
+
 def process_video(frames):
     RGB = []
     for frame in frames:

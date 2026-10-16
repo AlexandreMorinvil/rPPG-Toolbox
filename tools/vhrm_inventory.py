@@ -21,14 +21,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from dataset.data_loader.VHRMLoader import (  # noqa: E402
-    KNOWN_VIEWS, discover_segments, resolve_signal_files, select_recordings)
+    KNOWN_VIEWS, discover_segments, resolve_signal_files, select_recordings, source_suffix)
 
 SPLITS = ("TRAIN", "VALID", "TEST", "UNSUPERVISED")
 
 
-def inventory(data_path):
+def inventory(data_path, suffix=None):
     rows = []
-    for segment in discover_segments(data_path):
+    for segment in discover_segments(data_path, suffix=suffix):
         files = resolve_signal_files(segment)
         views = {camera["view"]: camera for camera in segment["cameras"]}
         row = {
@@ -84,7 +84,7 @@ def split_selection(config, split):
     data = getattr(config, split).DATA
     if data.DATASET != "vHRM" or not data.DATA_PATH:
         return None
-    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS)
+    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data))
     recordings = select_recordings(segments, data.VHRM, warn=lambda message: None)
     if not (data.BEGIN == 0 and data.END == 1):
         participants = sorted({recording["participant"] for recording in recordings})
@@ -110,7 +110,8 @@ def print_config_selection(config_path, show_recordings):
         selections[split] = recordings
         data = getattr(config, split).DATA
         hours = sum(recording["duration_sec"] for recording in recordings) / 3600
-        print(f"{split}: {len(recordings)} recordings, {hours:.2f} h of video, "
+        source = f"UV maps ({data.UV.LAYOUT}, {data.PREPROCESS.RESIZE.W} px)" if data.UV.ENABLED else "video"
+        print(f"{split}: {len(recordings)} recordings, {hours:.2f} h of {source}, "
               f"PPG source {data.VHRM.PPG_SOURCE}, HR source {data.VHRM.HR_SOURCE}, "
               f"REQUIRE_PPG {data.VHRM.REQUIRE_PPG}")
         print("  participants: " + ", ".join(sorted({recording["participant"] for recording in recordings})))
@@ -118,8 +119,13 @@ def print_config_selection(config_path, show_recordings):
             collections.Counter(recording["label"] for recording in recordings).items())))
         print("  views:        " + ", ".join(f"{view} ({count})" for view, count in sorted(
             collections.Counter(recording["view"] for recording in recordings).items())))
-        modes = collections.Counter((recording["view"], recording["crop_mode"][0]) for recording in recordings)
-        print("  crop modes:   " + ", ".join(f"{view}={mode}" for view, mode in sorted(modes)))
+        if data.UV.ENABLED:
+            charts = ", ".join(data.UV.CHARTS) or "all"
+            print(f"  UV charts:    {charts} (excluded: {', '.join(data.UV.EXCLUDE_CHARTS) or 'none'}), "
+                  f"fill {data.UV.FILL}, min coverage {data.UV.MIN_COVERAGE}")
+        else:
+            modes = collections.Counter((recording["view"], recording["crop_mode"][0]) for recording in recordings)
+            print("  crop modes:   " + ", ".join(f"{view}={mode}" for view, mode in sorted(modes)))
         if show_recordings:
             for recording in recordings:
                 print(f"    {recording['index']}  ({recording['duration_sec']:.0f}s)")
@@ -145,12 +151,14 @@ def main():
     parser.add_argument("--config", help="Toolbox YAML config to dry-run.")
     parser.add_argument("--csv", help="Write the segment inventory to this CSV file.")
     parser.add_argument("--recordings", action="store_true", help="List every selected recording.")
+    parser.add_argument("--uv", action="store_true",
+                        help="With --data-path: look for the vHRM Studio *_skin_uv.h5 files instead of the videos.")
     args = parser.parse_args()
     if not args.data_path and not args.config:
         parser.error("give --data-path and/or --config")
     os.chdir(ROOT)
     if args.data_path:
-        frame = inventory(args.data_path)
+        frame = inventory(args.data_path, "_skin_uv.h5" if args.uv else None)
         print_inventory(frame)
         if args.csv:
             frame.to_csv(args.csv, index=False)

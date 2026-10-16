@@ -247,6 +247,28 @@ def _split_fields(prefix, spec):
         group="vHRM", when_extra=vhrm)
     add("VHRM.SHOW_VIDEO_PROGRESS", "bool", True, "Show per-video progress", group="vHRM",
         when_extra=vhrm)
+    add("UV.ENABLED", "bool", False, "Use the body UV map",
+        "Read the compact UV map of the vHRM Studio .h5 files instead of the video (no face crop). "
+        "The data folder must be the converted dataset; the frame size is the resize size (square).",
+        group="UV input")
+    add("UV.LAYOUT", "enum", "packed", "UV layout", "packed: compact semantic atlas; standard: SMPL-X layout.",
+        options=["packed", "standard"], group="UV input")
+    add("UV.CHARTS", "list", [], "Body charts", "Packed charts to keep, e.g. head. Empty = whole body.",
+        group="UV input")
+    add("UV.EXCLUDE_CHARTS", "list", [], "Excluded body charts", "e.g. foot_l, foot_r.", group="UV input")
+    add("UV.MIN_COVERAGE", "float", 0.25, "Minimum skin coverage",
+        "Skin fraction of a pixel's texel block for the pixel to count as valid.", min=0.0, max=1.0,
+        group="UV input")
+    add("UV.FILL", "enum", "temporal_mean", "Invalid pixels",
+        "none keeps 0 (use it for unsupervised methods); temporal_mean / hold fill them for neural models.",
+        options=["none", "temporal_mean", "hold"], group="UV input")
+    add("UV.MIN_PIXEL_VALID_FRACTION", "float", 0.0, "Minimum pixel validity",
+        "Pixels valid in fewer frames than this fraction are 0 for the whole recording.", min=0.0, max=1.0,
+        group="UV input", advanced=True)
+    add("UV.RESAMPLE_TO_FS", "bool", False, "Resample UV frames to FS",
+        "Other datasets: resample the stored rows to the frame rate. vHRM always resamples.",
+        group="UV input", advanced=True)
+    add("UV.H5_SUFFIX", "str", "_skin_uv.h5", "HDF5 file suffix", group="UV input", advanced=True)
     add("FILE_LIST_PATH", "str", "", "File list override",
         "Leave empty to use <cache folder>/DataFileLists. A .csv file requires preprocessing off.",
         group="Advanced", advanced=True)

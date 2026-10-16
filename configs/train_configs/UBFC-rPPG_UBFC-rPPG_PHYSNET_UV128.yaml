@@ -1,0 +1,87 @@
+# PhysNet trained on UBFC-rPPG read as 128x128 body UV maps (vHRM Studio mirror conversion), subjects split 80/20.
+BASE: ['']
+TOOLBOX_MODE: "train_and_test"
+TRAIN:
+  BATCH_SIZE: 4
+  EPOCHS: 30
+  LR: 9e-3
+  MODEL_FILE_NAME: UBFC_UBFC_physnet_uv128
+  PLOT_LOSSES_AND_LR: True
+  DATA_LOADER_WORKERS: 4
+  DATA:
+    FS: 30
+    DATASET: UBFC-rPPG
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example/UBFC_vhrm"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 0.8
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean                     # neural models: no 0/value jumps
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 128
+        W: 128
+TEST:
+  METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR']
+  USE_LAST_EPOCH: True
+  DATA:
+    FS: 30
+    DATASET: UBFC-rPPG
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example/UBFC_vhrm"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.8
+    END: 1.0
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: False
+      RESIZE:
+        H: 128
+        W: 128
+DEVICE: cuda:0
+NUM_OF_GPU_TRAIN: 1
+LOG:
+  PATH: runs/UBFC_physnet_uv128
+MODEL:
+  DROP_RATE: 0.2
+  NAME: Physnet
+  PHYSNET:
+    FRAME_NUM: 128
+INFERENCE:
+  BATCH_SIZE: 4
+  EVALUATION_METHOD: "FFT"
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: False
+    WINDOW_SIZE: 10
+  MODEL_PATH: ""

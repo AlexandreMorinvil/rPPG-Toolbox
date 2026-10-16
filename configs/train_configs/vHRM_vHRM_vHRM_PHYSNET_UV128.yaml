@@ -1,0 +1,148 @@
+# PhysNet on the compact body UV map (vHRM Studio .h5 files) instead of the face crop: 128x128 maps, each pixel
+# the mean of the skin texels of a 8x8 block of the 1024x1024 atlas. Same splits as vHRM_vHRM_vHRM_PHYSNET_FRONT.yaml
+# on the converted baseline experiment (DATA_PATH holds baseline_vhrm). UV.CHARTS: ['head'] restricts the map to the
+# head chart; VIEWS can add the back cameras (each camera is its own recording).
+BASE: ['']
+TOOLBOX_MODE: "train_and_test"
+TRAIN:
+  BATCH_SIZE: 4
+  EPOCHS: 15
+  LR: 9e-3
+  MODEL_FILE_NAME: vHRM_vHRM_vHRM_physnet_uv128
+  PLOT_LOSSES_AND_LR: True
+  DATA_LOADER_WORKERS: 4
+  DATA:
+    FS: 30
+    DATASET: vHRM
+    DO_PREPROCESS: True                       # incremental: only new or changed .h5 files are read
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 1.0
+    VHRM:
+      EXPERIMENTS: ['baseline_vhrm']
+      PARTICIPANTS: []                        # empty = all participants of the experiments
+      EXCLUDE_PARTICIPANTS: ['jzc13_baseline', 'jzc14_baseline', 'jzc15_baseline', 'jzc15_baseline_bl',
+                             'jzc16_baseline', 'jzc17_baseline']
+      LABELS: ['Baseline_part1', 'Baseline_part2']
+      VIEWS: ['front']
+      PPG_SOURCE: synthetic                   # synthetic | rpeak_sine | rpeak_gaussian
+      PPG_DELAY_SEC: 0.0                      # global sync correction (see tools/vhrm_sync_check.py)
+      LAG_TABLE_PATH: ''                      # or the per-segment CSV written by vhrm_sync_check.py
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: True
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean                     # neural models: no 0/value jumps
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 2                          # each worker holds one decoded video in RAM
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 128
+        W: 128
+VALID:
+  DATA:
+    FS: 30
+    DATASET: vHRM
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 1.0
+    VHRM:
+      EXPERIMENTS: ['baseline_vhrm']
+      PARTICIPANTS: ['jzc13_baseline', 'jzc14_baseline']
+      LABELS: ['Baseline_part1', 'Baseline_part2']
+      VIEWS: ['front']
+      PPG_SOURCE: synthetic
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: True
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean                     # neural models: no 0/value jumps
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 128
+        W: 128
+TEST:
+  METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR']
+  USE_LAST_EPOCH: False                       # pick the best epoch on VALID
+  DATA:
+    FS: 30
+    DATASET: vHRM
+    DO_PREPROCESS: True
+    DATA_FORMAT: NCDHW
+    DATA_PATH: "C:/Users/alexa/Projects/data_example"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 1.0
+    VHRM:
+      EXPERIMENTS: ['baseline_vhrm']
+      PARTICIPANTS: ['jzc15_baseline', 'jzc15_baseline_bl', 'jzc16_baseline', 'jzc17_baseline']
+      LABELS: []
+      VIEWS: ['front']
+      PPG_SOURCE: synthetic
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: False                      # keep clips without PPG; they are scored on Zephyr HR
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: []
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: temporal_mean                     # neural models: no 0/value jumps
+    PREPROCESS:
+      DATA_TYPE: ['DiffNormalized']
+      DATA_AUG: ['None']
+      LABEL_TYPE: DiffNormalized
+      DO_CHUNK: True
+      CHUNK_LENGTH: 128
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 128
+        W: 128
+DEVICE: cuda:0
+NUM_OF_GPU_TRAIN: 1
+LOG:
+  PATH: runs/vHRM_physnet_uv128
+MODEL:
+  DROP_RATE: 0.2
+  NAME: Physnet
+  PHYSNET:
+    FRAME_NUM: 128
+INFERENCE:
+  BATCH_SIZE: 4
+  EVALUATION_METHOD: "FFT"
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: True
+    WINDOW_SIZE: 30                           # seconds; 30 s windows give ~2 bpm FFT resolution
+  MODEL_PATH: ""

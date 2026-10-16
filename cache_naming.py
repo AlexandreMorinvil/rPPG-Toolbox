@@ -36,13 +36,43 @@ def _canonical(value):
     return value
 
 
+UV_KEYS = ('LAYOUT', 'CHARTS', 'EXCLUDE_CHARTS', 'MIN_COVERAGE', 'FILL', 'MIN_PIXEL_VALID_FRACTION', 'RESAMPLE_TO_FS')
+
+
+def _uv_values(values, prefix):
+    """UV settings that change the clips, or None when the UV input mode is off."""
+    if not values.get(prefix + '.UV.ENABLED'):
+        return None
+    uv = {}
+    for key in UV_KEYS:
+        value = values.get(f'{prefix}.UV.{key}')
+        if isinstance(value, (list, tuple)):
+            value = sorted(str(item).strip().lower() for item in value if str(item).strip())
+        elif isinstance(value, str):
+            value = value.strip().lower()
+        uv[key.lower()] = value
+    return _canonical(uv)
+
+
+def uv_identity(data):
+    """UV settings of a DATA node (None when off); shared by the vHRM cache name."""
+    return _uv_values(flatten_settings(data, 'DATA'), 'DATA')
+
+
 def preprocessing_identity(values, prefix):
     """All preprocessing settings, including dataset-specific transforms and true H."""
     start = prefix + '.PREPROCESS.'
     settings = {key[len(start):]: value for key, value in values.items()
                 if key.startswith(start) and key != start + 'NUM_WORKERS'}
-    return _canonical({'version': 1, 'dataset': values.get(prefix + '.DATASET', ''),
-                       'fs': values[prefix + '.FS'], 'preprocess': settings})
+    uv = _uv_values(values, prefix)
+    if uv:
+        # The face crop does not apply to UV maps (config.py turns it off).
+        settings = {key: value for key, value in settings.items() if not key.startswith('CROP_FACE.')}
+    identity = {'version': 1, 'dataset': values.get(prefix + '.DATASET', ''),
+                'fs': values[prefix + '.FS'], 'preprocess': settings}
+    if uv:  # absent when off, so face-crop identities (and their caches) are unchanged
+        identity['uv'] = uv
+    return _canonical(identity)
 
 
 def settings_path(directory):
@@ -81,7 +111,10 @@ def compact_name(values, prefix):
     p = prefix + '.PREPROCESS.'
     types = '+'.join(TYPE_CODES.get(t, _token(t, 6)) for t in values[p + 'DATA_TYPE'])
     label = TYPE_CODES.get(values[p + 'LABEL_TYPE'], _token(values[p + 'LABEL_TYPE'], 6))
-    crop = values[p + 'CROP_FACE.BACKEND'] if values[p + 'CROP_FACE.DO_CROP_FACE'] else 'FULL'
+    if 'uv' in identity:
+        crop = 'UV' if identity['uv'].get('layout') == 'packed' else 'UVSTD'
+    else:
+        crop = values[p + 'CROP_FACE.BACKEND'] if values[p + 'CROP_FACE.DO_CROP_FACE'] else 'FULL'
     chunk = values[p + 'CHUNK_LENGTH'] if values[p + 'DO_CHUNK'] else 'FULL'
     mode = '_UNSUP' if prefix == 'UNSUPERVISED.DATA' else ''
     return (f"{_token(identity['dataset'])}_{values[p + 'RESIZE.W']}x{values[p + 'RESIZE.H']}"

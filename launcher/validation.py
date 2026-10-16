@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from cache_naming import compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
+from cache_naming import _uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
 from . import configs, paths, schema
 
 RAW_LAYOUTS = {
@@ -77,8 +77,13 @@ def vhrm_exp_data_name(values, prefix):
         "dtype": values[prefix + ".VHRM.CACHE_DTYPE"],
         "crop_modes": _vhrm_items(values, prefix + ".VHRM.CROP_MODE_BY_VIEW"),
     }
-    return "vHRM_{0}x{1}_C{2}_{3}_FS{4}_{5}".format(
-        values[p + ".RESIZE.W"], values[p + ".RESIZE.H"], values[p + ".CHUNK_LENGTH"],
+    uv = _uv_values(values, prefix)
+    if uv:
+        settings = {key: settings[key] for key in ("fs", "data_type", "data_aug", "do_chunk", "chunk", "resize",
+                                                   "dtype")}
+        settings["uv"] = uv
+    return "{0}_{1}x{2}_C{3}_{4}_FS{5}_{6}".format(
+        "vHRMUV" if uv else "vHRM", values[p + ".RESIZE.W"], values[p + ".RESIZE.H"], values[p + ".CHUNK_LENGTH"],
         "+".join(values[p + ".DATA_TYPE"]), values[prefix + ".FS"], _short_hash(settings, 8))
 
 
@@ -153,7 +158,8 @@ def derived_locations(values, prefix):
         name += vhrm_selection_suffix(values, prefix)
         file_list = _join(file_list, name + ".csv")
     cache_dir = _join(cached, exp)
-    if not values.get(prefix + '.EXP_DATA_NAME') and values.get(prefix + '.DATASET') != 'vHRM':
+    if (not values.get(prefix + '.EXP_DATA_NAME') and values.get(prefix + '.DATASET') != 'vHRM'
+            and not values.get(prefix + '.UV.ENABLED')):
         legacy = _join(cached, legacy_name(values, prefix))
         # Docker previews inspect the host mount but retain container paths.
         compact_host = paths.container_to_host(cache_dir) or Path(cache_dir)
@@ -248,6 +254,28 @@ def _first_cache_entry(file_list_host):
         return None, str(error)
 
 
+UV_UNSUPPORTED_DATASETS = ("SCAMPS", "MMPD", "BP4DPlus", "BP4DPlusBigSmall")
+
+
+def _check_uv(values, prefix, dataset, section, report):
+    """UV input mode rules (mirrors dataset/data_loader/uv_source.validate_settings)."""
+    p = prefix + ".PREPROCESS"
+    u = prefix + ".UV."
+    if dataset in UV_UNSUPPORTED_DATASETS:
+        report.error(f"{section}: the UV input mode does not support {dataset}.", u + "ENABLED")
+    if values[p + ".RESIZE.W"] != values[p + ".RESIZE.H"]:
+        report.error(f"{section}: the UV map is square; use the same width and height.", p + ".RESIZE.W")
+    if values[p + ".DATA_AUG"] not in (["None"], []):
+        report.error(f"{section}: the UV input mode does not support data augmentation.", p + ".DATA_AUG")
+    if values.get(u + "LAYOUT") == "standard" and (values.get(u + "CHARTS") or values.get(u + "EXCLUDE_CHARTS")):
+        report.error(f"{section}: body charts need the packed layout.", u + "CHARTS")
+    if prefix == "UNSUPERVISED.DATA" and values.get(u + "FILL") != "none":
+        report.warn(f"{section}: unsupervised methods average only the valid pixels when invalid pixels stay 0 "
+                    f"(Invalid pixels: none).", u + "FILL")
+    if values[p + ".CROP_FACE.DO_CROP_FACE"]:
+        report.note(f"{section}: face cropping is ignored in UV mode.", p + ".CROP_FACE.DO_CROP_FACE")
+
+
 def _check_split(values, prefix, backend, report, env, active_fields):
     p = prefix + ".PREPROCESS"
     dataset = values.get(prefix + ".DATASET")
@@ -272,7 +300,9 @@ def _check_split(values, prefix, backend, report, env, active_fields):
     elif aug == ["Motion"] and dataset not in MOTION_AUG_DATASETS:
         report.warn(f"{section}: {dataset} ignores motion augmentation.", p + ".DATA_AUG")
 
-    if dataset == "vHRM":
+    if values.get(prefix + ".UV.ENABLED"):
+        _check_uv(values, prefix, dataset, section, report)
+    elif dataset == "vHRM":
         if values[p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX"]:
             report.error("vHRM streaming preprocessing does not support the median face box.",
                          p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX")
