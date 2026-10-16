@@ -241,8 +241,10 @@ if __name__ == "__main__":
             valid_loader = data_loader.SUMSLoader.SUMSLoader
         elif config.VALID.DATA.DATASET == "vHRM":
             valid_loader = data_loader.VHRMLoader.VHRMLoader
-        elif config.VALID.DATA.DATASET is None and not config.TEST.USE_LAST_EPOCH:
-            raise ValueError("Validation dataset not specified despite USE_LAST_EPOCH set to False!")
+        elif not config.VALID.DATA.DATASET:  # '' (the config default) or None
+            if not config.TEST.USE_LAST_EPOCH:
+                raise ValueError("Validation dataset not specified despite USE_LAST_EPOCH set to False!")
+            valid_loader = None  # no validation split: the last epoch is tested
         else:
             raise ValueError("Unsupported dataset! Currently supporting UBFC-rPPG, PURE, MMPD, \
                              SCAMPS, BP4D+ (Normal and BigSmall preprocessing), UBFC-PHYS and iBVP")
