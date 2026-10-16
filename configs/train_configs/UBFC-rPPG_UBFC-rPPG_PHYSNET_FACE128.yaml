@@ -1,6 +1,6 @@
 # PhysNet trained on UBFC-rPPG videos with the usual face crop (YOLO5Face), 128x128: the face-crop reference
 # for UBFC-rPPG_UBFC-rPPG_PHYSNET_UV128.yaml (same subjects, splits, model and training settings).
-# For 72x72 inputs (the reference for _UV72), set RESIZE to 72 in the three splits.
+# The 72x72 version (reference for _UV72) is UBFC-rPPG_UBFC-rPPG_PHYSNET_FACE72.yaml.
 # Subjects split 60/20/20: TRAIN, VALID (picks the best epoch), TEST.
 BASE: ['']
 TOOLBOX_MODE: "train_and_test"
