@@ -29,7 +29,7 @@ def _vhrm_node(require_ppg=True):
     node.VIEW_ALIASES = []            # e.g. ['camera-1=back-left']
     # Image region per view: face | face_or_full | full | roi:x,y,w,h (source pixels)
     node.CROP_MODE_BY_VIEW = ['front=face', 'back-left=face_or_full', 'back-right=face_or_full']
-    # Training waveform: synthetic | rpeak_sine | rpeak_gaussian
+    # Training waveform: synthetic | rpeak_sine | rpeak_gaussian | pos_pseudo (POS from the video)
     node.PPG_SOURCE = 'synthetic'
     node.RPEAK_PULSE_DELAY_SEC = 0.2  # R-peak -> pulse peak delay, rpeak_* sources only
     node.RPEAK_GAUSSIAN_SIGMA = 0.15  # Gaussian width as a fraction of the local RR interval

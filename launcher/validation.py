@@ -300,12 +300,19 @@ def _check_split(values, prefix, backend, report, env, active_fields):
     elif aug == ["Motion"] and dataset not in MOTION_AUG_DATASETS:
         report.warn(f"{section}: {dataset} ignores motion augmentation.", p + ".DATA_AUG")
 
-    if values.get(prefix + ".UV.ENABLED"):
+    uv_enabled = values.get(prefix + ".UV.ENABLED")
+    if uv_enabled:
         _check_uv(values, prefix, dataset, section, report)
-    elif dataset == "vHRM":
-        if values[p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX"]:
+    if dataset == "vHRM":
+        if values[p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX"] and not uv_enabled:
             report.error("vHRM streaming preprocessing does not support the median face box.",
                          p + ".CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX")
+        if values[p + ".USE_PSUEDO_PPG_LABEL"] and prefix != "UNSUPERVISED.DATA":
+            report.error(f"{section}: vHRM ignores this option; set Training waveform to pos_pseudo instead.",
+                         p + ".USE_PSUEDO_PPG_LABEL")
+        if prefix == "TEST.DATA" and values[prefix + ".VHRM.PPG_SOURCE"] == "pos_pseudo":
+            report.warn(f"{section}: label-based metrics will compare against POS, not a pulse sensor; "
+                        "metrics against the measured HR are unaffected.", prefix + ".VHRM.PPG_SOURCE")
     if prefix == "UNSUPERVISED.DATA" and values[p + ".USE_PSUEDO_PPG_LABEL"]:
         report.error("Pseudo PPG labels are not supported for unsupervised methods.", p + ".USE_PSUEDO_PPG_LABEL")
 

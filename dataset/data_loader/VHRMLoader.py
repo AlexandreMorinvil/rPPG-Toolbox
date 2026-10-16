@@ -10,15 +10,18 @@ Expected layout (produced by the vHRM video research tool):
 One recording is one (segment, camera view). Videos are resampled to DATA.FS and cached
 as clips shared by every split. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
 converted by vHRM Studio: each camera is read from `cam<N>_Camera_<View>_skin_uv.h5` (the compact
-body UV map, pooled to RESIZE and resampled to DATA.FS) instead of the video. Labels are a PPG waveform sampled on the absolute time of
-each frame; a ground-truth sidecar holds the measured HR, HRV, and respiration rate used
-for evaluation. Labels live in a sub-folder per label setting, so changing the waveform
-source or the sync correction never requires decoding the videos again.
+body UV map, pooled to RESIZE and resampled to DATA.FS) instead of the video. Labels are a PPG
+waveform sampled on the absolute time of each frame, or a POS pseudo-PPG computed from the cached
+mean RGB of each frame (PPG_SOURCE pos_pseudo, weak supervision); a ground-truth sidecar holds the
+measured HR, HRV, and respiration rate used for evaluation. Labels live in a sub-folder per label
+setting, so changing the waveform source or the sync correction never requires decoding the videos
+again.
 """
 
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -30,15 +33,18 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
+from scipy import signal, sparse
+from scipy.sparse.linalg import spsolve
 from tqdm import tqdm
 
 from dataset.data_loader.BaseLoader import BaseLoader
 from dataset.data_loader import uv_source
+from unsupervised_methods.utils import masked_spatial_mean
 
 CACHE_VERSION = 2
 KNOWN_VIEWS = ("front", "back-left", "back-right")
 CROP_MODES = ("face", "face_or_full", "full", "roi")
-PPG_SOURCES = ("synthetic", "rpeak_sine", "rpeak_gaussian")
+PPG_SOURCES = ("synthetic", "rpeak_sine", "rpeak_gaussian", "pos_pseudo")
 HR_SOURCES = ("zephyr", "polar", "synthetic_hr")
 GT_COLUMNS = ("heart_rate_bpm", "HRV", "respiration_rate_bpm", "ppg_valid")
 
@@ -55,6 +61,10 @@ MAX_GAP_PPG = 0.1
 MAX_GAP_SLOW = 3.0
 # Plausible R-R interval range for the R-peak based waveforms (seconds).
 RR_RANGE = (0.3, 2.0)
+# POS pseudo-labels, as in BaseLoader.generate_pos_psuedo_labels.
+POS_WINDOW_SEC = 1.6
+POS_DETREND_LAMBDA = 100
+POS_BAND_HZ = (0.70, 3.0)
 # Clockwise display rotation (container metadata) -> cv2.rotate code. The vHRM cameras
 # record landscape frames tagged with a -90 degree display matrix (portrait).
 ROTATE_CODES = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
@@ -396,18 +406,74 @@ def rpeak_waveform(peak_times, query_times, shape, sigma_fraction):
     return result
 
 
-def build_signals(recording, frame_count, fs, settings):
+def _detrend(values, smoothness):
+    """Smoothness-priors detrending (unsupervised_methods.utils.detrend) with a sparse
+    solve, so that it scales to recordings of any length."""
+    count = len(values)
+    if count < 3:
+        return values - np.mean(values)
+    second_difference = sparse.diags([1.0, -2.0, 1.0], [0, 1, 2], shape=(count - 2, count))
+    system = sparse.identity(count) + smoothness ** 2 * (second_difference.T @ second_difference)
+    return values - spsolve(system.tocsc(), values)
+
+
+def pos_pseudo_ppg(rgb, fs):
+    """POS pseudo-PPG from the per-frame mean RGB of a recording.
+
+    Same steps as BaseLoader.generate_pos_psuedo_labels: POS, detrending, a 0.7-3 Hz
+    band-pass and Hilbert-envelope normalization. The sign is flipped because POS falls
+    when the blood volume rises, so the label has the polarity of the other PPG sources.
+    Frames that no valid POS window covers are NaN.
+    """
+    rgb = np.asarray(rgb, dtype=np.float64)
+    count = len(rgb)
+    window = math.ceil(POS_WINDOW_SEC * fs)
+    b, a = signal.butter(2, [POS_BAND_HZ[0] / fs * 2, POS_BAND_HZ[1] / fs * 2], btype="bandpass")
+    result = np.full(count, np.nan)
+    if count <= max(window, 3 * max(len(a), len(b))):
+        return result
+
+    blocks = np.lib.stride_tricks.sliding_window_view(rgb, window, axis=0)  # (windows, 3, window)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        normalized = blocks / blocks.mean(axis=2, keepdims=True)
+        projected = np.einsum("pc,kcw->kpw", np.array([[0.0, 1.0, -1.0], [-2.0, 1.0, 1.0]]), normalized)
+        pulse = projected[:, 0] + (projected[:, 0].std(axis=1) / projected[:, 1].std(axis=1))[:, None] * projected[:, 1]
+    pulse -= pulse.mean(axis=1, keepdims=True)
+    valid = np.all(np.isfinite(pulse), axis=1)
+    pulse[~valid] = 0.0
+
+    # Overlap-add the windows.
+    summed = np.zeros(count)
+    covered = np.zeros(count, dtype=bool)
+    for offset in range(window):
+        summed[offset:offset + len(pulse)] += pulse[:, offset]
+        covered[offset:offset + len(pulse)] |= valid
+
+    filtered = signal.filtfilt(b, a, _detrend(summed, POS_DETREND_LAMBDA))
+    envelope = np.abs(signal.hilbert(filtered))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = -filtered / envelope
+    result[~covered | ~np.isfinite(result)] = np.nan
+    return result
+
+
+def build_signals(recording, frame_count, fs, settings, rgb_trace=None):
     """Sample the training waveform and the ground-truth series at each frame time.
 
     settings: ppg_source, rpeak_delay, rpeak_sigma, sync_delay, hr_source.
-    A positive sync_delay shifts every signal later relative to the video.
+    A positive sync_delay shifts every signal later relative to the video. The pos_pseudo
+    waveform comes from the video itself (rgb_trace) and is never shifted.
     """
     files = resolve_signal_files(recording)
     times = recording["start_epoch"] + np.arange(frame_count, dtype=np.float64) / fs - settings["sync_delay"]
     signals = {}
 
     ppg = np.full(frame_count, np.nan)
-    if settings["ppg_source"] == "synthetic":
+    if settings["ppg_source"] == "pos_pseudo":
+        if rgb_trace is not None:
+            pulse = pos_pseudo_ppg(rgb_trace[:frame_count], fs)
+            ppg[:len(pulse)] = pulse
+    elif settings["ppg_source"] == "synthetic":
         if files["ppg"]:
             source_times, values = _read_values(files["ppg"], ("synthetic_ppg",))
             if values is not None:
@@ -476,6 +542,8 @@ class VHRMLoader(BaseLoader):
             raise ValueError("vHRM resamples videos to DATA.FS; set FS (e.g. 30).")
         if vhrm.PPG_SOURCE not in PPG_SOURCES:
             raise ValueError(f"VHRM.PPG_SOURCE must be one of {PPG_SOURCES}")
+        if config_data.PREPROCESS.USE_PSUEDO_PPG_LABEL:
+            raise ValueError("vHRM ignores PREPROCESS.USE_PSUEDO_PPG_LABEL; set VHRM.PPG_SOURCE: pos_pseudo.")
         if vhrm.HR_SOURCE not in HR_SOURCES:
             raise ValueError(f"VHRM.HR_SOURCE must be one of {HR_SOURCES}")
         self.vhrm = vhrm
@@ -523,6 +591,10 @@ class VHRMLoader(BaseLoader):
 
     def _input_path(self, recording, chunk):
         return os.path.join(self._recording_dir(recording), f"{recording['index']}_input{chunk}.npy")
+
+    def _rgb_trace_path(self, recording):
+        """Mean RGB of each decoded frame, the input of the pos_pseudo labels."""
+        return os.path.join(self._recording_dir(recording), f"{recording['index']}_rgb.npy")
 
     def _label_dir(self, recording, label_key):
         return os.path.join(self._recording_dir(recording), f"labels_{label_key}")
@@ -586,12 +658,16 @@ class VHRMLoader(BaseLoader):
         return settings
 
     def _label_key(self, recording, config_preprocess):
+        start_epoch = recording.get("start_epoch")
         settings = {
             "version": CACHE_VERSION,
             "fs": self.config_data.FS,
             "label_type": config_preprocess.LABEL_TYPE,
             "do_chunk": config_preprocess.DO_CHUNK,
             "chunk_length": config_preprocess.CHUNK_LENGTH,
+            # meta.json timing changes when a video/signal offset is applied in the
+            # preprocessing tool; the labels must then be resampled.
+            "start_epoch": round(float(start_epoch), 6) if start_epoch is not None else None,
             **self._label_settings(recording),
         }
         return _fingerprint(settings)[:10]
@@ -616,9 +692,11 @@ class VHRMLoader(BaseLoader):
         failed = []
         if pending:
             if not allow_video_processing:
+                trace_note = (" (or were decoded before the RGB trace that pos_pseudo needs was saved)"
+                              if self.vhrm.PPG_SOURCE == "pos_pseudo" else "")
                 raise ValueError(
                     f"{self.dataset_name}: {len(pending)} vHRM recordings are not in the cache "
-                    f"{self.cached_path}. Set DO_PREPROCESS: True.")
+                    f"{self.cached_path}{trace_note}. Set DO_PREPROCESS: True.")
             num_workers = getattr(config_preprocess, "NUM_WORKERS", 4)
             results = dict(self.multi_process_manager(
                 pending, config_preprocess, multi_process_quota=num_workers))
@@ -720,6 +798,7 @@ class VHRMLoader(BaseLoader):
                 print(f"WARNING: [{recording_id}] no face in {crop_stats['failures']}/{crop_stats['attempts']} "
                       f"detections (crop mode {crop_mode[0]}).")
             chunk_count = self.transform_and_save(frames, config_preprocess, recording, progress_position)
+            np.save(self._rgb_trace_path(recording), self._rgb_trace(frames))
             file_list_dict[index] = {
                 "frame_count": int(len(frames)),
                 "chunk_count": int(chunk_count),
@@ -729,6 +808,12 @@ class VHRMLoader(BaseLoader):
                 f"[{recording_id}] Complete: {chunk_count} clips in {time.perf_counter() - started_at:.1f}s.")
         except Exception:
             print(f"ERROR: [{recording_id}] preprocessing failed:\n{traceback.format_exc()}")
+
+    def _rgb_trace(self, frames):
+        """Mean RGB of each frame (pos_pseudo input); UV maps average only their non-empty pixels."""
+        if self.uv_enabled:
+            return masked_spatial_mean(frames).reshape(len(frames), 3)
+        return np.mean(frames, axis=(1, 2), dtype=np.float64)
 
     def _read_uv(self, recording, config_preprocess, progress, crop_stats):
         """Body UV frames of the recording's HDF5 file, resampled to DATA.FS (same timing as the video path)."""
@@ -751,6 +836,9 @@ class VHRMLoader(BaseLoader):
         if not entry or entry.get("video_fingerprint") != self._video_fingerprint(recording, config_preprocess):
             return False
         if entry.get("source") != _file_signature(recording["path"]):
+            return False
+        # Caches decoded before the RGB trace was saved are decoded again for pos_pseudo.
+        if self.vhrm.PPG_SOURCE == "pos_pseudo" and not os.path.isfile(self._rgb_trace_path(recording)):
             return False
         chunk_count = entry.get("chunk_count", 0)
         paths = [self._input_path(recording, chunk) for chunk in range(chunk_count)]
@@ -791,7 +879,9 @@ class VHRMLoader(BaseLoader):
     def _write_labels(self, recording, entry, config_preprocess, label_key):
         frame_count = entry["frame_count"]
         settings = self._label_settings(recording)
-        signals = build_signals(recording, frame_count, self.config_data.FS, settings)
+        rgb_trace = (np.load(self._rgb_trace_path(recording))
+                     if settings["ppg_source"] == "pos_pseudo" else None)
+        signals = build_signals(recording, frame_count, self.config_data.FS, settings, rgb_trace)
         ppg = transform_label(signals["ppg"], config_preprocess.LABEL_TYPE)
         ppg_valid = np.isfinite(ppg)
         ground_truth = np.column_stack(

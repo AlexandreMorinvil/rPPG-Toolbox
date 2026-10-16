@@ -157,7 +157,9 @@ def analyse(recording, args, crop):
     count = len(rgb)
     if count < args.fs * 20:
         raise ValueError(f"only {count} frames decoded")
-    pulse = _bandpass(np.asarray(POS_WANG(rgb.reshape(count, 1, 1, 3), args.fs)).reshape(-1), args.fs)
+    # POS falls when the blood volume rises; invert it so it has the polarity of a PPG
+    # (otherwise the lag found is half a heartbeat off).
+    pulse = _bandpass(-np.asarray(POS_WANG(rgb.reshape(count, 1, 1, 3), args.fs)).reshape(-1), args.fs)
 
     files = resolve_signal_files(recording)
     times = recording["start_epoch"] + np.arange(count) / args.fs

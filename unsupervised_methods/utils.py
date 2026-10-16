@@ -31,10 +31,10 @@ def masked_spatial_mean(frames):
     UV-map frames are 0 where no skin was seen, and that set changes from frame to frame: a plain mean
     over H*W would scale the trace by the visible fraction. Every method then averages a single pixel.
     Frames without any valid pixel are interpolated from their neighbours."""
-    frames = np.asarray(frames, dtype=np.float64)
+    frames = np.asarray(frames)
     valid = np.any(frames != 0, axis=-1)
     counts = valid.sum(axis=(1, 2))
-    sums = frames.sum(axis=(1, 2))
+    sums = frames.sum(axis=(1, 2), dtype=np.float64)  # invalid pixels are 0
     rgb = np.full((len(frames), 3), np.nan)
     seen = counts > 0
     rgb[seen] = sums[seen] / counts[seen, None]

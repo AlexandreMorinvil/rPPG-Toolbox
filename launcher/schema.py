@@ -208,8 +208,9 @@ def _split_fields(prefix, spec):
         "Image region per view", "view=face | face_or_full | full | roi:x,y,w,h (pixels, or fractions <= 1).",
         group="vHRM", when_extra=vhrm)
     add("VHRM.PPG_SOURCE", "enum", "synthetic", "Training waveform",
-        "synthetic: the synthetic PPG CSV; rpeak_*: a waveform rebuilt from the ECG R-peaks.",
-        options=["synthetic", "rpeak_sine", "rpeak_gaussian"], group="vHRM", when_extra=vhrm)
+        "synthetic: the synthetic PPG CSV; rpeak_*: a waveform rebuilt from the ECG R-peaks; "
+        "pos_pseudo: POS pseudo-labels computed from the video itself (weak supervision, always in sync).",
+        options=["synthetic", "rpeak_sine", "rpeak_gaussian", "pos_pseudo"], group="vHRM", when_extra=vhrm)
     add("VHRM.RPEAK_PULSE_DELAY_SEC", "float", 0.2, "R-peak to pulse delay (s)", "rpeak_* sources only.",
         min=0.0, max=1.0, group="vHRM", when_extra=vhrm, advanced=True)
     add("VHRM.RPEAK_GAUSSIAN_SIGMA", "float", 0.15, "Gaussian pulse width (fraction of RR)",
