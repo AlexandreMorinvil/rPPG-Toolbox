@@ -79,6 +79,8 @@ def _experiment_fields():
          "cuda:N or cpu. In Docker the selected GPU always appears as cuda:0.", pattern=r"^(cpu|cuda:\d+)$")
     _add("NUM_OF_GPU_TRAIN", "int", 1, "Number of GPUs", s, "The toolbox effectively uses one GPU.",
          min=0, max=16, when={"modes": NEURAL_MODES}, advanced=True)
+    _add("DESCRIPTION", "text", "", "Description", s,
+         "What this run is about (what changed, why). Shown in Jobs and Results; editable there after launch.")
 
 
 def _training_fields():

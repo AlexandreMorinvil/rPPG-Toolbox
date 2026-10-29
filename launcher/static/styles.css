@@ -187,6 +187,8 @@ main { flex: 1; min-height: 0; }
 .item.active { background: var(--accent-soft) !important; border-color: #c9d6fb; }
 .item-title { font-weight: 600; display: flex; align-items: center; gap: 6px; word-break: break-all; }
 .item-sub { font-size: 12px; color: var(--muted); word-break: break-all; }
+.item-desc { font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.description { white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
 .item-list.compact .item { padding: 5px 8px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; flex: none; }
 .job.running .dot, .job.starting .dot { background: var(--accent); animation: pulse 1.2s infinite; }
@@ -305,6 +307,7 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); padding: 10px; bo
 #preflightBody .row { margin: 8px 0 0 26px; }
 #preflightBody .row input { flex: 1; }
 .job-name { display: grid; gap: 4px; margin-top: 12px; }
+.job-name textarea, #jdDescription textarea { width: 100%; resize: vertical; margin-top: 6px; }
 
 .toast { position: fixed; bottom: 18px; right: 18px; max-width: 520px; padding: 10px 14px; border-radius: 8px; background: #111827; color: #fff; z-index: 60; box-shadow: 0 8px 24px rgba(0, 0, 0, .2); }
 .toast.ok { background: var(--ok); }

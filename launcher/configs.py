@@ -193,7 +193,8 @@ def build_tree(values, extras=None):
         if field.get("advanced") or not active:
             if not differs:
                 continue
-        if key.endswith((".FILE_LIST_PATH", ".EXP_DATA_NAME")) and value == "":
+        if (key.endswith((".FILE_LIST_PATH", ".EXP_DATA_NAME")) or key == "DESCRIPTION") and value == "":
+            # An empty DESCRIPTION is omitted so Docker images built before the key existed still accept the YAML.
             continue
         if field["type"] == "float":
             value = float(value)

@@ -844,7 +844,7 @@ async function browseDialog(field) {
 async function launchDialog(initial = {}) {
   if (!S.values) return;
   if (S.validation?.errors.length) { toast('Fix the validation errors first.', 'error'); return; }
-  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', result: null, busy: false };
+  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', description: S.values.DESCRIPTION || '', result: null, busy: false };
   openModal('Pre-launch checks', h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, 'Checking environment…')),
     [{ label: 'Cancel', onClick: closeModal }, { label: 'Re-check', id: 'pfRecheck', onClick: () => refreshPreflight() },
       { label: 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
@@ -908,6 +908,12 @@ function renderPreflight() {
   const name = h('input', { type: 'text', placeholder: 'Optional job name', value: pf.name });
   name.addEventListener('input', () => { pf.name = name.value; });
   body.append(h('label', { class: 'job-name' }, 'Job name', name));
+  const description = h('textarea', { rows: '3', placeholder: 'Optional description: what this run tests or changes' });
+  description.value = pf.description;
+  description.addEventListener('input', () => { pf.description = description.value; });
+  // Keep the editor in sync so a later "Save config" or relaunch keeps the text.
+  description.addEventListener('change', () => { S.values.DESCRIPTION = description.value; renderFieldInPlace('DESCRIPTION'); });
+  body.append(h('label', { class: 'job-name' }, 'Description', description));
   $('pfLaunch').disabled = !pf.result.can_launch;
 }
 
@@ -916,7 +922,7 @@ async function doLaunch() {
   if (!pf?.result?.can_launch) return;
   $('pfLaunch').disabled = true;
   try {
-    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, source: S.source, resume_from: S.resumeFrom } });
+    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, description: pf.description, source: S.source, resume_from: S.resumeFrom } });
     closeModal();
     S.selectedJob = result.job.id;
     S.log = null;
@@ -976,6 +982,7 @@ function renderJobList() {
     return h('button', { type: 'button', class: 'item job ' + job.status + (job.id === S.selectedJob ? ' active' : ''), onclick: () => { S.selectedJob = job.id; S.log = null; renderJobList(); updateJobDetail(true); } },
       h('div', { class: 'item-title' }, h('span', { class: 'dot' }), job.name),
       h('div', { class: 'item-sub' }, `${job.backend} · ${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
+      job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
       fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
   }));
   if (!jobs.length) list.append(h('p', { class: 'muted pad' }, 'No jobs yet. Launch one from "New run".'));
@@ -988,15 +995,17 @@ function updateJobDetail(force = false) {
   if (force || panel.dataset.job !== job.id) {
     panel.dataset.job = job.id;
     panel.replaceChildren(
-      h('div', { id: 'jdHead' }), h('div', { id: 'jdProgress', class: 'card' }), h('div', { id: 'jdError' }),
+      h('div', { id: 'jdHead' }), h('div', { id: 'jdDescription', class: 'card' }), h('div', { id: 'jdProgress', class: 'card' }), h('div', { id: 'jdError' }),
       h('div', { class: 'two-col' }, h('div', { class: 'card' }, h('h4', {}, 'Loss per epoch'), h('canvas', { id: 'jdLoss', class: 'chart' })),
         h('div', { class: 'card' }, h('h4', {}, 'Results'), h('div', { id: 'jdMetrics' }))),
       h('div', { class: 'card' }, h('div', { class: 'log-head' }, h('h4', {}, 'Console output'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'logFollow', checked: true }), 'Follow')),
         h('pre', { id: 'jobLog', class: 'log' })));
     S.log = { jobId: job.id, next: null, lines: [], partial: '', done: false };
+    S.editingDescription = null;
     pollLog();
   }
+  if (S.editingDescription !== job.id) renderJobDescription(job);
   const p = job.progress || {};
   const actions = [];
   if (job.can_pause) actions.push(h('button', { type: 'button', onclick: () => pauseJob(job) }, 'Pause after epoch'));
@@ -1055,6 +1064,32 @@ function updateJobDetail(force = false) {
       const v = metrics[g][m];
       return h('td', {}, v ? `${num(v.value, 3)} ± ${num(v.se, 3)}` : '–');
     })))) : (summary ? null : h('p', { class: 'muted' }, 'Metrics appear after the test phase.')), summary].filter(Boolean));
+}
+
+function renderJobDescription(job) {
+  const card = $('jdDescription');
+  const head = (...buttons) => h('div', { class: 'log-head' }, h('h4', {}, 'Description'), h('div', { class: 'actions' }, ...buttons));
+  if (S.editingDescription !== job.id) {
+    card.replaceChildren(head(h('button', { type: 'button', class: 'small', onclick: () => { S.editingDescription = job.id; renderJobDescription(job); } }, 'Edit')),
+      job.description ? h('div', { class: 'description' }, job.description) : h('p', { class: 'muted' }, 'No description. Click Edit to note what this run tests or changes.'));
+    return;
+  }
+  const input = h('textarea', { rows: '4', placeholder: 'What this run tests or changes, observations…' });
+  input.value = job.description || '';
+  const stop = () => { S.editingDescription = null; renderJobDescription(S.jobs.find(j => j.id === job.id) || job); };
+  const save = async () => {
+    try {
+      const result = await api(`/api/jobs/${job.id}/description`, { method: 'POST', body: { description: input.value } });
+      const index = S.jobs.findIndex(j => j.id === job.id);
+      if (index >= 0) S.jobs[index] = { ...S.jobs[index], description: result.job.description };
+      S.editingDescription = null;
+      renderJobList();
+      renderJobDescription(S.jobs[index] || result.job);
+    } catch (error) { toast(error.message, 'error'); }
+  };
+  card.replaceChildren(head(h('button', { type: 'button', class: 'small', onclick: stop }, 'Cancel'),
+    h('button', { type: 'button', class: 'small primary', onclick: save }, 'Save')), input);
+  input.focus();
 }
 
 function lastSegment(line) {
@@ -1126,6 +1161,7 @@ async function viewJobConfig(job) {
 async function editJobConfig(job) {
   try {
     const data = await api('/api/config', { params: { path: `launcher_data/jobs/${job.id}/config.yaml` } });
+    if (job.description !== undefined) data.values.DESCRIPTION = job.description;
     setValues(data.values, data.extras, job.backend, `Config of job "${job.name}" (edit and launch again)`, job.source_config);
     showTab('editor');
   } catch (error) { toast(error.message, 'error'); }
@@ -1315,7 +1351,8 @@ async function loadResults() {
 
 function renderResultList() {
   const query = $('resultFilter').value.trim().toLowerCase();
-  const items = S.results.experiments.filter(e => !query || e.name.toLowerCase().includes(query));
+  const descriptions = e => e.jobs.map(id => S.jobs.find(j => j.id === id)?.description || '').join('\n').toLowerCase();
+  const items = S.results.experiments.filter(e => !query || e.name.toLowerCase().includes(query) || descriptions(e).includes(query));
   $('resultList').replaceChildren(...items.map(exp => {
     const jobNames = exp.jobs.map(id => S.jobs.find(j => j.id === id)?.name).filter(Boolean);
     const mae = exp.summary?.mae_bpm;
@@ -1355,7 +1392,8 @@ function showResultTab(name) {
     for (const id of exp?.jobs || []) {
       const job = S.jobs.find(j => j.id === id);
       if (!job) continue;
-      parts.push(h('div', { class: 'card' }, h('h4', {}, 'Launcher job: ', job.name), h('div', { class: 'muted' }, `${job.status} · ${fmtDate(job.created)}`), metricsTable(job.progress?.metrics)));
+      parts.push(h('div', { class: 'card' }, h('h4', {}, 'Launcher job: ', job.name), h('div', { class: 'muted' }, `${job.status} · ${fmtDate(job.created)}`),
+        job.description ? h('div', { class: 'description' }, job.description) : null, metricsTable(job.progress?.metrics)));
     }
     const checkpoints = files.filter(f => f.kind === 'checkpoint');
     if (checkpoints.length) {

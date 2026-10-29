@@ -297,6 +297,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": manager.cancel(job_id)})
             elif method == "POST" and action == "pause":
                 self._json({"job": manager.pause(job_id)})
+            elif method == "POST" and action == "description":
+                self._json({"job": manager.set_description(job_id, body.get("description", ""))})
             elif method == "POST" and action == "resume":
                 self._json(manager.resume_config(job_id))
             elif method == "POST" and action == "remove":

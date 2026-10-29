@@ -21,6 +21,12 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _clean_description(text):
+    if not isinstance(text, str):
+        raise ValueError("The description must be text.")
+    return text.replace("\r\n", "\n").strip()[:20000]
+
+
 class JobManager:
     def __init__(self):
         paths.JOBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,6 +115,8 @@ class JobManager:
         extras = payload.get("extras") or {}
         if type_errors:
             raise ValueError("Fix the invalid fields before launching.")
+        if payload.get("description") is not None:
+            values["DESCRIPTION"] = _clean_description(payload["description"])
         answers = dict(payload.get("answers") or {})
         answers["_stamp"] = datetime.now().strftime("%Y%m%d-%H%M%S")
         secrets = payload.get("secrets") or {}
@@ -148,6 +156,7 @@ class JobManager:
         job = {
             "id": job_id,
             "name": name[:120],
+            "description": effective.get("DESCRIPTION", ""),
             "created": _now(),
             "started": None,
             "finished": None,
@@ -293,6 +302,7 @@ class JobManager:
                 raise ValueError("Another active attempt is already using this checkpoint folder.")
             data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
             values = data["values"]
+            values["DESCRIPTION"] = job.get("description", values.get("DESCRIPTION", ""))
             values["MODEL.RESUME"] = job["resume_checkpoint"]
             values["TRAIN.SAVE_RESUME"] = True
             for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
@@ -300,6 +310,16 @@ class JobManager:
             data.update({"backend": job["backend"], "resume_from": job_id,
                          "name": job["name"] + " (resumed)", "answers": {"outputs": "overwrite", "policy": "queue"}})
             return data
+
+    def set_description(self, job_id, text):
+        """Edit the notes of any job; the config snapshot keeps the description it was launched with."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job["description"] = _clean_description(text)
+            self._save(job)
+            return self._public(job)
 
     def _terminate(self, job):
         if job.get("container"):

@@ -99,6 +99,21 @@ class LauncherRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Another active attempt'):
             self.manager.resume_config('test-job')
 
+    def test_description_is_editable_and_carried_into_resume(self):
+        result = self.manager.set_description('test-job', '  Lower LR to 3e-5\r\nsame splits  ')
+        self.assertEqual(result['description'], 'Lower LR to 3e-5\nsame splits')
+        self.assertEqual(json.loads((self.job_dir / 'job.json').read_text())['description'], result['description'])
+        with self.assertRaisesRegex(ValueError, 'must be text'):
+            self.manager.set_description('test-job', None)
+        self.job['status'] = 'paused'
+        self.assertEqual(self.manager.resume_config('test-job')['values']['DESCRIPTION'], result['description'])
+
+    def test_empty_description_is_left_out_of_the_yaml(self):
+        values, _, _ = configs.normalize({'TOOLBOX_MODE': 'only_test'})
+        self.assertNotIn('DESCRIPTION', configs.build_tree(values))
+        values['DESCRIPTION'] = 'Baseline'
+        self.assertEqual(configs.build_tree(values)['DESCRIPTION'], 'Baseline')
+
     def test_docker_step_mounts_control_file_and_passes_environment(self):
         steps = self.manager._steps('test-job', 'docker', self.job_dir / 'config.yaml', {})
         argv = steps[-1]['argv']

@@ -55,6 +55,7 @@ _C.BASE = ['']
 # Train settings
 # -----------------------------------------------------------------------------\
 _C.TOOLBOX_MODE = ""
+_C.DESCRIPTION = ""                     # free-form notes about the run (shown by the launcher)
 _C.TRAIN = CN()
 _C.TRAIN.EPOCHS = 50
 _C.TRAIN.BATCH_SIZE = 4
