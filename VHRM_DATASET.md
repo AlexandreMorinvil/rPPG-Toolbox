@@ -63,6 +63,70 @@ Other example configs:
 - `vHRM_vHRM_vHRM_DEEPPHYS_FRONT.yaml`
 - `vHRM_vHRM_vHRM_PHYSNET_FRONT_FINETUNE_PURE.yaml`
 - `configs/infer_configs/vHRM_UNSUPERVISED_FRONT.yaml` (POS, CHROM, …)
+- Body UV maps instead of the face crop: `vHRM_vHRM_vHRM_PHYSNET_UV128.yaml`, `vHRM_vHRM_vHRM_TSCAN_UV72.yaml`,
+  `configs/infer_configs/vHRM_UNSUPERVISED_UV.yaml` (see [UV input mode](#uv-input-mode-body-uv-maps-from-vhrm-studio))
+
+## UV input mode (body UV maps from vHRM Studio)
+
+`<SPLIT>.DATA.UV.ENABLED: True` replaces the video with the **compact body UV map** of the vHRM Studio HDF5 files
+(`packed_uv_skin_rgb`): every frame's visible skin mapped onto the SMPL-X surface, repacked into 22 upright body
+charts (head, torso, arms, legs, palms, backs of the hands, fingers, feet) in one 1024x1024 square. The map is the
+model input in place of the face crop, for training, testing and the unsupervised methods. It works for `vHRM` and for
+the other loaders (UBFC-rPPG, PURE, iBVP RGB, UBFC-PHYS, COHFACE, LADH, SUMS), but not for SCAMPS, MMPD or BP4D+.
+
+- **Data:** convert the dataset with vHRM Studio in *mirror* mode and set `DATA_PATH` to the converted root. The
+  ground-truth files are next to the `.h5` files there, so the loaders find their labels unchanged. Each source
+  (`dir/x.mp4`, or an image folder `dir/F/`) is read from `dir/x_skin_uv.h5` (or `dir/F_skin_uv.h5`), or from the
+  output listed in `vhrm_manifest.json`. For vHRM, `DATA_PATH` is the folder that holds the converted experiments
+  (for example `data_example`, with `EXPERIMENTS: ['baseline_vhrm']`), and each camera comes from
+  `cam<N>_Camera_<View>_skin_uv.h5`.
+- **Size:** the map is pooled to `PREPROCESS.RESIZE` (square). Each output pixel is the mean of the **skin texels** of
+  its block: 8x8 texels at 128, 16x16 at 64, and an area-weighted ~14x14 at 72. Pooling averages many skin samples
+  instead of point-sampling the video once, so a smaller map loses spatial detail but not pulse signal.
+- **Model sizes:** 128 suits PhysNet, PhysFormer, RhythmFormer, iBVPNet and PhysMamba. 72 suits TS-CAN, DeepPhys,
+  EfficientPhys and FactorizePhys. Pick the size with `tools/uv_preview.py`.
+- **Invalid pixels:** a pixel is valid when at least `MIN_COVERAGE` of its block's region texels are skin; otherwise it
+  is 0. Frames the studio could not process (`frame_status != 1`) are kept as empty frames, so the timing does not
+  change.
+
+| `UV` key | Meaning |
+|---|---|
+| `LAYOUT` | `packed` (the compact atlas, default) or `standard` (the SMPL-X UV layout, 74 % filled). |
+| `CHARTS`, `EXCLUDE_CHARTS` | Packed charts to keep or drop (`[]` = all), e.g. `['head']` for the face/head only, `['arm_l', 'arm_r']`. |
+| `MIN_COVERAGE` | Skin fraction of a block for its pixel to be valid (default 0.25). |
+| `FILL` | Invalid pixels: `none` keeps 0 (**unsupervised**: the methods then average only the valid pixels of each frame); `temporal_mean` (default, **neural models**) uses the pixel's mean over its valid frames, so DiffNormalized sees no 0/value jumps when skin appears or disappears; `hold` repeats the last valid value. |
+| `MIN_PIXEL_VALID_FRACTION` | Pixels valid in fewer frames than this are 0 for the whole recording. |
+| `RESAMPLE_TO_FS` | Other datasets: resample the stored rows to `FS` using their timestamps. Leave it off when the loader matches labels to frames one to one (UBFC) or resamples them to the frame count. vHRM always resamples to `FS`. |
+| `H5_SUFFIX` | `_skin_uv.h5`. |
+
+```
+# Which part of the map is valid at a given size and coverage threshold (writes a CSV and a coverage PNG):
+python tools/uv_preview.py <folder>/cam2_Camera_Front_skin_uv.h5 --sizes 36 72 128 --output runs/uv_preview
+
+# Unsupervised, PhysNet at 128 px, TS-CAN at 72 px; UBFC sanity check (head chart vs. the face-crop results):
+python main.py --config_file configs/infer_configs/vHRM_UNSUPERVISED_UV.yaml
+python main.py --config_file configs/train_configs/vHRM_vHRM_vHRM_PHYSNET_UV128.yaml
+python main.py --config_file configs/train_configs/vHRM_vHRM_vHRM_TSCAN_UV72.yaml
+python main.py --config_file configs/infer_configs/UBFC-rPPG_UNSUPERVISED_UV.yaml
+python tools/vhrm_inventory.py --config configs/infer_configs/vHRM_UNSUPERVISED_UV.yaml   # selection dry-run
+python tools/vhrm_inventory.py --data-path <converted experiments root> --uv                 # every segment
+```
+
+- **Cache:** UV caches are named `vHRMUV_...` for vHRM and `<dataset>_..._UV_...` for the other datasets. Their hash
+  covers the UV settings, so they never mix with face-crop caches. Changing a `UV` key reads the `.h5` files again.
+- **Speed:** reading a file costs about 14 ms per stored frame, so a 78 s camera file takes about 35 s.
+- **Experiments it enables:**
+  - face crop vs. `CHARTS: ['head']` vs. the whole body;
+  - map size (36 / 72 / 128) and `MIN_COVERAGE`;
+  - each camera view (`VIEWS`).
+- **Limits:**
+  - Each camera is its own recording; the cameras are not fused into one map.
+  - At small sizes, some blocks straddle two neighbouring charts (the gutter between charts is 1 texel). Only skin from
+    both sides is averaged.
+  - Spatial position is fixed in a UV map, so do not use flip or rotation augmentation.
+  - The packed layout stores no skin mask: a texel is skin when its colour is not 0. Adding `'skin_mask'` to vHRM
+    Studio's `packed_uv_outputs` stores an explicit mask, which the reader then uses.
+  - The UV RGB contains the face texture, so treat cached clips as identifying data.
 
 ## Cache
 

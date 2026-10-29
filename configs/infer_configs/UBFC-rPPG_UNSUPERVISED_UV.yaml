@@ -1,0 +1,48 @@
+# Unsupervised methods on UBFC-rPPG read as body UV maps (vHRM Studio mirror conversion: subjectN/vid_skin_uv.h5 next
+# to ground_truth.txt). Sanity check of the UV mode against the face-crop results of UBFC-rPPG_UNSUPERVISED.yaml:
+# UBFC shows the face, so CHARTS: ['head'] should land close to them. CHARTS: [] uses every visible chart.
+BASE: ['']
+TOOLBOX_MODE: "unsupervised_method"
+TRAIN:
+  DATA_LOADER_WORKERS: 2
+UNSUPERVISED:
+  METHOD: ["ICA", "POS", "CHROM", "GREEN", "LGI", "PBV", "OMIT"]
+  METRICS: ['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR', 'BA']
+  DATA:
+    FS: 30
+    DATASET: UBFC-rPPG
+    DO_PREPROCESS: True
+    DATA_FORMAT: NDHWC
+    DATA_PATH: "C:/Users/alexa/Projects/data_example/UBFC_vhrm"
+    CACHED_PATH: "C:/rPPG_cache"
+    EXP_DATA_NAME: ""
+    BEGIN: 0.0
+    END: 1.0
+    UV:
+      ENABLED: True
+      LAYOUT: packed
+      CHARTS: ['head']
+      EXCLUDE_CHARTS: []
+      MIN_COVERAGE: 0.25
+      FILL: none                              # unsupervised: invalid pixels stay 0 and are not averaged
+      RESAMPLE_TO_FS: False                   # UBFC: one stored row per video frame and per label sample
+    PREPROCESS:
+      DATA_TYPE: ['Raw']
+      DATA_AUG: ['None']
+      LABEL_TYPE: Raw
+      DO_CHUNK: False
+      CHUNK_LENGTH: 180
+      NUM_WORKERS: 4
+      CROP_FACE:
+        DO_CROP_FACE: False                   # not used with UV maps
+      RESIZE:
+        H: 64
+        W: 64
+DEVICE: cpu
+LOG:
+  PATH: runs/UBFC_unsupervised_uv
+INFERENCE:
+  EVALUATION_METHOD: "FFT"
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: False
+    WINDOW_SIZE: 10

@@ -8,7 +8,8 @@
 import hashlib, json, os, re
 import yaml
 from yacs.config import CfgNode as CN
-from cache_naming import compact_name, flatten_settings, legacy_cache_matches, legacy_name, preprocessing_identity
+from cache_naming import (compact_name, flatten_settings, legacy_cache_matches, legacy_name, preprocessing_identity,
+                          uv_identity)
 from neural_methods.early_stopping import validate_settings as validate_early_stopping
 
 _C = CN()
@@ -47,6 +48,24 @@ def _vhrm_node(require_ppg=True):
     node.MANIFEST_FILENAME = 'preprocessing_manifest.json'
     node.CACHE_DTYPE = 'float16'
     node.SHOW_VIDEO_PROGRESS = True
+    return node
+
+
+def _uv_node():
+    """UV input mode: the compact body UV map of vHRM Studio HDF5 files replaces the video (every dataset).
+
+    DATA_PATH points to the converted (mirror) dataset; the frame size is PREPROCESS.RESIZE (square).
+    See dataset/data_loader/uv_source.py and VHRM_DATASET.md."""
+    node = CN()
+    node.ENABLED = False
+    node.LAYOUT = 'packed'            # packed (compact semantic atlas) | standard (SMPL-X UV layout)
+    node.H5_SUFFIX = '_skin_uv.h5'
+    node.CHARTS = []                  # packed charts to keep, [] = all (e.g. ['head'])
+    node.EXCLUDE_CHARTS = []          # e.g. ['foot_l', 'foot_r']
+    node.MIN_COVERAGE = 0.25          # skin fraction of a block's region texels for the output pixel to count
+    node.FILL = 'temporal_mean'       # invalid pixels: none (0; unsupervised) | temporal_mean | hold
+    node.MIN_PIXEL_VALID_FRACTION = 0.0  # pixels valid in fewer frames than this are 0 for the whole recording
+    node.RESAMPLE_TO_FS = False       # generic loaders: resample the stored rows to DATA.FS (vHRM always does)
     return node
 
 # Base config files
@@ -107,6 +126,7 @@ _C.TRAIN.DATA.FOLD = CN()
 _C.TRAIN.DATA.FOLD.FOLD_NAME = ''
 _C.TRAIN.DATA.FOLD.FOLD_PATH = ''
 _C.TRAIN.DATA.VHRM = _vhrm_node(require_ppg=True)
+_C.TRAIN.DATA.UV = _uv_node()
 # Train Data preprocessing
 _C.TRAIN.DATA.PREPROCESS = CN()
 _C.TRAIN.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -178,6 +198,7 @@ _C.VALID.DATA.FOLD = CN()
 _C.VALID.DATA.FOLD.FOLD_NAME = ''
 _C.VALID.DATA.FOLD.FOLD_PATH = ''
 _C.VALID.DATA.VHRM = _vhrm_node(require_ppg=True)
+_C.VALID.DATA.UV = _uv_node()
 # Valid Data preprocessing
 _C.VALID.DATA.PREPROCESS = CN()
 _C.VALID.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -247,6 +268,7 @@ _C.TEST.DATA.FOLD = CN()
 _C.TEST.DATA.FOLD.FOLD_NAME = ''
 _C.TEST.DATA.FOLD.FOLD_PATH = ''
 _C.TEST.DATA.VHRM = _vhrm_node(require_ppg=False)
+_C.TEST.DATA.UV = _uv_node()
 # Test Data preprocessing
 _C.TEST.DATA.PREPROCESS = CN()
 _C.TEST.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -315,6 +337,7 @@ _C.UNSUPERVISED.DATA.FOLD = CN()
 _C.UNSUPERVISED.DATA.FOLD.FOLD_NAME = ''
 _C.UNSUPERVISED.DATA.FOLD.FOLD_PATH = ''
 _C.UNSUPERVISED.DATA.VHRM = _vhrm_node(require_ppg=False)
+_C.UNSUPERVISED.DATA.UV = _uv_node()
 # Unsupervised Data preprocessing
 _C.UNSUPERVISED.DATA.PREPROCESS = CN()
 _C.UNSUPERVISED.DATA.PREPROCESS.USE_PSUEDO_PPG_LABEL = False
@@ -500,10 +523,16 @@ def _vhrm_exp_data_name(data, generic_name):
         'median': crop.DETECTION.USE_MEDIAN_FACE_BOX, 'dtype': data.VHRM.CACHE_DTYPE,
         'crop_modes': sorted(str(item).strip().lower() for item in data.VHRM.CROP_MODE_BY_VIEW),
     }
+    uv = uv_identity(data)
+    if uv:
+        # The face-crop settings do not change UV clips.
+        settings = {key: settings[key] for key in ('fs', 'data_type', 'data_aug', 'do_chunk', 'chunk', 'resize', 'dtype')}
+        settings['uv'] = uv
     digest = hashlib.sha1(json.dumps(settings, sort_keys=True).encode('utf-8')).hexdigest()[:8]
     types = '+'.join(preprocess.DATA_TYPE)
-    return 'vHRM_{0}x{1}_C{2}_{3}_FS{4}_{5}'.format(
-        preprocess.RESIZE.W, preprocess.RESIZE.H, preprocess.CHUNK_LENGTH, types, data.FS, digest)
+    return '{0}_{1}x{2}_C{3}_{4}_FS{5}_{6}'.format(
+        'vHRMUV' if uv else 'vHRM', preprocess.RESIZE.W, preprocess.RESIZE.H, preprocess.CHUNK_LENGTH, types,
+        data.FS, digest)
 
 
 def _vhrm_selection_suffix(data):
@@ -533,7 +562,7 @@ def _cache_directory(data, prefix, automatic):
     Explicit EXP_DATA_NAME values and existing vHRM names are never changed.
     """
     compact = os.path.join(data.CACHED_PATH, data.EXP_DATA_NAME)
-    if automatic and data.DATASET != 'vHRM' and not os.path.isdir(compact):
+    if automatic and data.DATASET != 'vHRM' and not data.UV.ENABLED and not os.path.isdir(compact):
         legacy = os.path.join(data.CACHED_PATH, legacy_name(flatten_settings(data, prefix), prefix))
         if legacy_cache_matches(legacy, preprocessing_identity(flatten_settings(data, prefix), prefix)):
             return legacy
@@ -544,6 +573,26 @@ def _automatic_exp_data_name(data, prefix):
     if data.DATASET == 'vHRM':
         return _vhrm_exp_data_name(data, '')
     return compact_name(flatten_settings(data, prefix), prefix)
+
+
+def _check_uv_settings(config):
+    """UV mode: fail early on unusable settings; the face crop does not apply to UV maps."""
+    if config.TOOLBOX_MODE == 'unsupervised_method':
+        splits = ('UNSUPERVISED',)
+    elif config.TOOLBOX_MODE == 'only_test':
+        splits = ('TEST',)
+    else:
+        splits = ('TRAIN', 'VALID', 'TEST')
+    for split in splits:
+        data = getattr(config, split).DATA
+        if not data.UV.ENABLED:
+            continue
+        from dataset.data_loader.uv_source import validate_settings
+        validate_settings(data.UV, data.PREPROCESS, data.DATASET)
+        data.PREPROCESS.CROP_FACE.DO_CROP_FACE = False
+        if split == 'UNSUPERVISED' and str(data.UV.FILL).lower() != 'none':
+            print(f"WARNING: UNSUPERVISED.DATA.UV.FILL is {data.UV.FILL!r}; unsupervised methods average the valid "
+                  f"pixels only when invalid pixels stay 0 (FILL: none).")
 
 
 def update_config(config, args):
@@ -566,6 +615,8 @@ def update_config(config, args):
     if config.TOOLBOX_MODE == 'train_and_test' and config.TEST.DATA.DATASET == 'vHRM':
         # A model trained in this run predicts the TRAIN label transform.
         config.TEST.DATA.VHRM.PREDICTION_IS_DIFF = config.TRAIN.DATA.PREPROCESS.LABEL_TYPE == 'DiffNormalized'
+
+    _check_uv_settings(config)
 
     automatic_names = {split: not getattr(config, split).DATA.EXP_DATA_NAME
                        for split in ('TRAIN', 'VALID', 'TEST', 'UNSUPERVISED')}

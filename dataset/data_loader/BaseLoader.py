@@ -32,13 +32,19 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from cache_naming import flatten_settings, preprocessing_identity, settings_path
+from dataset.data_loader.uv_source import UVVideoReader
 
 class BaseLoader(Dataset):
     """The base class for data loading based on pytorch Dataset.
 
     The dataloader supports both providing data for pytorch training and common data-preprocessing methods,
     including reading files, resizing each frame, chunking, and video-signal synchronization.
+
+    UV input mode (DATA.UV.ENABLED): read_video is replaced by a reader of the vHRM Studio HDF5 file converted
+    from the same source, which returns pooled body-UV frames at the target size (see uv_source.py).
     """
+    # Loaders that read UV maps themselves (vHRM) set this to True.
+    HANDLES_UV_INPUT = False
 
     @staticmethod
     def add_data_loader_args(parser):
@@ -79,6 +85,14 @@ class BaseLoader(Dataset):
         # therefore gets a fresh, valid CUDA context.
         self._face_det_device = device
         self.Y5FObj = None
+
+        uv = getattr(config_data, 'UV', None)
+        self.uv_enabled = bool(uv is not None and uv.ENABLED)
+        if self.uv_enabled and not self.HANDLES_UV_INPUT:
+            # An instance attribute shadows the loader's read_video(path, ...) for this loader only.
+            self.read_video = UVVideoReader(
+                uv, config_data.PREPROCESS.RESIZE.W, data_root=raw_data_path,
+                target_fps=config_data.FS if uv.RESAMPLE_TO_FS else None, dataset_name=dataset_name)
 
         assert (config_data.BEGIN < config_data.END)
         assert (config_data.BEGIN > 0 or config_data.BEGIN == 0)
@@ -248,18 +262,21 @@ class BaseLoader(Dataset):
             frame_clips(np.array): processed video data by frames
             bvps_clips(np.array): processed bvp (ppg) labels by frames
         """
-        # resize frames and crop for face region
-        frames = self.crop_face_resize(
-            frames,
-            config_preprocess.CROP_FACE.DO_CROP_FACE,
-            config_preprocess.CROP_FACE.BACKEND,
-            config_preprocess.CROP_FACE.USE_LARGE_FACE_BOX,
-            config_preprocess.CROP_FACE.LARGE_BOX_COEF,
-            config_preprocess.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION,
-            config_preprocess.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY,
-            config_preprocess.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX,
-            config_preprocess.RESIZE.W,
-            config_preprocess.RESIZE.H)
+        # resize frames and crop for face region (UV frames already have the target size)
+        if self.uv_enabled:
+            frames = np.asarray(frames, dtype=np.float32)
+        else:
+            frames = self.crop_face_resize(
+                frames,
+                config_preprocess.CROP_FACE.DO_CROP_FACE,
+                config_preprocess.CROP_FACE.BACKEND,
+                config_preprocess.CROP_FACE.USE_LARGE_FACE_BOX,
+                config_preprocess.CROP_FACE.LARGE_BOX_COEF,
+                config_preprocess.CROP_FACE.DETECTION.DO_DYNAMIC_DETECTION,
+                config_preprocess.CROP_FACE.DETECTION.DYNAMIC_DETECTION_FREQUENCY,
+                config_preprocess.CROP_FACE.DETECTION.USE_MEDIAN_FACE_BOX,
+                config_preprocess.RESIZE.W,
+                config_preprocess.RESIZE.H)
         # Check data transformation type
         data = list()  # Video data
         for data_type in config_preprocess.DATA_TYPE:

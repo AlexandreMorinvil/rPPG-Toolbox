@@ -31,7 +31,7 @@ import yaml
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from dataset.data_loader.VHRMLoader import discover_segments, select_recordings, slug  # noqa: E402
+from dataset.data_loader.VHRMLoader import discover_segments, select_recordings, slug, source_suffix  # noqa: E402
 from evaluation.vhrm_metrics import _summary  # noqa: E402
 
 
@@ -59,8 +59,8 @@ def participant_pool(config):
     data = config.TRAIN.DATA
     if data.DATASET != "vHRM":
         raise ValueError("TRAIN.DATA.DATASET must be vHRM for vHRM cross-validation")
-    recordings = select_recordings(discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS), data.VHRM,
-                                   warn=lambda message: None)
+    recordings = select_recordings(discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data)),
+                                   data.VHRM, warn=lambda message: None)
     return sorted({recording["participant"] for recording in recordings})
 
 

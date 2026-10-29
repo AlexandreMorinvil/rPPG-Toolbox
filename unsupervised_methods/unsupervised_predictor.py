@@ -12,10 +12,15 @@ from unsupervised_methods.methods.POS_WANG import *
 from unsupervised_methods.methods.OMIT import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
+from unsupervised_methods.utils import masked_spatial_mean
 
 
-def _unsupervised_bvp(method_name, frames, fs):
-    """Run one unsupervised method on RGB frames (T, H, W, 3)."""
+def _unsupervised_bvp(method_name, frames, fs, masked=False):
+    """Run one unsupervised method on RGB frames (T, H, W, 3).
+
+    masked: average only the non-zero pixels of each frame (UV input mode)."""
+    if masked:
+        frames = masked_spatial_mean(frames)
     if method_name == "POS":
         return POS_WANG(frames, fs)
     if method_name == "CHROM":
@@ -45,6 +50,7 @@ def unsupervised_predict(config, data_loader, method_name):
     SNR_all = []
     MACC_all = []
     is_vhrm = config.UNSUPERVISED.DATA.DATASET == "vHRM"
+    masked = bool(config.UNSUPERVISED.DATA.UV.ENABLED)
     vhrm_predictions, vhrm_labels = {}, {}
     sbar = tqdm(data_loader["unsupervised"], ncols=80)
     for _, test_batch in enumerate(sbar):
@@ -53,13 +59,13 @@ def unsupervised_predict(config, data_loader, method_name):
             data_input, labels_input = test_batch[0][idx].cpu().numpy(), test_batch[1][idx].cpu().numpy()
             if is_vhrm:
                 # vHRM is scored against the measured HR per recording (see below).
-                bvp = _unsupervised_bvp(method_name, data_input[..., :3], config.UNSUPERVISED.DATA.FS)
+                bvp = _unsupervised_bvp(method_name, data_input[..., :3], config.UNSUPERVISED.DATA.FS, masked)
                 recording_id, chunk_id = test_batch[2][idx], int(test_batch[3][idx])
                 vhrm_predictions.setdefault(recording_id, {})[chunk_id] = np.asarray(bvp).reshape(-1)
                 vhrm_labels.setdefault(recording_id, {})[chunk_id] = labels_input.reshape(-1)
                 continue
             data_input = data_input[..., :3]
-            BVP = _unsupervised_bvp(method_name, data_input, config.UNSUPERVISED.DATA.FS)
+            BVP = _unsupervised_bvp(method_name, data_input, config.UNSUPERVISED.DATA.FS, masked)
 
             video_frame_size = test_batch[0].shape[1]
             if config.INFERENCE.EVALUATION_WINDOW.USE_SMALLER_WINDOW:
