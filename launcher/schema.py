@@ -118,6 +118,35 @@ def _training_fields():
          min=0.0, max=1.0, when=when, advanced=True)
 
 
+CV_SCHEME_LABELS = {"kfold": "K balanced groups", "loso": "Leave one participant out", "groups": "Custom test groups"}
+
+
+def _cross_validation_fields():
+    s = "Cross-validation"
+    when = {"modes": ["train_and_test"], "dataset": ["TRAIN.DATA", ["vHRM"]]}
+    on = {**when, "equals": {"CROSS_VALIDATION.ENABLED": [True]}}
+    _add("CROSS_VALIDATION.ENABLED", "bool", False, "Run as a cross-validation", s,
+         "One training per fold, so every participant of the training selection is tested once. In each fold the "
+         "participant lists of the training, validation and test data are replaced; their other settings (labels, "
+         "views, preprocessing) apply as set below.", when=when)
+    _add("CROSS_VALIDATION.SCHEME", "enum", "kfold", "Folds", s,
+         "K balanced groups: participants are dealt round-robin in sorted order. Leave one out: one fold per "
+         "participant. Custom: the test groups listed below.",
+         options=list(CV_SCHEME_LABELS), option_labels=CV_SCHEME_LABELS, when=on)
+    _add("CROSS_VALIDATION.K", "int", 5, "Number of folds (K)", s, "Fold sizes differ by at most one participant.",
+         min=2, max=100, when={**when, "equals": {"CROSS_VALIDATION.ENABLED": [True],
+                                                  "CROSS_VALIDATION.SCHEME": ["kfold"]}})
+    _add("CROSS_VALIDATION.GROUPS", "yamllist", [], "Test groups", s,
+         "YAML list of participant lists, e.g. [[jzc01, jzc02], [jzc03, jzc04]]. Participants not listed stay in "
+         "training.", when={**when, "equals": {"CROSS_VALIDATION.ENABLED": [True],
+                                              "CROSS_VALIDATION.SCHEME": ["groups"]}})
+    _add("CROSS_VALIDATION.VALID_COUNT", "int", 2, "Validation participants per fold", s,
+         "Taken from the next fold. 0 = no validation: each fold tests its last epoch.", min=0, max=100, when=on)
+    _add("CROSS_VALIDATION.GROUP_SESSIONS", "bool", True, "Keep the sessions of a person together", s,
+         "jzc02 and jzc02_baseline go to the same fold (a folder joins the shorter folder name it extends), and "
+         "counts above are persons.", when=on)
+
+
 def _split_fields(prefix, spec):
     s = spec["section"]
     when = {"modes": spec["modes"]}
@@ -411,6 +440,7 @@ def _wandb_fields():
 
 _experiment_fields()
 _training_fields()
+_cross_validation_fields()
 for _prefix, _spec in SPLITS.items():
     _split_fields(_prefix, _spec)
 _evaluation_fields()
@@ -445,7 +475,14 @@ def is_active(field, values):
             return False
     if when.get("wandb") and not values.get("WANDB.ENABLED"):
         return False
+    if any(values.get(key) not in allowed for key, allowed in (when.get("equals") or {}).items()):
+        return False
     return True
+
+
+def cross_validation_enabled(values):
+    """True when a config runs as a cross-validation (one training per fold) instead of a single run."""
+    return is_active(FIELD_MAP["CROSS_VALIDATION.ENABLED"], values) and bool(values.get("CROSS_VALIDATION.ENABLED"))
 
 
 def active_splits(values):

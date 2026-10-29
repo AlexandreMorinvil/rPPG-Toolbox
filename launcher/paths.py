@@ -10,6 +10,7 @@ TOOLBOX_ROOT = LAUNCHER_DIR.parent
 STATIC_DIR = LAUNCHER_DIR / "static"
 STATE_DIR = TOOLBOX_ROOT / "launcher_data"
 JOBS_DIR = STATE_DIR / "jobs"
+CV_DIR = STATE_DIR / "cv"
 ENV_FILE = TOOLBOX_ROOT / ".env"
 ENV_EXAMPLE = TOOLBOX_ROOT / "docker" / ".env.example"
 DOCKER_CONFIG_DIR = TOOLBOX_ROOT / "docker" / "configs"

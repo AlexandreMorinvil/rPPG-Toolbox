@@ -183,9 +183,13 @@ def _same(a, b):
 def build_tree(values, extras=None):
     """Standalone YAML tree: active fields plus non-default inactive ones."""
     flat = {"BASE": [""]}
+    cross_validation = schema.cross_validation_enabled(values)
     for field in schema.FIELDS:
         key = field["key"]
         if key not in values:
+            continue
+        if key.startswith("CROSS_VALIDATION.") and not cross_validation:
+            # Single runs (and every fold) omit the block, so Docker images built before it existed accept them.
             continue
         value = values[key]
         active = schema.is_active(field, values)
@@ -234,7 +238,7 @@ def resolve_config_file(rel_path):
     candidate = (paths.TOOLBOX_ROOT / rel_path).resolve(strict=False)
     if candidate.suffix.lower() not in (".yaml", ".yml"):
         raise ValueError("Config files must be .yaml or .yml")
-    if not paths.is_within(candidate, CONFIG_ROOTS + (paths.JOBS_DIR,)):
+    if not paths.is_within(candidate, CONFIG_ROOTS + (paths.JOBS_DIR, paths.CV_DIR)):
         raise ValueError("Configs can only be loaded from configs/, docker/configs/ or launcher jobs")
     if not candidate.is_file():
         raise ValueError(f"Config not found: {rel_path}")

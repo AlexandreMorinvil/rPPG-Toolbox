@@ -195,7 +195,19 @@ main { flex: 1; min-height: 0; }
 .job.queued .dot { background: #f5a524; }
 .job.succeeded .dot { background: var(--ok); }
 .job.failed .dot, .job.interrupted .dot { background: var(--err); }
+.job.paused .dot { background: var(--warn); }
 @keyframes pulse { 50% { opacity: .35; } }
+/* Cross-validation: a group row with its fold jobs nested below. */
+.job-group { display: flex; flex-direction: column; gap: 2px; }
+.item.group { border-color: var(--line); }
+.group-toggle { width: 14px; color: var(--muted); cursor: pointer; flex: none; }
+.group-folds { display: flex; flex-direction: column; gap: 2px; margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--line); }
+.item.fold { padding: 5px 8px; }
+.item.fold .item-title { font-weight: 500; }
+.fold-table td { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-folds { margin: 8px 0; }
+.check-folds > summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
+.msg.pre { white-space: pre-wrap; }
 .progress { height: 5px; background: var(--grid); border-radius: 3px; overflow: hidden; margin-top: 6px; position: relative; }
 .progress > div { height: 100%; background: var(--accent); transition: width .5s; }
 .progress.big { height: 18px; margin: 0 0 10px; }

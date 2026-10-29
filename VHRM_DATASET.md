@@ -37,6 +37,21 @@
 Other new keys:
 - `TRAIN.DATA_LOADER_WORKERS` sets the batch-loader worker count. The default is 16; use 0–4 on Windows.
 - `MODEL.INIT_WEIGHTS` starts training from released weights for fine-tuning.
+- `CROSS_VALIDATION.*` runs the config as a participant-wise cross-validation, one training per fold. The
+  launcher (see its README) and `tools/vhrm_cross_validation.py` read these keys; `main.py` ignores them.
+
+  | Key | Meaning |
+  |---|---|
+  | `ENABLED` | Run as a cross-validation. |
+  | `SCHEME` | `kfold`: K balanced groups, participants dealt round-robin in sorted order (default). `loso`: one fold per participant. `groups`: the test groups in `GROUPS`. |
+  | `K` | Number of folds for `kfold` (default 5). |
+  | `VALID_COUNT` | Participants moved from training to validation in each fold, taken from the next fold (default 2; 0 = test the last epoch). |
+  | `GROUP_SESSIONS` | Keep `jzc02` and `jzc02_baseline` in the same fold (default True). |
+  | `GROUPS` | `groups` only: test groups such as `[[jzc01, jzc02], [jzc03]]`. Unlisted participants stay in training. |
+
+  - **Pool:** the participants the TRAIN block selects. Each fold replaces the participant lists of TRAIN, VALID and
+    TEST; their other settings (labels, views) apply, so TEST `LABELS: [Curl]` tests every fold on Curl only.
+  - **Shared code:** both tools build the folds with `cv_folds.py`.
 
 ## Workflow
 
@@ -54,7 +69,8 @@ python tools/vhrm_sync_check.py --data-path "F:/Datasets preparation" --experime
 # 3. Train / test.
 python main.py --config_file configs/train_configs/vHRM_vHRM_vHRM_PHYSNET_FRONT.yaml
 
-# 4. Leave-one-participant-out cross-validation from the same config.
+# 4. Participant-wise cross-validation from the same config (or from the launcher: Cross-validation section).
+#    Without options, the CROSS_VALIDATION block of the config is used (default: 5 balanced folds).
 python tools/vhrm_cross_validation.py --config configs/train_configs/vHRM_vHRM_vHRM_PHYSNET_FRONT.yaml \
     --folds loso --valid-count 2 --output-root runs/cv_physnet_front
 ```

@@ -62,6 +62,64 @@ Runs save compact per-frame signals; every plot is drawn on demand, so nothing i
 What runs save is set in the run editor under **Visualization outputs** (`VISUALIZE.*`): the highlight PNGs, the best-epoch validation set, and the probe interval and selection. Docker users must rebuild the toolbox image before using configs that contain these keys.
 - **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, and extra results/preprocessed-data folders to browse.
 
+## Cross-validation (vHRM)
+
+A training config on vHRM data can run as a participant-wise cross-validation: one training per fold, so every
+participant is tested once. Turn on **Cross-validation → Run as a cross-validation** in the editor.
+
+- **Folds:** *K balanced groups* (default, K = 5: participants are dealt round-robin in sorted order, so fold sizes
+  differ by at most one), *Leave one participant out*, or *Custom test groups* (a YAML list such as
+  `[[jzc01, jzc02], [jzc03]]`; unlisted participants stay in training).
+- **Participants:** the pool is what the training data selects (experiments, participants, labels, views). Clear
+  *Excluded participants* of the training data, or they are left out of every fold. In each fold the participant lists
+  of the training, validation and test data are replaced; everything else in those sections (labels, views,
+  preprocessing) applies as set. For example, test labels `[Curl]` test every fold on its Curl segments only.
+- **Validation:** *Validation participants per fold* (default 2) are taken from the next fold. Keep *Test the last
+  epoch* off and set up the validation data. With 0, turn *Test the last epoch* on.
+- **Sessions:** *Keep the sessions of a person together* (default on) puts `jzc02` and `jzc02_baseline` in the same
+  fold: a folder joins the shorter folder name it extends with `_` or `-`. Counts then refer to persons.
+- **Preview folds…** (in the section) lists the participants of every fold. Listing reads the dataset folders with the
+  local Python of **Settings**, which needs the toolbox environment. This also applies to Docker runs.
+
+**Launch cross-validation…** runs the usual pre-launch checks once for the whole group and shows the folds. It then
+queues one ordinary job per fold, named `<name> · fold <N>`.
+
+- **Order:** the folds run one after another, in fold order, and preprocessing is shared after the first one.
+- **Failures and pauses:** a failed fold does not stop the others. A paused fold holds the remaining folds until you
+  resume it. Removing the paused fold releases them.
+- **Fold jobs:** each fold has the usual job features: progress, pause/resume, stop, retry and results. Its config
+  snapshot is a plain single run without the `CROSS_VALIDATION` block.
+
+**Outputs:** `LOG.PATH` is the cross-validation folder.
+
+- **Per fold:** each fold writes to `LOG.PATH/fold_<name>`, and the participants of every fold are recorded in
+  `cv_plan.json`.
+- **Merged summary:** after each finished fold, the launcher merges the evaluation windows of all folds into
+  `LOG.PATH/cv_summary` (`overall_summary.csv`, `by_fold.csv`, `by_participant.csv`, `by_movement.csv`,
+  `all_windows.csv`). It uses `tools/vhrm_cross_validation.py --aggregate-only` with the local Python; *Merge results
+  now* repeats it.
+- **Relaunching:** if the folder already has fold results, the pre-launch checks offer a new timestamped sub-folder,
+  because the merge reads every `fold_*` folder.
+
+**Jobs:**
+
+- **Group row:** a cross-validation is one row with its folds nested below. The row shows the folds done and an
+  estimate of the time left, based on the finished folds.
+- **Detail:** the detail shows the fold table (participants, status, epoch, test MAE), the merged results, and the
+  actions *Stop remaining folds*, *Merge results now*, *Open in editor* (the cross-validation config) and *Remove*
+  (keeps the outputs).
+
+**Results:**
+
+- **Cross-validation folder:** listed as *cross-validation*. Its overview shows the merged tables and the folds.
+- **Predictions:** *Predictions → cv_summary/all_windows.csv* plots every window of every fold, for example the
+  participant × movement MAE heatmap.
+- **Folds:** each fold's folder remains a result of its own.
+
+The command line runs the same folds:
+`python tools/vhrm_cross_validation.py --config <config> --output-root <folder>` uses the `CROSS_VALIDATION` block of
+the config unless options override it.
+
 ## Early stopping
 
 In **Training → Early stopping**, enable early stopping and set **Patience (epochs)**

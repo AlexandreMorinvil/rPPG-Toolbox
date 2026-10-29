@@ -17,8 +17,10 @@ const S = {
   validateSeq: 0,
   preflight: null,
   jobs: [],
+  groups: [],
   gpus: [],
   selectedJob: null,
+  selectedGroup: null,
   log: null,
   cache: { sets: [], samples: [], sample: null, frames: null, meta: null, frame: 0, timer: null, label: null },
   results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae', compare: [] },
@@ -170,7 +172,14 @@ function isActive(field, v) {
   if (when.models && !when.models.includes(v['MODEL.NAME'])) return false;
   if (when.dataset && !when.dataset[1].includes(v[when.dataset[0] + '.DATASET'])) return false;
   if (when.wandb && !v['WANDB.ENABLED']) return false;
+  if (when.equals && Object.entries(when.equals).some(([key, allowed]) => !allowed.includes(v[key]))) return false;
   return true;
+}
+
+// Mirrors schema.cross_validation_enabled: the config runs as one training per fold.
+function cvEnabled(v = S.values) {
+  const field = S.fieldMap['CROSS_VALIDATION.ENABLED'];
+  return !!(v && field && isActive(field, v) && v['CROSS_VALIDATION.ENABLED']);
 }
 
 function activeSplits(v) {
@@ -186,7 +195,8 @@ function sameValue(a, b) {
 }
 
 const isStructural = key => key === 'TOOLBOX_MODE' || key === 'MODEL.NAME' || key.endsWith('.DATASET')
-  || key === 'TEST.USE_LAST_EPOCH' || key === 'WANDB.ENABLED';
+  || key === 'TEST.USE_LAST_EPOCH' || key === 'WANDB.ENABLED'
+  || S.fields.some(field => field.when?.equals && key in field.when.equals);
 
 const fieldId = key => 'f_' + key.replace(/[^A-Za-z0-9]/g, '_');
 const slug = text => text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -737,6 +747,14 @@ function renderValidation() {
       if (outputs[key]) exp.append(h('div', {}, `${label}: `, h('code', {}, outputs[key])));
     }
   }
+  const cv = report.derived?.cross_validation;
+  const cvSection = document.querySelector('.derived[data-section="Cross-validation"]');
+  if (cv && cvSection) {
+    const host = p => (S.backend === 'docker' && cv.root_host ? p.replace(cv.root, cv.root_host) : p);
+    cvSection.append(h('div', {}, 'Each fold: ', h('code', {}, host(cv.folds)), ' · merged results: ', h('code', {}, host(cv.summary))),
+      h('div', { class: 'row' }, h('button', { type: 'button', class: 'small', onclick: () => previewFolds() }, 'Preview folds…'),
+        h('span', { class: 'muted small' }, 'Lists the participants of every fold (reads the dataset folders, a few seconds).')));
+  }
   document.querySelectorAll('#sectionNav a').forEach(a => {
     const c = counts[a.dataset.section];
     const badge = a.querySelector('.count');
@@ -748,6 +766,7 @@ function renderValidation() {
   summary.textContent = report.errors.length ? `${report.errors.length} error(s) — fix before launching`
     : report.warnings.length ? `Valid, ${report.warnings.length} warning(s)` : 'Valid';
   $('launchRun').disabled = report.errors.length > 0;
+  $('launchRun').textContent = cvEnabled() ? 'Launch cross-validation…' : 'Launch…';
 }
 
 async function convertPaths() {
@@ -840,14 +859,46 @@ async function browseDialog(field) {
   load(current);
 }
 
+// ------------------------------------------------------------ cross-validation
+// Table of the participants of every fold (plan from /api/cv/plan or a launched group).
+function foldTable(folds, onSelect) {
+  const list = items => h('span', { title: items.join(', ') }, items.length ? items.join(', ') : '–');
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table fold-table' + (onSelect ? ' clickable' : '') },
+    h('tr', {}, ...['Fold', 'Test', 'Validation', 'Training'].map(t => h('th', {}, t))),
+    ...folds.map(fold => h('tr', { onclick: onSelect ? () => onSelect(fold) : null },
+      h('th', {}, fold.name), h('td', {}, list(fold.test)), h('td', {}, list(fold.valid)),
+      h('td', { title: fold.train.join(', ') }, `${fold.train.length} participants`)))));
+}
+
+async function previewFolds(refresh = false) {
+  if (!S.values) return;
+  const body = h('div', {}, h('p', { class: 'muted' }, 'Listing the participants of the training selection…'));
+  openModal('Cross-validation folds', body, [{ label: 'Refresh', onClick: () => previewFolds(true) }, { label: 'Close', onClick: closeModal }], true);
+  try {
+    const { plan } = await api('/api/cv/plan', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, refresh } });
+    const units = Object.values(plan.units);
+    body.replaceChildren(
+      h('p', {}, `${plan.folds.length} folds over ${units.length} participants`,
+        units.length !== plan.pool.length ? ` (${plan.pool.length} participant folders; sessions of a person stay together)` : '', '. ',
+        h('span', { class: 'muted' }, 'Each fold is a training run; every participant is tested once.')),
+      ...plan.warnings.map(w => h('div', { class: 'msg warn' }, w)),
+      foldTable(plan.folds),
+      h('p', { class: 'muted small' }, 'Pool: the participants the training data selects: ', plan.pool.join(', ')));
+  } catch (error) {
+    body.replaceChildren(h('div', { class: 'msg error pre' }, error.message));
+  }
+}
+
 // ------------------------------------------------------------------ launch
 async function launchDialog(initial = {}) {
   if (!S.values) return;
   if (S.validation?.errors.length) { toast('Fix the validation errors first.', 'error'); return; }
-  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', description: S.values.DESCRIPTION || '', result: null, busy: false };
-  openModal('Pre-launch checks', h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, 'Checking environment…')),
+  const cv = cvEnabled();
+  S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', description: S.values.DESCRIPTION || '', result: null, busy: false, cv };
+  openModal(cv ? 'Pre-launch checks — cross-validation' : 'Pre-launch checks',
+    h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, cv ? 'Checking environment and planning the folds…' : 'Checking environment…')),
     [{ label: 'Cancel', onClick: closeModal }, { label: 'Re-check', id: 'pfRecheck', onClick: () => refreshPreflight() },
-      { label: 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
+      { label: cv ? 'Launch all folds' : 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
   await refreshPreflight();
 }
 
@@ -857,7 +908,7 @@ async function refreshPreflight(autofill = true) {
   pf.busy = true;
   $('pfLaunch').disabled = true;
   try {
-    const result = await api('/api/preflight', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets } });
+    const result = await api(pf.cv ? '/api/cv/preflight' : '/api/preflight', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets } });
     if (!S.preflight) return;
     let filled = false;
     if (autofill) {
@@ -905,7 +956,11 @@ function renderPreflight() {
     }
     body.append(item);
   }
-  const name = h('input', { type: 'text', placeholder: 'Optional job name', value: pf.name });
+  if (pf.result.cv?.folds) {
+    body.append(h('details', { class: 'check-folds', open: pf.result.cv.folds.length <= 10 },
+      h('summary', {}, `Participants of the ${pf.result.cv.folds.length} folds`), foldTable(pf.result.cv.folds)));
+  }
+  const name = h('input', { type: 'text', placeholder: pf.cv ? 'Optional name (each fold job is "<name> · fold N")' : 'Optional job name', value: pf.name });
   name.addEventListener('input', () => { pf.name = name.value; });
   body.append(h('label', { class: 'job-name' }, 'Job name', name));
   const description = h('textarea', { rows: '3', placeholder: 'Optional description: what this run tests or changes' });
@@ -922,9 +977,19 @@ async function doLaunch() {
   if (!pf?.result?.can_launch) return;
   $('pfLaunch').disabled = true;
   try {
-    const result = await api('/api/jobs', { method: 'POST', body: { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, description: pf.description, source: S.source, resume_from: S.resumeFrom } });
+    const body = { values: S.values, extras: S.extras, backend: S.backend, answers: pf.answers, secrets: pf.secrets, name: pf.name, description: pf.description, source: S.source, resume_from: S.resumeFrom };
+    if (pf.cv) {
+      const { group } = await api('/api/cv/groups', { method: 'POST', body });
+      closeModal();
+      selectGroup(group.id);
+      toast(`Cross-validation "${group.name}": ${group.folds.length} fold jobs queued.`, 'ok');
+      showTab('jobs');
+      return;
+    }
+    const result = await api('/api/jobs', { method: 'POST', body });
     closeModal();
     S.selectedJob = result.job.id;
+    S.selectedGroup = null;
     S.log = null;
     toast(`Job "${result.job.name}" ${result.job.status}.`, 'ok');
     showTab('jobs');
@@ -958,6 +1023,7 @@ async function pollJobs() {
   try {
     const data = await api('/api/jobs');
     S.jobs = data.jobs;
+    S.groups = data.groups || [];
     S.gpus = data.gpus;
   } catch (error) { return; }
   const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
@@ -971,24 +1037,88 @@ async function pollJobs() {
   }
 }
 
+const ACTIVE_STATUSES = ['queued', 'starting', 'running', 'pausing', 'stopping'];
+
+function selectJob(id) {
+  S.selectedJob = id;
+  S.selectedGroup = null;
+  S.log = null;
+  renderJobList();
+  updateJobDetail(true);
+}
+
+function selectGroup(id) {
+  S.selectedGroup = id;
+  S.selectedJob = null;
+  S.log = null;
+  if ($('tab-jobs').classList.contains('active')) { renderJobList(); updateJobDetail(true); }
+}
+
+// Folds done (with the running fold's own progress), average duration of finished folds and the ETA.
+function groupProgress(group) {
+  const done = group.folds.filter(f => f.status === 'succeeded').length;
+  const failed = group.folds.filter(f => ['failed', 'interrupted', 'cancelled', 'removed'].includes(f.status)).length;
+  const running = group.folds.find(f => ['starting', 'running', 'pausing', 'stopping'].includes(f.status));
+  const runningJob = running && S.jobs.find(j => j.id === running.job);
+  const current = runningJob ? (jobFraction(runningJob) || 0) : 0;
+  const durations = group.folds.filter(f => f.status === 'succeeded' && f.started && f.finished)
+    .map(f => (new Date(f.finished) - new Date(f.started)) / 1000);
+  const average = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+  const remaining = group.folds.length - done - failed;
+  let eta = null;
+  if (average !== null && group.active) {
+    const spent = runningJob?.started ? (Date.now() - new Date(runningJob.started)) / 1000 : 0;
+    eta = Math.max(0, remaining * average - Math.min(spent, average));
+  }
+  return { done, failed, running, fraction: (done + current) / group.folds.length, average, eta };
+}
+
+function jobItem(job, nested = false) {
+  const fraction = jobFraction(job);
+  const phase = PHASES[job.progress?.phase] || job.status;
+  return h('button', { type: 'button', class: 'item job ' + job.status + (nested ? ' fold' : '') + (job.id === S.selectedJob ? ' active' : ''), onclick: () => selectJob(job.id) },
+    h('div', { class: 'item-title' }, h('span', { class: 'dot' }), nested ? `Fold ${job.group.fold}` : job.name,
+      nested && job.resume_from ? h('span', { class: 'muted small' }, ' (resumed)') : null),
+    h('div', { class: 'item-sub' }, `${nested ? '' : job.backend + ' · '}${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
+    !nested && job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
+    fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
+}
+
+function groupItem(group) {
+  const progress = groupProgress(group);
+  S.collapsedGroups = S.collapsedGroups || {};
+  const collapsed = S.collapsedGroups[group.id] ?? !group.active;
+  const toggle = h('span', { class: 'group-toggle', role: 'button', title: collapsed ? 'Show the folds' : 'Hide the folds',
+    onclick: e => { e.stopPropagation(); S.collapsedGroups[group.id] = !collapsed; renderJobList(); } }, collapsed ? '▸' : '▾');
+  const header = h('button', { type: 'button', class: 'item job group ' + group.status + (group.id === S.selectedGroup ? ' active' : ''), onclick: () => selectGroup(group.id) },
+    h('div', { class: 'item-title' }, toggle, h('span', { class: 'dot' }), group.name),
+    h('div', { class: 'item-sub' }, `cross-validation · ${progress.done}/${group.folds.length} folds done`,
+      progress.failed ? ` · ${progress.failed} not completed` : '', ` · ${group.status}`, progress.eta !== null ? ` · ~${fmtDuration(progress.eta)} left` : ''),
+    group.description ? h('div', { class: 'item-desc', title: group.description }, group.description) : null,
+    group.active ? h('div', { class: 'progress' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` })) : null);
+  const attempts = S.jobs.filter(j => j.group?.id === group.id).sort((a, b) => a.group.index - b.group.index || a.created.localeCompare(b.created));
+  return h('div', { class: 'job-group' }, header, collapsed ? null : h('div', { class: 'group-folds' }, ...attempts.map(job => jobItem(job, true))));
+}
+
 function renderJobList() {
   const filter = $('jobFilter').value;
   const list = $('jobList');
-  const jobs = S.jobs.filter(j => filter === 'all' || (filter === 'active') === ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status));
-  if (!S.selectedJob && jobs.length) S.selectedJob = jobs[0].id;
-  list.replaceChildren(...jobs.map(job => {
-    const fraction = jobFraction(job);
-    const phase = PHASES[job.progress?.phase] || job.status;
-    return h('button', { type: 'button', class: 'item job ' + job.status + (job.id === S.selectedJob ? ' active' : ''), onclick: () => { S.selectedJob = job.id; S.log = null; renderJobList(); updateJobDetail(true); } },
-      h('div', { class: 'item-title' }, h('span', { class: 'dot' }), job.name),
-      h('div', { class: 'item-sub' }, `${job.backend} · ${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
-      job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
-      fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
-  }));
-  if (!jobs.length) list.append(h('p', { class: 'muted pad' }, 'No jobs yet. Launch one from "New run".'));
+  const keep = active => filter === 'all' || (filter === 'active') === active;
+  const groups = (S.groups || []).filter(g => keep(g.active));
+  const known = new Set((S.groups || []).map(g => g.id));
+  const jobs = S.jobs.filter(j => !known.has(j.group?.id) && keep(ACTIVE_STATUSES.includes(j.status)));
+  const entries = [...groups.map(g => ({ created: g.created, node: () => groupItem(g) })),
+    ...jobs.map(j => ({ created: j.created, node: () => jobItem(j) }))].sort((a, b) => b.created.localeCompare(a.created));
+  if (!S.selectedJob && !S.selectedGroup) {
+    if (groups.length && (!jobs.length || groups[0].created >= jobs[0].created)) S.selectedGroup = groups[0].id;
+    else if (jobs.length) S.selectedJob = jobs[0].id;
+  }
+  list.replaceChildren(...entries.map(e => e.node()));
+  if (!entries.length) list.append(h('p', { class: 'muted pad' }, 'No jobs yet. Launch one from "New run".'));
 }
 
 function updateJobDetail(force = false) {
+  if (S.selectedGroup) { updateGroupDetail(force); return; }
   const job = S.jobs.find(j => j.id === S.selectedJob);
   const panel = $('jobDetail');
   if (!job) { panel.replaceChildren(h('p', { class: 'muted' }, 'Select a job.')); return; }
@@ -1031,6 +1161,8 @@ function updateJobDetail(force = false) {
     job.status === 'pausing' ? ['Pause', 'Waiting for the current epoch and validation to finish; Stop now discards the unfinished epoch.'] : null,
     job.recovery ? ['Recovery', `${job.recovery.next_epoch} / ${job.recovery.epochs_total} epochs committed${job.recovery.training_complete ? ' — training complete' : ''}`] : null,
     job.resume_from ? ['Resumed from', job.resume_from] : null,
+    job.group ? ['Cross-validation', h('a', { href: '#', onclick: e => { e.preventDefault(); selectGroup(job.group.id); } },
+      `${job.group.name} — fold ${job.group.fold} (${job.group.index + 1} of ${job.group.count})`)] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
     p.last_line ? ['Last line', h('code', { class: 'clip' }, p.last_line)] : null,
@@ -1170,6 +1302,113 @@ async function editJobConfig(job) {
 function openResultsForJob(job) {
   S.results.pendingJob = job.id;
   showTab('results');
+}
+
+// ------------------------------------------------------ cross-validation jobs
+const SUMMARY_COLUMNS = [['windows', 'Windows', 0], ['mae_bpm', 'MAE', 2], ['rmse_bpm', 'RMSE', 2], ['mape_percent', 'MAPE %', 1],
+  ['pearson', 'Pearson', 3], ['mean_snr_db', 'SNR dB', 1], ['mae_vs_label_bpm', 'MAE vs label', 2]];
+
+function summaryTable(rows, keyColumn) {
+  if (!rows?.length) return h('p', { class: 'muted' }, 'No rows.');
+  const columns = SUMMARY_COLUMNS.filter(([key]) => key in rows[0]);
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table' },
+    h('tr', {}, keyColumn ? h('th', {}, keyColumn) : null, ...columns.map(([, label]) => h('th', {}, label))),
+    ...rows.map(row => h('tr', {}, keyColumn ? h('th', {}, String(row[keyColumn.toLowerCase()] ?? '')) : null,
+      ...columns.map(([key, , digits]) => h('td', {}, num(row[key], digits)))))));
+}
+
+async function fetchGroupDetail(id) {
+  try {
+    const { group } = await api(`/api/cv/groups/${id}`);
+    S.groupDetail = { id, group, stamp: group.summary?.modified ?? null, merge: group.merge?.status };
+    if (S.selectedGroup === id) updateGroupDetail();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function updateGroupDetail(force = false) {
+  const group = (S.groups || []).find(g => g.id === S.selectedGroup);
+  const panel = $('jobDetail');
+  if (!group) { panel.replaceChildren(h('p', { class: 'muted' }, 'This cross-validation was removed.')); return; }
+  const detail = S.groupDetail?.id === group.id ? S.groupDetail : null;
+  // The summary tables come from the full record; reload it when a merge finished or the summary changed.
+  if (force || !detail || detail.stamp !== (group.summary?.modified ?? null) || detail.merge !== group.merge?.status) {
+    if (!S.groupFetching) { S.groupFetching = true; fetchGroupDetail(group.id).finally(() => { S.groupFetching = false; }); }
+  }
+  if (force || panel.dataset.job !== 'group:' + group.id) {
+    panel.dataset.job = 'group:' + group.id;
+    panel.replaceChildren(h('div', { id: 'gdHead' }), h('div', { id: 'gdProgress', class: 'card' }), h('div', { id: 'gdFolds', class: 'card' }), h('div', { id: 'gdSummary', class: 'card' }));
+  }
+  const progress = groupProgress(group);
+  const actions = [];
+  if (group.active) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => groupAction(group, 'cancel') }, 'Stop remaining folds'));
+  if (progress.done) actions.push(h('button', { type: 'button', onclick: () => groupAction(group, 'merge') }, 'Merge results now'));
+  actions.push(h('button', { type: 'button', onclick: () => editGroupConfig(group) }, 'Open in editor'));
+  if (group.summary) actions.push(h('button', { type: 'button', onclick: () => { S.results.pendingPath = group.root_host; showTab('results'); } }, 'Results'));
+  if (!group.active) actions.push(h('button', { type: 'button', onclick: () => groupAction(group, 'remove') }, 'Remove'));
+  const scheme = S.fieldMap['CROSS_VALIDATION.SCHEME']?.option_labels?.[group.scheme] || group.scheme;
+  $('gdHead').replaceChildren(h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, group.name),
+    h('div', { class: 'muted' }, `Cross-validation · ${scheme} · ${group.folds.length} folds · ${group.pool.length} participants · ${group.backend} · created ${fmtDate(group.created)}`)),
+  h('div', { class: 'actions' }, ...actions)));
+
+  const merge = group.merge || {};
+  const mergeText = { none: 'after the first finished fold', running: 'merging…', succeeded: `merged ${fmtDate(merge.finished)}`, failed: `failed ${fmtDate(merge.finished)}` }[merge.status] || merge.status;
+  const rows = [
+    ['Status', h('span', { class: 'status ' + group.status }, group.status)],
+    ['Folds', `${progress.done} of ${group.folds.length} done${progress.failed ? ` · ${progress.failed} not completed` : ''}${progress.running ? ` · running fold ${progress.running.name}` : ''}`],
+    progress.average !== null ? ['Fold duration', `~${fmtDuration(progress.average)} on average`] : null,
+    progress.eta !== null ? ['Time left', `~${fmtDuration(progress.eta)} (estimate from the finished folds)`] : null,
+    ['Output folder', h('code', {}, group.root_host || group.root)],
+    ['Merged summary', mergeText],
+    group.description ? ['Description', h('div', { class: 'description' }, group.description)] : null,
+  ].filter(Boolean);
+  $('gdProgress').replaceChildren(...[
+    group.active ? h('div', { class: 'progress big' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` }), h('span', {}, `${(progress.fraction * 100).toFixed(0)}%`)) : null,
+    h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v)))),
+    ...(group.warnings || []).map(w => h('div', { class: 'msg warn' }, w)),
+    merge.status === 'failed' && merge.output ? h('details', {}, h('summary', {}, 'Merge output'), h('pre', { class: 'code' }, merge.output)) : null].filter(Boolean));
+
+  const cell = items => h('td', { title: items.join(', ') }, items.join(', ') || '–');
+  $('gdFolds').replaceChildren(h('h4', {}, 'Folds'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+    h('tr', {}, ...['Fold', 'Test', 'Validation', 'Training', 'Status', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
+    ...group.folds.map(fold => h('tr', { onclick: fold.job ? () => selectJob(fold.job) : null, title: fold.job ? 'Open this fold job' : '' },
+      h('th', {}, fold.name), cell(fold.test), cell(fold.valid), h('td', { title: fold.train.join(', ') }, String(fold.train.length)),
+      h('td', {}, h('span', { class: 'status ' + fold.status }, fold.status), fold.attempts > 1 ? h('span', { class: 'muted small' }, ` (${fold.attempts} attempts)`) : null),
+      h('td', {}, fold.epochs_total ? `${fold.epoch !== null && fold.epoch !== undefined ? fold.epoch + 1 : '–'} / ${fold.epochs_total}` : '–'),
+      h('td', {}, num(fold.summary?.mae_bpm)),
+      h('td', {}, fold.started ? fmtDuration(((fold.finished ? new Date(fold.finished) : new Date()) - new Date(fold.started)) / 1000) : '–'))))));
+
+  const summary = detail?.group.summary;
+  const parts = [h('h4', {}, 'Merged results (all folds)')];
+  if (!summary) parts.push(h('p', { class: 'muted' }, 'The fold results are merged into cv_summary/ each time a fold finishes.'));
+  else {
+    parts.push(summaryTable([summary.overall]));
+    for (const [name, key] of [['by_fold', 'Fold'], ['by_participant', 'Participant'], ['by_movement', 'Movement']]) {
+      if (summary.tables?.[name]?.length) parts.push(h('h4', {}, `By ${key.toLowerCase()}`), summaryTable(summary.tables[name], key));
+    }
+  }
+  $('gdSummary').replaceChildren(...parts);
+}
+
+async function groupAction(group, action) {
+  const prompts = {
+    cancel: `Stop "${group.name}"? Queued folds are cancelled and the running fold stops immediately (its unfinished epoch is discarded).`,
+    remove: `Remove "${group.name}" and its ${group.folds.length} fold jobs from the list? Logs and config snapshots are deleted; run outputs and the merged summary are kept.`,
+  };
+  if (prompts[action] && !confirm(prompts[action])) return;
+  try {
+    await api(`/api/cv/groups/${group.id}/${action}`, { method: 'POST', body: {} });
+    if (action === 'remove') S.selectedGroup = null;
+    if (action === 'merge') toast('Merging the fold results…', 'ok');
+    await pollJobs();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+async function editGroupConfig(group) {
+  try {
+    const data = await api('/api/config', { params: { path: `launcher_data/cv/${group.id}/config.yaml` } });
+    setValues(data.values, data.extras, group.backend, `Cross-validation config of "${group.name}" (edit and launch again)`, group.source_config);
+    showTab('editor');
+  } catch (error) { toast(error.message, 'error'); }
 }
 
 // ------------------------------------------------------- preprocessed data
@@ -1346,6 +1585,12 @@ async function loadResults() {
       if (match) selectExperiment(match.path);
       else toast('No outputs found yet for this job.', 'warn');
     }
+    if (S.results.pendingPath) {
+      const match = data.experiments.find(e => normHost(e.path) === normHost(S.results.pendingPath));
+      S.results.pendingPath = null;
+      if (match) selectExperiment(match.path);
+      else toast('This folder is not under a results folder; add it in Settings → Folders to browse.', 'warn', 8000);
+    }
   } catch (error) { toast(error.message, 'error'); }
 }
 
@@ -1358,7 +1603,7 @@ function renderResultList() {
     const mae = exp.summary?.mae_bpm;
     return h('button', { type: 'button', class: 'item' + (exp.path === S.results.selected ? ' active' : ''), onclick: () => selectExperiment(exp.path) },
       h('div', { class: 'item-title' }, exp.name),
-      h('div', { class: 'item-sub' }, exp.markers.map(m => m.replace('saved_', '').replace('PreTrainedModels', 'checkpoints')).join(' · '),
+      h('div', { class: 'item-sub' }, exp.markers.map(m => m.replace('saved_', '').replace('PreTrainedModels', 'checkpoints').replace('cv_summary', 'cross-validation')).join(' · '),
         exp.checkpoints ? ` · ${exp.checkpoints} ckpt` : '', Number.isFinite(mae) ? ` · MAE ${num(mae)}` : ''),
       h('div', { class: 'item-sub' }, fmtDate(exp.modified), jobNames.length ? ' · job: ' + jobNames.join(', ') : ''));
   }));
@@ -1386,7 +1631,9 @@ function showResultTab(name) {
   document.querySelectorAll('.subtabs button').forEach(b => b.classList.toggle('active', b.dataset.sub === name));
   const body = $('resultBody');
   const files = S.results.detail.files;
-  if (name === 'Overview') {
+  if (name === 'Overview' && S.results.detail.cross_validation) {
+    body.replaceChildren(...crossValidationOverview(files));
+  } else if (name === 'Overview') {
     const exp = S.results.experiments.find(e => e.path === S.results.selected);
     const parts = [];
     for (const id of exp?.jobs || []) {
@@ -1419,6 +1666,30 @@ function showResultTab(name) {
       ...files.map(f => h('tr', {}, h('td', {}, f.name), h('td', {}, f.kind), h('td', {}, fmtBytes(f.size)), h('td', {}, fmtDate(f.modified)),
         h('td', {}, h('a', { href: fileUrl(f.path, !['image', 'pdf', 'csv', 'json', 'text'].includes(f.kind)), target: '_blank' }, 'open'))))));
   }
+}
+
+// Overview of a cross-validation root: merged metrics, the folds and the launcher group.
+function crossValidationOverview(files) {
+  const table = name => files.find(f => f.name === `cv_summary/${name}.csv`)?.content;
+  const rows = content => content ? content.rows.map(r => Object.fromEntries(content.header.map((c, i) => [c, r[i] !== '' && Number.isFinite(+r[i]) ? +r[i] : r[i]]))) : [];
+  const parts = [];
+  const group = (S.groups || []).find(g => g.root_host && normHost(g.root_host) === normHost(S.results.selected));
+  if (group) {
+    parts.push(h('div', { class: 'card' }, h('h4', {}, 'Launcher cross-validation: ', group.name),
+      h('div', { class: 'muted' }, `${group.status} · ${group.folds.filter(f => f.status === 'succeeded').length} of ${group.folds.length} folds done · ${fmtDate(group.created)}`),
+      group.description ? h('div', { class: 'description' }, group.description) : null,
+      h('button', { type: 'button', class: 'small', onclick: () => { selectGroup(group.id); showTab('jobs'); } }, 'Open in Jobs')));
+  }
+  const overall = rows(table('overall_summary'));
+  parts.push(h('div', { class: 'card' }, h('h4', {}, 'All folds'), overall.length ? summaryTable(overall) : h('p', { class: 'muted' }, 'Not merged yet.'),
+    h('p', { class: 'muted small' }, 'Every evaluation window of every fold, against the measured HR. Predictions → all_windows.csv plots them.')));
+  const plan = files.find(f => f.name === 'cv_plan.json')?.content;
+  if (plan?.folds) parts.push(h('div', { class: 'card' }, h('h4', {}, 'Folds'), foldTable(plan.folds)));
+  for (const [name, key] of [['by_fold', 'Fold'], ['by_participant', 'Participant'], ['by_movement', 'Movement'], ['by_view', 'View'], ['by_experiment', 'Experiment']]) {
+    const data = rows(table(name));
+    if (data.length) parts.push(h('div', { class: 'card' }, h('h4', {}, `By ${key.toLowerCase()}`), summaryTable(data, key)));
+  }
+  return parts;
 }
 
 function metricsTable(metrics) {
@@ -1488,9 +1759,9 @@ function chartBlock(title, canvas, fileName, ...extra) {
 }
 
 function renderPredictionControls(body, files) {
-  const sources = files.filter(f => f.kind === 'pickle' || /window_results\.csv$/.test(f.name))
+  const sources = files.filter(f => f.kind === 'pickle' || /(window_results|cv_summary\/all_windows)\.csv$/.test(f.name))
     .sort((a, b) => (a.kind === 'pickle' ? 0 : 1) - (b.kind === 'pickle' ? 0 : 1));
-  if (!sources.length) { body.replaceChildren(h('p', { class: 'muted' }, 'No *_outputs.pickle or window_results.csv in this folder.')); return; }
+  if (!sources.length) { body.replaceChildren(h('p', { class: 'muted' }, 'No *_outputs.pickle, window_results.csv or merged all_windows.csv in this folder.')); return; }
   S.results.historyPath = files.find(f => /probe_history\.npz$/.test(f.name))?.path || null;
   S.results.compare = [];
   const source = h('select', {}, ...sources.map(f => h('option', { value: f.path }, f.name + (sourceKind(f.name) ? `  (${sourceKind(f.name)})` : ''))));

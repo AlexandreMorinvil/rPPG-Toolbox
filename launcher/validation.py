@@ -173,6 +173,9 @@ def output_locations(values):
     log_path = values.get("LOG.PATH") or "runs/exp"
     mode = values.get("TOOLBOX_MODE")
     result = {"log_path": log_path}
+    if schema.cross_validation_enabled(values):
+        # Each fold writes below LOG.PATH/fold_<name>; see cross_validation_locations.
+        return result
     if mode == "train_and_test":
         result["model_dir"] = _join(log_path, exp_data_name(values, "TRAIN.DATA"), values["MODEL.MODEL_DIR"])
     if mode in ("train_and_test", "only_test"):
@@ -180,6 +183,79 @@ def output_locations(values):
     if mode == "unsupervised_method":
         result["outputs"] = _join(log_path, exp_data_name(values, "UNSUPERVISED.DATA"), "saved_outputs")
     return result
+
+
+def output_paths(values, backend, env=None):
+    """output_locations plus the host path of each location (<key>_host)."""
+    outputs = output_locations(values)
+    for key, value in list(outputs.items()):
+        host, _ = paths.config_host_path(value, backend, env)
+        outputs[key + "_host"] = str(host) if host else None
+    return outputs
+
+
+def cross_validation_locations(values, backend, env=None):
+    """Folders of a cross-validation: LOG.PATH holds fold_<name> folders and the merged cv_summary."""
+    root = values.get("LOG.PATH") or "runs/exp"
+    host, _ = paths.config_host_path(root, backend, env)
+    return {"root": root, "root_host": str(host) if host else None, "folds": _join(root, "fold_<name>"),
+            "summary": _join(root, "cv_summary")}
+
+
+def existing_cv_folds(root_host):
+    """Fold folders of an earlier cross-validation that already hold files."""
+    root = Path(root_host) if root_host else None
+    if root is None or not root.is_dir():
+        return []
+    return sorted(entry.name for entry in root.iterdir()
+                  if entry.is_dir() and entry.name.startswith("fold_") and any(entry.iterdir()))
+
+
+def _check_cross_validation(values, backend, report, env):
+    """Rules of a run split into participant folds (the folds themselves are planned before launch)."""
+    key = "CROSS_VALIDATION."
+    valid_count = values.get(key + "VALID_COUNT") or 0
+    if values.get("TEST.DATA.DATASET") != "vHRM":
+        report.error("Cross-validation tests the participants of the training data: the test data must be vHRM.",
+                     "TEST.DATA.DATASET")
+    elif values.get("TEST.DATA.DATA_PATH") != values.get("TRAIN.DATA.DATA_PATH"):
+        report.warn("Cross-validation: the test data reads another data folder than the training data, which "
+                    "selects the participants of every fold.", "TEST.DATA.DATA_PATH")
+    if valid_count and values.get("TEST.USE_LAST_EPOCH", True):
+        report.error("Cross-validation with validation participants: turn off 'Test the last epoch' and set up the "
+                     "validation data (its participants are chosen per fold), or set the validation participants "
+                     "to 0.", "TEST.USE_LAST_EPOCH")
+    elif valid_count and values.get("VALID.DATA.DATASET") != "vHRM":
+        report.error("Cross-validation with validation participants: the validation data must be vHRM.",
+                     "VALID.DATA.DATASET")
+    elif not valid_count and not values.get("TEST.USE_LAST_EPOCH", True):
+        report.error("Cross-validation without validation participants tests the last epoch of each fold: turn on "
+                     "'Test the last epoch'.", key + "VALID_COUNT")
+    if values.get(key + "SCHEME") == "groups":
+        groups = values.get(key + "GROUPS") or []
+        if not groups:
+            report.error("Custom test groups: list at least one group, e.g. [[jzc01, jzc02], [jzc03]].",
+                         key + "GROUPS")
+        elif not all(isinstance(group, (list, str)) for group in groups):
+            report.error("Test groups must be a list of participant lists, e.g. [[jzc01, jzc02], [jzc03]].",
+                         key + "GROUPS")
+    if values.get("MODEL.RESUME"):
+        report.error("A cross-validation cannot resume from one checkpoint; resume a fold from its job in Jobs.",
+                     "MODEL.RESUME")
+    excluded = values.get("TRAIN.DATA.VHRM.EXCLUDE_PARTICIPANTS") or []
+    if excluded:
+        report.warn("Cross-validation: excluded participants of the training data are left out of every fold "
+                    f"({', '.join(excluded)}). Clear the list to test them too.",
+                    "TRAIN.DATA.VHRM.EXCLUDE_PARTICIPANTS")
+    report.note("Cross-validation: the participants of every fold come from the training data selection "
+                "(experiments, participants, labels, views). Validation and test participant lists are replaced "
+                "per fold; use 'Preview folds' to see them.", key + "ENABLED")
+    locations = cross_validation_locations(values, backend, env)
+    report.derived["cross_validation"] = locations
+    existing = existing_cv_folds(locations["root_host"])
+    if existing:
+        report.warn(f"The output folder already contains fold results ({', '.join(existing[:5])}"
+                    f"{'…' if len(existing) > 5 else ''}); you can write to a new sub-folder at launch.", "LOG.PATH")
 
 
 def _check_field(field, value, report):
@@ -477,7 +553,9 @@ def _check_split_consistency(values, report, splits):
                 (report.error if severity == "error" else report.warn)(message, f"{other}.{suffix}")
         same_source = values[f"{train}.DATASET"] == values[f"{other}.DATASET"] and \
             values[f"{train}.DATA_PATH"] == values[f"{other}.DATA_PATH"]
-        if same_source and values[f"{train}.DATASET"] == "vHRM":
+        if same_source and values[f"{train}.DATASET"] == "vHRM" and schema.cross_validation_enabled(values):
+            pass  # Each fold sets disjoint participant lists.
+        elif same_source and values[f"{train}.DATASET"] == "vHRM":
             # vHRM splits are chosen by participant lists rather than BEGIN/END fractions.
             shared = _vhrm_shared_participants(values, train, other)
             if shared:
@@ -491,7 +569,8 @@ def _check_split_consistency(values, report, splits):
     if values.get("TEST.DATA.DATASET") == "vHRM":
         report.note("vHRM: test HR is derived from the training label transform "
                     f"({values['TRAIN.DATA.PREPROCESS.LABEL_TYPE']}) and scored against the measured HR.")
-        if "VALID.DATA" in splits and values.get("VALID.DATA.DATASET") == "vHRM":
+        if "VALID.DATA" in splits and values.get("VALID.DATA.DATASET") == "vHRM" and \
+                not schema.cross_validation_enabled(values):
             shared = _vhrm_shared_participants(values, "VALID.DATA", "TEST.DATA")
             if shared:
                 report.warn(f"Test data shares participants with the validation data: {', '.join(sorted(shared))}.",
@@ -598,10 +677,9 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
 
     log_field = schema.FIELD_MAP["LOG.PATH"]
     _check_path(log_field, values.get("LOG.PATH"), backend, report, env)
-    outputs = output_locations(values)
-    for key, value in list(outputs.items()):
-        host, _ = paths.config_host_path(value, backend, env)
-        outputs[key + "_host"] = str(host) if host else None
+    if schema.cross_validation_enabled(values):
+        _check_cross_validation(values, backend, report, env)
+    outputs = output_paths(values, backend, env)
     report.derived["outputs"] = outputs
     existing = [outputs.get(k + "_host") for k in ("model_dir", "test_outputs", "outputs")]
     existing = [p for p in existing if p and Path(p).is_dir() and any(Path(p).iterdir())]

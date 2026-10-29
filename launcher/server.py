@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import configs, jobs, paths, preflight, preprocessed, probes, results, schema, settings, validation
+from . import configs, crossval, jobs, paths, preflight, preprocessed, probes, results, schema, settings, validation
 
 MAX_BODY = 4 * 1024 * 1024
 
@@ -278,8 +278,40 @@ class Handler(BaseHTTPRequestHandler):
                                           body.get("answers") or {}, body.get("secrets") or {}, manager)
             result.pop("effective_values", None)
             self._json(result)
+        elif method == "POST" and route == "/api/cv/plan":
+            values, errors, _ = configs.normalize(body.get("values") or {})
+            if errors:
+                raise ApiError("Fix invalid fields first.")
+            self._json({"plan": crossval.plan(values, body.get("extras") or {}, body.get("backend", "docker"),
+                                              refresh=bool(body.get("refresh")))})
+        elif method == "POST" and route == "/api/cv/preflight":
+            values, errors, _ = configs.normalize(body.get("values") or {})
+            if errors:
+                raise ApiError("Fix invalid fields first.")
+            result = crossval.run_checks(values, body.get("extras") or {}, body.get("backend", "docker"),
+                                         body.get("answers") or {}, body.get("secrets") or {}, manager)
+            for key in ("effective_values", "fold_runs"):
+                result.pop(key, None)
+            self._json(result)
+        elif method == "POST" and route == "/api/cv/groups":
+            self._json({"group": manager.create_group(body)})
+        elif route.startswith("/api/cv/groups/"):
+            parts = route.split("/")
+            group_id = parts[4] if len(parts) > 4 else ""
+            action = parts[5] if len(parts) > 5 else ""
+            if method == "GET" and not action:
+                self._json({"group": manager.group(group_id)})
+            elif method == "POST" and action == "cancel":
+                self._json({"group": manager.cancel_group(group_id)})
+            elif method == "POST" and action == "merge":
+                self._json({"group": manager.request_merge(group_id)})
+            elif method == "POST" and action == "remove":
+                manager.remove_group(group_id)
+                self._json({"ok": True})
+            else:
+                raise ApiError("Not found", 404)
         elif method == "GET" and route == "/api/jobs":
-            self._json({"jobs": manager.list(), "gpus": probes.gpus()})
+            self._json({"jobs": manager.list(), "groups": manager.list_groups(), "gpus": probes.gpus()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
         elif route.startswith("/api/jobs/"):

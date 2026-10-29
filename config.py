@@ -469,6 +469,19 @@ _C.VISUALIZE.HIGHLIGHTS = True          # PNGs for worst/best/median/per-scenari
 _C.VISUALIZE.HIGHLIGHT_WORST = 3        # number of worst recordings plotted
 
 # -----------------------------------------------------------------------------
+# Participant-wise cross-validation (vHRM)
+# -----------------------------------------------------------------------------
+# Read by the launcher and tools/vhrm_cross_validation.py, which run one training per fold
+# (see cv_folds.py). main.py ignores these keys and runs the splits of the file as they are.
+_C.CROSS_VALIDATION = CN()
+_C.CROSS_VALIDATION.ENABLED = False
+_C.CROSS_VALIDATION.SCHEME = 'kfold'      # kfold (K balanced groups) | loso (leave one out) | groups (GROUPS)
+_C.CROSS_VALIDATION.K = 5                 # kfold: number of folds
+_C.CROSS_VALIDATION.VALID_COUNT = 2       # participants moved from training to validation in each fold (0 = none)
+_C.CROSS_VALIDATION.GROUP_SESSIONS = True # keep jzc02 and jzc02_baseline in the same fold
+_C.CROSS_VALIDATION.GROUPS = []           # groups: test groups, e.g. [[jzc01, jzc02], [jzc03, jzc04]]
+
+# -----------------------------------------------------------------------------
 # Weights & Biases (wandb) settings
 # -----------------------------------------------------------------------------
 # All fields are optional; ENABLED=False makes the integration a no-op so the
