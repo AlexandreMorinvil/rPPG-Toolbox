@@ -787,7 +787,7 @@ class VHRMLoader(BaseLoader):
                     frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats)
                 else:
                     frames = self.read_video(recording["path"], self.config_data.FS, config_preprocess,
-                                             decode_progress, crop_mode, crop_stats)
+                                             decode_progress, crop_mode, crop_stats, label=recording_id)
             finally:
                 decode_progress.close()
             decoded_seconds = len(frames) / self.config_data.FS
@@ -1013,12 +1013,14 @@ class VHRMLoader(BaseLoader):
         return [left, top, width, height]
 
     def read_video(self, video_path, target_fps, config_preprocess, progress=None,
-                   crop_mode=("face", None), crop_stats=None):
+                   crop_mode=("face", None), crop_stats=None, label=None):
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
+        # Recordings share video file names, so the progress bar names the recording when known.
+        label = label or os.path.basename(video_path)
         if self._can_use_nvdec(video_path, config_preprocess):
             try:
                 if progress is not None:
-                    progress.set_description(f"{os.path.basename(video_path)} | NVDEC", refresh=True)
+                    progress.set_description(f"{label} | decode (NVDEC)", refresh=True)
                 frames = self._read_video_nvdec(
                     video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
                 self._progress_message(f"Using FFmpeg/NVDEC: {video_path}")
@@ -1030,7 +1032,7 @@ class VHRMLoader(BaseLoader):
                 if progress is not None:
                     progress.reset()
         if progress is not None:
-            progress.set_description(f"{os.path.basename(video_path)} | OpenCV", refresh=True)
+            progress.set_description(f"{label} | decode (OpenCV)", refresh=True)
         return self._read_video_opencv(
             video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
 
