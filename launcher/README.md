@@ -120,6 +120,34 @@ The command line runs the same folds:
 `python tools/vhrm_cross_validation.py --config <config> --output-root <folder>` uses the `CROSS_VALIDATION` block of
 the config unless options override it.
 
+## Analysis report (vHRM)
+
+A report analyses one checkpoint on every participant of its test data's experiments and views: heart rate,
+beat-to-beat RR intervals and HRV against the chest sensors (Zephyr HR, ECG R-peaks), per movement (resting, curl,
+recovery, …), per repetition and per split, with figures, tables and CSV files. It is the JZC curl analysis
+(`jzc_rppg_analysis`) built into the toolbox; the method is in `evaluation/vhrm_report/METHOD.md`, copied into each report.
+
+- **For any checkpoint:** Results → an experiment → *Checkpoints* → **Report…**. Choose the run config (the launcher job
+  that trained the checkpoint is preselected: it gives the model, the input preprocessing and which participants were
+  training, validation and test), the backend, and optionally the segment labels (the labels found in the cache are
+  shown) and participants. The report runs as a job in **Jobs**. The checkpoint the run tested is marked *tested*.
+- **At the end of a training:** in the editor, **Analysis report → Generate the analysis report** (`REPORT.ENABLED`).
+  After the test, main.py analyses the tested checkpoint (the best validation epoch, or the last epoch). A failed report
+  is logged and shown as a warning; it never fails the training. For a cross-validation, every fold writes its own
+  report. Docker users must rebuild the toolbox image first.
+- **Reading it:** the experiment gets a **Report** tab: headline numbers, the MAE matrix movement × split (only the
+  *Test* column measures unseen participants), pooled results per group, the summary figures, the recordings table
+  (click a row for that participant's HR, HRV, RR and pulse figures) and the mosaics of every participant per recording.
+  *Test participants only* switches every table and figure to the test participants. With several reports (e.g. epochs)
+  a table compares them. `REPORT.md`, `METHOD.md` and `run_config.json` open from the tab.
+- **Where:** `<experiment>/report/<checkpoint>/`, for example `…/PreTrainedModels/name_Epoch16.pth` →
+  `…/report/Epoch16/`. Generating it again replaces it; the model output of unchanged recordings is reused.
+- **Input:** the toolbox's preprocessed cache, i.e. exactly what the checkpoint was trained and tested on. Recordings
+  missing from it (e.g. the resting segments of test participants tested on Curl only) are preprocessed first. The
+  dataset folder must be reachable: the report reads the ECG R-peaks and the segment timing from it.
+
+The command line does the same: `python tools/vhrm_report.py --config <run config> [--checkpoint <.pth>] [--labels …]`.
+
 ## Early stopping
 
 In **Training → Early stopping**, enable early stopping and set **Patience (epochs)**

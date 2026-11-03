@@ -191,6 +191,9 @@ def build_tree(values, extras=None):
         if key.startswith("CROSS_VALIDATION.") and not cross_validation:
             # Single runs (and every fold) omit the block, so Docker images built before it existed accept them.
             continue
+        if key.startswith("REPORT.") and not (values.get("REPORT.ENABLED") and
+                                              schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], values)):
+            continue  # likewise, the block is only written when the report is on
         value = values[key]
         active = schema.is_active(field, values)
         differs = not _same(value, field["default"])

@@ -577,6 +577,25 @@ def _check_split_consistency(values, report, splits):
                             "TEST.DATA.VHRM.PARTICIPANTS")
 
 
+def _check_report(values, backend, report):
+    key = "REPORT.ENABLED"
+    if values.get("MODEL.NAME") == "BigSmall":
+        report.error("The analysis report does not support BigSmall.", key)
+    if not values.get("TEST.DATA.PREPROCESS.DO_CHUNK", True):
+        report.error("The analysis report needs fixed-length clips (test data: chunking on).", key)
+    report.note("After the test, the tested checkpoint is analysed on every participant of the test data's "
+                "experiments and views" + (" (labels: " + ", ".join(values["REPORT.LABELS"]) + ")"
+                                           if values.get("REPORT.LABELS") else ", every segment label")
+                + ". Recordings missing from the cache are preprocessed first. A failed report does not fail the run.",
+                key)
+    if values.get("TOOLBOX_MODE") == "only_test":
+        report.note("An evaluation config does not say which participants trained the checkpoint, so the report "
+                    "shows no splits. For a vHRM training, use Results → Checkpoints → Report… on its run instead.", key)
+    if backend == "docker":
+        report.note("Rebuild the toolbox Docker image before the first run with a report (new code and REPORT keys).",
+                    key)
+
+
 def validate(values, extras=None, backend="docker", type_errors=None, platform=None):
     report = Report()
     env = paths.docker_env()
@@ -651,6 +670,8 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if host is not None and not host.is_file():
             report.error(f"Checkpoint not found: {host}", "INFERENCE.MODEL_PATH")
         report.note("Make sure preprocessing (size, transforms, clip length) matches how the checkpoint was trained.")
+    if values.get("REPORT.ENABLED") and schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], values):
+        _check_report(values, backend, report)
     if mode == "unsupervised_method":
         types = values["UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE"]
         if not types:

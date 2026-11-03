@@ -1000,7 +1000,7 @@ async function doLaunch() {
 }
 
 // -------------------------------------------------------------------- jobs
-const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', pausing: 'Finishing epoch before pause', paused: 'Paused (GPU released)' };
+const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', report: 'Analysis report', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', pausing: 'Finishing epoch before pause', paused: 'Paused (GPU released)' };
 
 function jobFraction(job) {
   const p = job.progress || {};
@@ -1144,6 +1144,7 @@ function updateJobDetail(force = false) {
   actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, 'View config'));
   actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
   if ((job.outputs || {}).log_path_host) actions.push(h('button', { type: 'button', onclick: () => openResultsForJob(job) }, 'Results'));
+  if ((job.mode === 'report' && job.status === 'succeeded') || p.report_path) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => openResultsForJob(job, 'Report') }, 'Open report'));
   if (!['queued', 'running', 'starting', 'pausing', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
   $('jdHead').replaceChildren(
     h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, job.name),
@@ -1167,6 +1168,10 @@ function updateJobDetail(force = false) {
       `${job.group.name} — fold ${job.group.fold} (${job.group.index + 1} of ${job.group.count})`)] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
+    job.report ? ['Checkpoint', h('code', {}, job.report.checkpoint)] : null,
+    job.report ? ['Scope', `labels ${job.report.labels.join(', ') || 'all'} · participants ${job.report.participants.join(', ') || 'all'}${job.report.replaces ? ' · replaces the previous report' : ''}`] : null,
+    (job.outputs || {}).report_dir_host || p.report_path ? ['Report folder', h('code', {}, job.outputs?.report_dir_host || containerToHost(p.report_path) || p.report_path)] : null,
+    p.report_error ? ['Analysis report', h('span', { class: 'bad' }, `failed: ${p.report_error}`)] : null,
     p.last_line ? ['Last line', h('code', { class: 'clip' }, p.last_line)] : null,
   ].filter(Boolean);
   $('jdProgress').replaceChildren(...[
@@ -1301,8 +1306,9 @@ async function editJobConfig(job) {
   } catch (error) { toast(error.message, 'error'); }
 }
 
-function openResultsForJob(job) {
+function openResultsForJob(job, tab) {
   S.results.pendingJob = job.id;
+  S.results.pendingTab = tab || null;
   showTab('results');
 }
 
@@ -1583,9 +1589,12 @@ async function loadResults() {
     renderResultList();
     if (S.results.pendingJob) {
       const match = data.experiments.find(e => e.jobs.includes(S.results.pendingJob));
-      S.results.pendingJob = null;
-      if (match) selectExperiment(match.path);
-      else toast('No outputs found yet for this job.', 'warn');
+      const tab = S.results.pendingTab;
+      S.results.pendingJob = S.results.pendingTab = null;
+      if (match) {
+        await selectExperiment(match.path);
+        if (tab && S.results.detail?.reports?.length) showResultTab(tab);
+      } else toast('No outputs found yet for this job.', 'warn');
     }
     if (S.results.pendingPath) {
       const match = data.experiments.find(e => normHost(e.path) === normHost(S.results.pendingPath));
@@ -1622,7 +1631,8 @@ async function selectExperiment(path) {
     S.results.detail = await api('/api/results/detail', { params: { path } });
   } catch (error) { panel.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
   const exp = S.results.experiments.find(e => e.path === path);
-  const tabs = ['Overview', 'Plots', 'Predictions', 'Files'];
+  S.results.report = {};
+  const tabs = ['Overview', ...(S.results.detail.reports?.length ? ['Report'] : []), 'Plots', 'Predictions', 'Files'];
   const body = h('div', { id: 'resultBody' });
   const bar = h('div', { class: 'subtabs' }, ...tabs.map(t => h('button', { type: 'button', 'data-sub': t, onclick: () => showResultTab(t) }, t)));
   panel.replaceChildren(h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, exp?.name || path), h('div', { class: 'muted' }, h('code', {}, path)))), bar, body);
@@ -1646,9 +1656,17 @@ function showResultTab(name) {
     }
     const checkpoints = files.filter(f => f.kind === 'checkpoint');
     if (checkpoints.length) {
+      const tested = testedCheckpoint(exp);
       parts.push(h('div', { class: 'card' }, h('h4', {}, `Checkpoints (${checkpoints.length})`),
-        h('table', { class: 'grid-table' }, ...checkpoints.map(f => h('tr', {}, h('td', {}, f.name), h('td', {}, fmtBytes(f.size)), h('td', {}, fmtDate(f.modified)),
-          h('td', {}, h('button', { type: 'button', class: 'small', onclick: () => useCheckpoint(f.path) }, 'Evaluate…')))))));
+        h('p', { class: 'muted small' }, 'Report… analyses a checkpoint on every participant (HR, RR intervals, HRV, per movement and split).'),
+        h('table', { class: 'grid-table' }, ...sortCheckpoints(checkpoints).map(f => {
+          const report = reportFor(f.path);
+          return h('tr', {}, h('td', {}, f.name, tested && f.name.endsWith(tested) ? h('span', { class: 'stat', title: 'The checkpoint the run tested' }, 'tested') : null),
+            h('td', {}, fmtBytes(f.size)), h('td', {}, fmtDate(f.modified)),
+            h('td', { class: 'actions' }, h('button', { type: 'button', class: 'small', onclick: () => useCheckpoint(f.path) }, 'Evaluate…'),
+              h('button', { type: 'button', class: 'small', onclick: () => reportDialog(f.path) }, report ? 'New report…' : 'Report…'),
+              report ? h('button', { type: 'button', class: 'small primary', onclick: () => { S.results.report = { name: report.name }; showResultTab('Report'); } }, 'View report') : null));
+        }))));
     }
     for (const f of files.filter(f => f.content && (f.kind === 'json' || (f.kind === 'csv' && !/window_results/.test(f.name))))) {
       parts.push(h('div', { class: 'card' }, h('h4', {}, f.name), f.kind === 'json' ? jsonTable(f.content) : csvTable(f.content)));
@@ -1663,6 +1681,8 @@ function showResultTab(name) {
       pdfs.length ? h('div', { class: 'card' }, h('h4', {}, 'PDF plots'), ...pdfs.map(f => h('div', {}, h('a', { href: fileUrl(f.path), target: '_blank' }, f.name)))) : null].filter(Boolean));
   } else if (name === 'Predictions') {
     renderPredictionControls(body, files);
+  } else if (name === 'Report') {
+    renderReportTab(body);
   } else {
     body.replaceChildren(h('table', { class: 'grid-table files' }, h('tr', {}, ...['File', 'Type', 'Size', 'Modified', ''].map(t => h('th', {}, t))),
       ...files.map(f => h('tr', {}, h('td', {}, f.name), h('td', {}, f.kind), h('td', {}, fmtBytes(f.size)), h('td', {}, fmtDate(f.modified)),
@@ -1732,7 +1752,258 @@ function useCheckpoint(hostPath) {
   showTab('editor');
 }
 
-// ------------------------------------------------------- prediction viewer
+// ------------------------------------------------------- analysis reports
+const baseName = path => String(path || '').split(/[\\/]/).pop();
+const sortCheckpoints = files => [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+const csvObjects = content => content ? content.rows.map(r => Object.fromEntries(content.header.map((c, i) => [c, r[i] !== '' && Number.isFinite(+r[i]) ? +r[i] : r[i]]))) : [];
+
+// File-name ending of the checkpoint the run's own test used (best validation epoch, else the last epoch).
+function testedCheckpoint(exp) {
+  const job = (exp?.jobs || []).map(id => S.jobs.find(j => j.id === id)).find(j => j && j.mode === 'train_and_test' && j.status === 'succeeded');
+  const best = job?.progress?.best_epoch;
+  if (Number.isFinite(best)) return `_Epoch${best}.pth`;
+  return job?.epochs_total ? `_Epoch${job.epochs_total - 1}.pth` : null;
+}
+
+function reportFor(checkpointPath) {
+  return (S.results.detail?.reports || []).find(r => baseName(r.checkpoint) === baseName(checkpointPath));
+}
+
+// Configs that can describe a checkpoint: the launcher jobs of this experiment, then vHRM config files.
+function reportConfigChoices() {
+  const exp = S.results.experiments.find(e => e.path === S.results.selected);
+  const jobs = (exp?.jobs || []).map(id => S.jobs.find(j => j.id === id)).filter(j => j && j.mode !== 'report')
+    .sort((a, b) => b.created.localeCompare(a.created));
+  return {
+    jobs: jobs.map(j => ({ value: `launcher_data/jobs/${j.id}/config.yaml`, label: j.name, backend: j.backend })),
+    files: (S.boot?.configs || []).filter(c => c.test === 'vHRM' && ['train_and_test', 'only_test'].includes(c.mode))
+      .map(c => ({ value: c.path, label: c.path, backend: c.group === 'docker' ? 'docker' : 'local' })),
+  };
+}
+
+async function reportDialog(checkpointPath) {
+  const choices = reportConfigChoices();
+  const all = [...choices.jobs, ...choices.files];
+  if (!all.length) { toast('No vHRM training or evaluation config is available to describe this checkpoint.', 'error', 8000); return; }
+  const config = h('select', {},
+    choices.jobs.length ? h('optgroup', { label: 'Launcher job of this run' }, ...choices.jobs.map(c => h('option', { value: c.value }, c.label))) : null,
+    choices.files.length ? h('optgroup', { label: 'Config files' }, ...choices.files.map(c => h('option', { value: c.value }, c.label))) : null);
+  config.value = all[0].value;
+  const backend = h('select', {}, h('option', { value: 'local' }, 'Local Python'), h('option', { value: 'docker' }, 'Docker'));
+  backend.value = all[0].backend || S.boot?.settings?.default_backend || 'local';
+  const labels = h('input', { type: 'text', placeholder: 'Empty = every label, e.g. curl, resting' });
+  const participants = h('input', { type: 'text', placeholder: 'Empty = every participant' });
+  const csv = h('input', { type: 'checkbox', checked: true });
+  const info = h('div', {});
+  const field = (label, control, help) => h('div', { class: 'field wide' }, h('label', {}, label), h('div', { class: 'control' }, control),
+    help ? h('div', { class: 'help' }, help) : null);
+  const payload = () => ({ checkpoint: checkpointPath, config: config.value, backend: backend.value, labels: labels.value,
+    participants: participants.value, export_csv: csv.checked });
+  let sequence = 0;
+  let labelsFor = null;
+  const toggleLabel = label => {
+    const items = labels.value.split(/[,\s]+/).filter(Boolean);
+    labels.value = (items.includes(label) ? items.filter(x => x !== label) : [...items, label]).join(', ');
+  };
+  const refresh = async () => {
+    const mine = ++sequence;
+    info.replaceChildren(h('p', { class: 'muted' }, 'Checking…'));
+    $('reportGo').disabled = true;
+    try {
+      const p = await api('/api/reports/preview', { method: 'POST', body: payload() });
+      if (mine !== sequence) return;
+      if (labelsFor !== config.value) { labels.value = p.default_labels.join(', '); labelsFor = config.value; }
+      const labelCounts = Object.entries(p.labels || {});
+      info.replaceChildren(...[
+        h('table', { class: 'kv' },
+          h('tr', {}, h('th', {}, 'Model'), h('td', {}, `${p.model} · ${p.mode === 'train_and_test' ? 'participant splits from the training config' : 'evaluation config: no splits'}`)),
+          h('tr', {}, h('th', {}, 'Data'), h('td', {}, `experiments ${p.experiments.join(', ') || 'all'} · views ${p.views.join(', ') || 'all'} · `, h('code', {}, p.data_path))),
+          h('tr', {}, h('th', {}, 'Input cache'), h('td', {}, h('code', {}, p.cache), p.participants.length ? ` · ${p.participants.length} participants cached` : ' · empty: every recording is preprocessed first')),
+          h('tr', {}, h('th', {}, 'Report folder'), h('td', {}, h('code', {}, p.output)))),
+        labelCounts.length ? h('div', { class: 'field wide' }, h('div', { class: 'help' }, 'Labels in the cache (click to add or remove; recordings not cached yet are preprocessed too):'),
+          h('div', { class: 'chips' }, ...labelCounts.map(([label, count]) => h('span', { class: 'chip', onclick: () => toggleLabel(label) }, label, h('b', {}, count))))) : null,
+        p.exists ? h('div', { class: 'msg warn' }, 'This checkpoint already has a report there; it is replaced. Unchanged recordings reuse their saved model output.') : null,
+        p.data_available ? null : h('div', { class: 'msg error' }, `The dataset folder ${p.data_path} is not reachable. The report reads the ECG R-peaks and the segment timing from it: connect it first.`)].filter(Boolean));
+      $('reportGo').disabled = !p.data_available;
+    } catch (error) {
+      if (mine === sequence) info.replaceChildren(h('div', { class: 'msg error' }, error.message));
+    }
+  };
+  const go = async () => {
+    try {
+      const { job } = await api('/api/reports', { method: 'POST', body: payload() });
+      closeModal();
+      toast('Report queued; follow it in Jobs.', 'ok');
+      await pollJobs();
+      showTab('jobs');
+      selectJob(job.id);
+    } catch (error) { toast(error.message, 'error', 9000); }
+  };
+  config.addEventListener('change', () => {
+    backend.value = all.find(c => c.value === config.value)?.backend || backend.value;
+    refresh();
+  });
+  backend.addEventListener('change', refresh);
+  openModal(`Analysis report · ${baseName(checkpointPath)}`, h('div', { class: 'form-stack' },
+    h('p', { class: 'muted' }, 'HR, beat-to-beat RR intervals and HRV of this checkpoint against the chest sensors, for every participant of the test data\'s experiments and views, per movement and per split, with figures and CSV files. It runs as a job.'),
+    field('Run config', config, 'Gives the model, the input preprocessing, the data and which participants were training, validation and test. Use the job that trained this checkpoint.'),
+    field('Backend', backend),
+    field('Segment labels', labels, 'Comma-separated. Empty analyses every label.'),
+    field('Participants', participants, 'Comma-separated. Empty analyses every participant, each shown with its split.'),
+    h('label', { class: 'check' }, csv, 'Also export the time series as CSV files (data_csv/)'),
+    info), [{ label: 'Cancel', onClick: closeModal }, { label: 'Generate report', primary: true, id: 'reportGo', disabled: true, onClick: go }], true);
+  refresh();
+}
+
+const REPORT_METRICS = [['hr', 'Heart rate', 'bpm', 1], ['rmssd', 'RMSSD', 'ms', 0], ['sdnn', 'SDNN', 'ms', 0], ['ibi', 'RR interval', 'ms', 0]];
+const REPORT_COLUMNS = [['participant', 'Participant'], ['split', 'Split'], ['fold', 'Fold'], ['condition', 'Recording'], ['duration_s', 'Duration s', 0],
+  ['face_found_pct', 'Face %', 0], ['hr_mean_gt_bpm', 'Mean HR', 0], ['hr_mae_bpm', 'HR MAE', 1, true], ['hr_bias_bpm', 'HR bias', 1],
+  ['hr_within5_pct', '±5 bpm %', 0], ['hr_pearson', 'HR r', 2], ['rmssd_mae_ms', 'RMSSD MAE', 0, true], ['ibi_mae_ms', 'RR MAE', 0, true],
+  ['ibi_rejected_pct', 'IBIs rejected %', 0]];
+const SPLIT_LABELS = { all: 'All', test: 'Test', validation: 'Validation', training: 'Training', unused: 'Other' };
+
+function reportScopeSummary(report, scope) {
+  return scope === 'test' ? report.test_summary : report.summary;
+}
+
+async function renderReportTab(body) {
+  const reports = S.results.detail.reports || [];
+  const state = S.results.report;
+  if (!reports.some(r => r.name === state.name)) state.name = reports[0]?.name;
+  const report = reports.find(r => r.name === state.name);
+  if (!report) { body.replaceChildren(h('p', { class: 'muted' }, 'No analysis report yet. Checkpoints → Report… generates one.')); return; }
+  const scope = state.scope === 'test' && report.test_set ? 'test' : 'all';
+  const rerender = () => renderReportTab(body);
+  const picker = reports.length > 1 ? h('select', { onchange: e => { state.name = e.target.value; rerender(); } },
+    ...reports.map(r => h('option', { value: r.name, selected: r.name === report.name }, `${r.name} · ${fmtDate(r.modified)}`))) : null;
+  const scopes = report.test_set ? h('div', { class: 'segmented' }, ...[['all', 'All recordings'], ['test', 'Test participants only']].map(([key, label]) =>
+    h('label', {}, h('input', { type: 'radio', name: 'reportScope', checked: scope === key, onchange: () => { state.scope = key; rerender(); } }), label))) : null;
+  const checkpoint = (S.results.detail.files || []).find(f => f.kind === 'checkpoint' && baseName(f.path) === baseName(report.checkpoint));
+  const toolbar = h('div', { class: 'toolbar flat' }, picker, scopes, h('span', { class: 'grow' }),
+    checkpoint ? h('button', { type: 'button', class: 'small', onclick: () => reportDialog(checkpoint.path) }, 'Generate again…') : null);
+  const content = h('div', {}, h('p', { class: 'muted' }, 'Loading…'));
+  body.replaceChildren(...[toolbar, reports.length > 1 ? reportComparison(reports, scope, name => { state.name = name; rerender(); }) : null, content].filter(Boolean));
+  let detail;
+  try {
+    detail = await api('/api/results/report', { params: { path: scope === 'test' ? `${report.path}/test_set` : report.path } });
+  } catch (error) { content.replaceChildren(h('div', { class: 'msg error' }, error.message)); return; }
+  if (S.results.report !== state || state.name !== report.name) return;
+  content.replaceChildren(...reportContent(report, detail, scope));
+}
+
+// One row per report of this experiment (e.g. several epochs), to compare checkpoints.
+function reportComparison(reports, scope, select) {
+  const cell = (summary, metric, digits) => h('td', {}, num(summary?.[metric]?.mae, digits));
+  return h('div', { class: 'card' }, h('h4', {}, `Reports of this run (${scope === 'test' ? 'test participants' : 'all recordings'})`),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table' },
+      h('tr', {}, ...['Report', 'Recordings', 'HR MAE', 'HR ±5 bpm %', 'RMSSD MAE', 'RR MAE', 'Test HR MAE', 'Test RR MAE', 'Generated'].map(t => h('th', {}, t))),
+      ...reports.map(r => {
+        const summary = reportScopeSummary(r, scope);
+        return h('tr', { class: r.name === S.results.report.name ? 'active' : '', style: 'cursor:pointer', onclick: () => select(r.name) },
+          h('th', {}, r.name), h('td', {}, num(summary?.hr?.recordings, 0)), cell(summary, 'hr', 2), h('td', {}, num(summary?.hr?.within_pct, 0)),
+          cell(summary, 'rmssd', 1), cell(summary, 'ibi', 0), cell(r.test_summary, 'hr', 2), cell(r.test_summary, 'ibi', 0), h('td', {}, fmtDate(r.modified)));
+      }))));
+}
+
+function reportContent(report, detail, scope) {
+  const run = detail.run_config || {};
+  const summary = reportScopeSummary(report, scope) || {};
+  const splits = Object.entries(run.splits || {}).map(([split, members]) => `${split}: ${members.length > 6 ? members.length + ' participants' : members.join(', ')}`);
+  const failures = Object.keys(run.failures || {});
+  const parts = [h('div', { class: 'card' }, h('h3', {}, run.title || report.title, scope === 'test' ? ' · test participants only' : ''),
+    h('table', { class: 'kv' },
+      h('tr', {}, h('th', {}, 'Checkpoint'), h('td', {}, h('code', {}, run.checkpoint || ''))),
+      h('tr', {}, h('th', {}, 'Recordings'), h('td', {}, `${(run.recordings || []).length} · labels ${(run.selection?.labels || []).join(', ') || 'all'} · views ${(run.selection?.views || []).join(', ') || 'all'}`)),
+      h('tr', {}, h('th', {}, 'Splits'), h('td', {}, splits.join(' · ') || 'unknown (the config did not train on vHRM)')),
+      failures.length ? h('tr', {}, h('th', {}, 'Failed'), h('td', { class: 'bad' }, failures.join(', '))) : null,
+      h('tr', {}, h('th', {}, 'Files'), h('td', {}, ...Object.entries(detail.files).map(([name, path]) => h('a', { href: fileUrl(path), target: '_blank', style: 'margin-right:12px' }, name)))))),
+    h('div', { class: 'cards' }, ...[['HR MAE', summary.hr?.mae, 2, ' bpm'], ['HR within ±5 bpm', summary.hr?.within_pct, 0, ' %'],
+      ['RMSSD MAE', summary.rmssd?.mae, 1, ' ms'], ['SDNN MAE', summary.sdnn?.mae, 1, ' ms'], ['RR MAE', summary.ibi?.mae, 0, ' ms'],
+      ['Recordings', summary.hr?.recordings, 0, '']].map(([label, value, digits, unit]) =>
+      h('div', { class: 'metric' }, h('span', {}, label), h('b', {}, num(value, digits) + (Number.isFinite(value) ? unit : '')))))];
+  const matrix = csvObjects(detail.tables.matrix);
+  if (scope === 'all' && matrix.length && Object.keys(matrix[0]).some(k => ['test', 'validation', 'training'].includes(k))) {
+    parts.push(reportMatrix(matrix));
+  }
+  parts.push(reportGlobalTable(csvObjects(detail.tables.global)));
+  parts.push(h('div', { class: 'card' }, h('h4', {}, 'Summary figures'), reportGallery(detail.summary_figures, true)));
+  const recordings = csvObjects(detail.tables.recordings);
+  const participantCard = h('div', { class: 'card' });
+  const showParticipant = name => {
+    S.results.report.participant = name;
+    const select = h('select', { onchange: e => showParticipant(e.target.value) }, ...Object.keys(detail.participants).map(p => h('option', { value: p, selected: p === name }, p)));
+    participantCard.replaceChildren(h('div', { class: 'log-head' }, h('h4', {}, 'Participant'), select),
+      reportGallery((detail.participants[name] || []).sort((a, b) => ['hr', 'hrv', 'rr', 'pulse'].indexOf(baseName(a.name).replace('.png', '')) - ['hr', 'hrv', 'rr', 'pulse'].indexOf(baseName(b.name).replace('.png', ''))), true));
+  };
+  // Participant folders carry the experiment when a report covers several experiments.
+  const folderOf = r => (`${r.experiment}-${r.participant}` in detail.participants ? `${r.experiment}-${r.participant}` : r.participant);
+  parts.push(reportRecordingTable(recordings, r => { showParticipant(folderOf(r)); participantCard.scrollIntoView({ behavior: 'smooth' }); }));
+  const names = Object.keys(detail.participants);
+  if (names.length) {
+    showParticipant(names.includes(S.results.report.participant) ? S.results.report.participant : names[0]);
+    parts.push(participantCard);
+  }
+  const mosaicCard = h('div', { class: 'card' });
+  const showMosaics = prefix => {
+    S.results.report.mosaic = prefix;
+    mosaicCard.replaceChildren(h('div', { class: 'log-head' }, h('h4', {}, 'Every participant per recording'),
+      h('div', { class: 'segmented' }, ...[['hr', 'HR'], ['hrv', 'HRV (RMSSD)'], ['rr', 'RR intervals']].map(([key, label]) =>
+        h('label', {}, h('input', { type: 'radio', name: 'mosaicMetric', checked: key === prefix, onchange: () => showMosaics(key) }), label)))),
+    reportGallery(detail.mosaics.filter(m => baseName(m.name).startsWith(prefix + '_')), true));
+  };
+  showMosaics(S.results.report.mosaic || 'hr');
+  parts.push(mosaicCard);
+  return parts;
+}
+
+function reportGallery(images, large) {
+  if (!images?.length) return h('p', { class: 'muted' }, 'No figures.');
+  return h('div', { class: 'gallery' + (large ? ' large' : '') }, ...images.map(f => h('figure', {},
+    h('a', { href: fileUrl(f.path), target: '_blank' }, h('img', { src: fileUrl(f.path), alt: f.name, loading: 'lazy' })), h('figcaption', {}, baseName(f.name)))));
+}
+
+// MAE per movement (rows) and split (columns), one block per metric; darker = larger error within a metric.
+function reportMatrix(rows) {
+  const splits = ['all', 'test', 'validation', 'training', 'unused'].filter(s => s in rows[0]);
+  const table = h('table', { class: 'grid-table heat' }, h('tr', {}, h('th', {}, 'Metric'), h('th', {}, 'Movement'), ...splits.map(s => h('th', {}, SPLIT_LABELS[s]))));
+  for (const [key, label, unit, digits] of REPORT_METRICS) {
+    const block = rows.filter(r => r.metric_key === key);
+    const max = Math.max(...block.flatMap(r => splits.map(s => r[s])).filter(Number.isFinite), 0);
+    block.forEach((r, index) => table.append(h('tr', {}, index ? h('td', {}) : h('th', {}, `${label} (${unit})`),
+      h('td', {}, r.label === 'all' ? 'All recordings' : r.label), ...splits.map(s => h('td', errorColor(r[s], max), num(r[s], digits))))));
+  }
+  return h('div', { class: 'card' }, h('h4', {}, 'MAE by movement and split'),
+    h('p', { class: 'muted small' }, 'Only the Test column measures participants the checkpoint never saw.'), h('div', { class: 'table-wrap' }, table));
+}
+
+function reportGlobalTable(rows) {
+  const card = h('div', { class: 'card' });
+  const show = metric => {
+    S.results.report.metric = metric;
+    const [, label, unit, digits] = REPORT_METRICS.find(m => m[0] === metric);
+    const selected = rows.filter(r => r.metric_key === metric);
+    const within = metric === 'hr';
+    card.replaceChildren(h('div', { class: 'log-head' }, h('h4', {}, 'Pooled results'),
+      h('div', { class: 'segmented' }, ...REPORT_METRICS.map(([key, name]) => h('label', {}, h('input', { type: 'radio', name: 'reportMetric', checked: key === metric, onchange: () => show(key) }), name)))),
+    h('p', { class: 'muted small' }, `${label} in ${unit}: every window or beat of the group pooled; the median recording MAE weights recordings equally.`),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table' },
+      h('tr', {}, ...['Group', 'Recordings', 'Samples', 'MAE', 'RMSE', 'Bias', 'r', 'Median recording MAE', ...(within ? ['% within 5 bpm'] : [])].map(t => h('th', {}, t))),
+      ...selected.map(r => h('tr', {}, h('th', {}, r.group), h('td', {}, num(r.recordings, 0)), h('td', {}, num(r.samples, 0)), h('td', {}, num(r.mae, digits + 1)),
+        h('td', {}, num(r.rmse, digits + 1)), h('td', {}, num(r.bias, digits + 1)), h('td', {}, num(r.pearson, 2)), h('td', {}, num(r.median_recording_mae, digits + 1)),
+        within ? h('td', {}, num(r.within_5bpm_pct, 0)) : null)))));
+  };
+  show(S.results.report.metric || 'hr');
+  return card;
+}
+
+function reportRecordingTable(rows, onSelect) {
+  const columns = REPORT_COLUMNS.filter(([key]) => rows.length && key in rows[0] && (key !== 'split' || rows.some(r => r.split)));
+  const max = Object.fromEntries(columns.filter(c => c[3]).map(([key]) => [key, Math.max(...rows.map(r => r[key]).filter(Number.isFinite), 0)]));
+  return h('div', { class: 'card' }, h('h4', {}, `Recordings (${rows.length})`), h('p', { class: 'muted small' }, 'Click a row to show the participant\'s figures.'),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table' }, h('tr', {}, ...columns.map(([, label]) => h('th', {}, label))),
+      ...rows.map(r => h('tr', { style: 'cursor:pointer', onclick: () => onSelect(r) },
+        ...columns.map(([key, , digits, heat]) => h('td', heat ? errorColor(r[key], max[key]) : {}, typeof r[key] === 'number' && digits !== undefined ? num(r[key], digits) : String(r[key] ?? ''))))))));
+}
 const LINE = { gt: '#1c2024', label: '#8b8d98', pred: '#e5484d', tracked: '#3e63dd', raw: '#b9bbc6', band: '#30a46c' };
 // Index 0 is the current run (same red as its prediction); others avoid the tracked-HR blue.
 const RUN_COLORS = ['#e5484d', '#f76b15', '#8e4ec6', '#12a594', '#ad7f58', '#d6409f', '#30a46c'];

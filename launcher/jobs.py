@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import configs, crossval, logparse, paths, preflight, probes, schema, settings
+from . import configs, crossval, logparse, paths, preflight, probes, reports, schema, settings
 
 ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
 RUNNING = ("starting", "running", "pausing", "stopping")
@@ -301,6 +301,62 @@ class JobManager:
             self.jobs[job_id] = job
             self._save(job)
         return job
+
+    def create_report(self, payload):
+        """Queue the analysis report of a checkpoint (tools/vhrm_report.py) as a job."""
+        request = reports.report_request(payload)
+        if any(job["status"] in ACTIVE and job.get("outputs", {}).get("report_dir_host") == request["output_host"]
+               for job in self.jobs.values()):
+            raise ValueError("A report of this checkpoint is already queued or running.")
+        values, backend = request["values"], request["backend"]
+        job_id = self._new_id()
+        job_dir = self._dir(job_id)
+        job_dir.mkdir(parents=True)
+        config_path = job_dir / "config.yaml"
+        config_path.write_text(configs.dump_yaml(request["config_tree"]), encoding="utf-8")
+        (job_dir / "output.log").touch()
+        options = ["--labels", *request["labels"]]
+        if request["participants"]:
+            options += ["--participants", *request["participants"]]
+        if not request["export_csv"]:
+            options.append("--no-csv")
+        root = str(paths.TOOLBOX_ROOT)
+        env_additions = {}
+        if backend == "local":
+            steps = [{"title": "Analysis report", "cwd": root, "argv": [
+                settings.load()["local_python"], "-u", "tools/vhrm_report.py", "--config", str(config_path),
+                "--checkpoint", request["checkpoint"], "--output", request["output"], *options]}]
+        else:
+            env_additions["GPU_DEVICE_ID"] = str(request["gpu"] if request["gpu"] is not None else 0)
+            container_config = f"{paths.JOB_CONFIG_MOUNT}/{job_id}.yaml"
+            steps = [{"title": "Analysis report in Docker", "cwd": root, "argv": [
+                "docker", "compose", "--project-directory", root, "-f", str(paths.TOOLBOX_ROOT / "compose.yaml"),
+                "run", "--rm", "-T", "--name", f"rppg-launcher-{job_id}",
+                "-v", f"{config_path.as_posix()}:{container_config}:ro", "--entrypoint", "python", "toolbox",
+                "-u", "tools/vhrm_report.py", "--config", container_config, "--checkpoint", request["checkpoint"],
+                "--output", request["output"], *options]}]
+        checkpoint = Path(request["checkpoint_host"])
+        job = {
+            "id": job_id,
+            "name": (payload.get("name") or "").strip()[:120] or f"Report · {checkpoint.stem}",
+            "description": "", "created": _now(), "started": None, "finished": None, "status": "queued",
+            "backend": backend, "mode": "report", "model": values.get("MODEL.NAME"),
+            "datasets": {"train": values.get("TRAIN.DATA.DATASET") if values.get("TOOLBOX_MODE") == "train_and_test"
+                         else None, "test": values.get("TEST.DATA.DATASET")},
+            "epochs_total": None, "gpu": request["gpu"], "policy": settings.load()["gpu_policy"],
+            "env": env_additions, "needs_secret": False, "wandb": {"enabled": False, "mode": None},
+            "source_config": configs.relative(request["config_path"]),
+            "outputs": {"report_dir": request["output"], "report_dir_host": request["output_host"]},
+            "report": {"checkpoint": request["checkpoint_host"], "labels": request["labels"],
+                       "participants": request["participants"], "replaces": request["exists"]},
+            "steps": steps, "pid": None, "container": f"rppg-launcher-{job_id}" if backend == "docker" else None,
+            "returncode": None, "error": None, "progress": {}, "training_recovery": False,
+            "resume_checkpoint_host": None, "resume_checkpoint": None, "resume_from": None,
+        }
+        with self.lock:
+            self.jobs[job_id] = job
+            self._save(job)
+        return self._public(job)
 
     @staticmethod
     def _default_name(values):
@@ -635,7 +691,9 @@ class JobManager:
 
     @staticmethod
     def _summary(job):
-        """vHRM evaluations report metrics in summary.json instead of the console."""
+        """vHRM evaluations report metrics in summary.json instead of the console; reports in their tables."""
+        if job.get("mode") == "report":
+            return reports.job_summary(job["outputs"]["report_dir_host"])
         for folder in output_dirs_for(job):
             summary_file = Path(folder) / "summary.json"
             if summary_file.is_file():
@@ -725,4 +783,5 @@ class JobManager:
 
 def output_dirs_for(job):
     outputs = job.get("outputs") or {}
-    return [outputs[k] for k in ("model_dir_host", "test_outputs_host", "outputs_host") if outputs.get(k)]
+    return [outputs[k] for k in ("model_dir_host", "test_outputs_host", "outputs_host", "report_dir_host")
+            if outputs.get(k)]

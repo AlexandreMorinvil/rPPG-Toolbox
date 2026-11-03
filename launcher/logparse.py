@@ -30,6 +30,9 @@ OUTPUT_PICKLE = re.compile(r"^Saving outputs to:\s*(.+)$")
 SAVED_MODEL = re.compile(r"^Saved Model Path:\s*(.+)$")
 RESUME_CHECKPOINT = re.compile(r"^\[training\] Resume checkpoint saved \(next epoch \d+\):\s*(.+)$")
 EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)|Killed)(?::\s*(.*))?$")
+# Analysis report (evaluation/vhrm_report): after the test of main.py, or a report job.
+REPORT_DONE = re.compile(r"^\[report\] Done in [^:]+:\s*(.+?)[\\/]REPORT\.md$")
+REPORT_FAILED = re.compile(r"^\[report\] FAILED:\s*(.*)$")
 
 HINTS = (
     ("CUDA out of memory", "GPU memory exhausted: lower the batch size, INFERENCE.FRAME_BATCH_SIZE or the input size."),
@@ -137,6 +140,8 @@ class LogParser:
                 entry["count"] += 1
         elif lowered.startswith("validation"):
             self.state["phase"] = "validating"
+        elif lowered.startswith("report"):
+            self.state["phase"] = "report"
         return ANSI.sub("", tail)
 
     def _line(self, line):
@@ -191,6 +196,21 @@ class LogParser:
             return
         if stripped.startswith("===Testing==="):
             self.state["phase"] = "testing"
+            return
+        if stripped.startswith(("===Analysis report===", "[report] Writing figures")):
+            self.state["phase"] = "report"
+            self.state["bar"] = None
+            return
+        match = REPORT_DONE.match(stripped)
+        if match:
+            self.state["report_path"] = match.group(1).strip()
+            return
+        match = REPORT_FAILED.match(stripped)
+        if match:
+            self.state["report_error"] = match.group(1)[:500]
+            hint = "The analysis report failed (the training itself succeeded); see the console output."
+            if hint not in self.state["hints"]:
+                self.state["hints"].append(hint)
             return
         match = UNSUPERVISED.match(stripped)
         if match:

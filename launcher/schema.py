@@ -361,6 +361,24 @@ def _visualize_fields():
          advanced=True)
 
 
+def _report_fields():
+    s = "Analysis report"
+    when = {"modes": NEURAL_MODES, "dataset": ["TEST.DATA", ["vHRM"]]}
+    on = {**when, "equals": {"REPORT.ENABLED": [True]}}
+    _add("REPORT.ENABLED", "bool", False, "Generate the analysis report", s,
+         "After the test, analyse the tested checkpoint (the best or last epoch, or the evaluated checkpoint) on "
+         "every participant of the test data's experiments and views: HR, beat-to-beat RR intervals and HRV against "
+         "the chest sensors, per movement and per split, with figures. Written to <experiment>/report/<checkpoint>. "
+         "Results → Checkpoints → Report… does the same for any checkpoint.", when=when)
+    _add("REPORT.LABELS", "list", [], "Segment labels", s,
+         "Labels to analyse, e.g. Curl, Resting. Empty analyses every label.", when=on)
+    _add("REPORT.PARTICIPANTS", "list", [], "Participants", s,
+         "Empty analyses every participant (test, validation and training, each shown with its split).", when=on,
+         advanced=True)
+    _add("REPORT.EXPORT_CSV", "bool", True, "Also export CSV files", s,
+         "Every time series as CSV files (data_csv/), with a README for readers who do not use Python.", when=on)
+
+
 def _model_fields():
     s = "Model"
     neural = {"modes": NEURAL_MODES}
@@ -445,6 +463,7 @@ for _prefix, _spec in SPLITS.items():
     _split_fields(_prefix, _spec)
 _evaluation_fields()
 _visualize_fields()
+_report_fields()
 _model_fields()
 _wandb_fields()
 

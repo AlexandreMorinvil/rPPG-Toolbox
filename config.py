@@ -469,6 +469,17 @@ _C.VISUALIZE.HIGHLIGHTS = True          # PNGs for worst/best/median/per-scenari
 _C.VISUALIZE.HIGHLIGHT_WORST = 3        # number of worst recordings plotted
 
 # -----------------------------------------------------------------------------
+# Analysis report (vHRM test data; evaluation/vhrm_report, tools/vhrm_report.py)
+# -----------------------------------------------------------------------------
+# HR, beat-to-beat RR intervals and HRV of the tested checkpoint against the chest sensors, on every
+# participant of the test data's experiments and views, written to <experiment>/report/<checkpoint>/.
+_C.REPORT = CN()
+_C.REPORT.ENABLED = False               # generate it after the test (best or last epoch, or INFERENCE.MODEL_PATH)
+_C.REPORT.LABELS = []                   # segment labels analysed; empty = every label
+_C.REPORT.PARTICIPANTS = []             # participants analysed; empty = every participant
+_C.REPORT.EXPORT_CSV = True             # also write the time series as CSV files (data_csv/)
+
+# -----------------------------------------------------------------------------
 # Participant-wise cross-validation (vHRM)
 # -----------------------------------------------------------------------------
 # Read by the launcher and tools/vhrm_cross_validation.py, which run one training per fold

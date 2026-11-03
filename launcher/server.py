@@ -13,7 +13,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import configs, crossval, jobs, paths, preflight, preprocessed, probes, results, schema, settings, validation
+from . import (configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results, schema, settings,
+               validation)
 
 MAX_BODY = 4 * 1024 * 1024
 
@@ -166,13 +167,16 @@ class Handler(BaseHTTPRequestHandler):
         if not path.is_file():
             raise ApiError("File not found", 404)
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix.lower() == ".md":
+            content_type = "text/plain"  # analysis reports: REPORT.md, METHOD.md
         headers = {}
         if download or content_type not in ("image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf",
                                              "text/plain", "text/csv", "application/json"):
             headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
         if path.suffix.lower() == ".svg":
             headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
-        self._send(path.read_bytes(), content_type, headers=headers)
+        charset = "; charset=utf-8" if content_type.startswith("text/") else ""
+        self._send(path.read_bytes(), content_type + charset, headers=headers)
 
     def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
@@ -405,6 +409,12 @@ class Handler(BaseHTTPRequestHandler):
                                        *self._analysis_options(q), track=q("track") == "1"))
         elif method == "GET" and route == "/api/results/history":
             self._json(results.history(q("path", ""), q("id", ""), *self._analysis_options(q)))
+        elif method == "GET" and route == "/api/results/report":
+            self._json(reports.detail(q("path", "")))
+        elif method == "POST" and route == "/api/reports/preview":
+            self._json(reports.preview(body))
+        elif method == "POST" and route == "/api/reports":
+            self._json({"job": manager.create_report(body)})
         elif method == "GET" and route == "/api/cache":
             self._json({"sets": preprocessed.scan(), "roots": [str(r) for r in settings.cache_roots()]})
         elif method == "GET" and route == "/api/cache/samples":

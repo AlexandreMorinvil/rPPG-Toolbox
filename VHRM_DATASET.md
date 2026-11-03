@@ -177,6 +177,30 @@ python tools/vhrm_inventory.py --data-path <converted experiments root> --uv    
   `VISUALIZE.PROBE_EVERY_N_EPOCHS` epochs (see `VISUALIZE` in `config.py`).
 - The cross-validation runner merges every fold into `<output-root>/cv_summary/`.
 
+## Analysis report (HR, RR intervals, HRV)
+
+`evaluation/vhrm_report` analyses a checkpoint on every participant of the test data's experiments and views (every
+segment label by default) against the chest sensors: tracked HR in 8 s windows vs the measured HR, beat-to-beat RR
+intervals vs the ECG R-peaks, and RMSSD / SDNN in 30 s windows computed the same way for both. Results are pooled per
+label, label × repetition (`curl 1`, `curl 2`), view and split (test / validation / training, read from the run's
+selections), and repeated on the test participants alone. The input is the preprocessing cache, overlapping clips are
+merged by a phase-aligned overlap-add. Method and outputs: `evaluation/vhrm_report/METHOD.md`.
+
+```
+# The checkpoint the run tested (or --checkpoint <.pth>), every label; output: <experiment>/report/<checkpoint>/
+python tools/vhrm_report.py --config launcher_data/jobs/<job>/config.yaml
+python tools/vhrm_report.py --config <run config> --checkpoint <run>/<cache>/PreTrainedModels/<name>_Epoch16.pth --labels Curl
+```
+
+| `REPORT` key | Meaning |
+|---|---|
+| `ENABLED` | Generate the report after the test of main.py (training or checkpoint evaluation), with the tested checkpoint. |
+| `LABELS` | Segment labels analysed; empty = every label. |
+| `PARTICIPANTS` | Participants analysed; empty = every participant. |
+| `EXPORT_CSV` | Also write every time series as CSV files (`data_csv/`). |
+
+In the launcher: Results → Checkpoints → *Report…*, and the experiment's *Report* tab (see `launcher/README.md`).
+
 ## Caveats
 
 - **Sync:** video start times come from file names with 1 s resolution, and segment cuts snap to keyframes.

@@ -63,6 +63,13 @@ def add_args(parser):
     return parser
 
 
+def analysis_report(config, model_trainer):
+    """Analysis report of the tested checkpoint (REPORT.ENABLED); a failed report does not fail the run."""
+    if config.REPORT.ENABLED:
+        from evaluation.vhrm_report import report_after_training
+        report_after_training(config, model_trainer)
+
+
 def train_and_test(config, data_loader_dict):
     """Trains the model."""
     if config.MODEL.NAME == "Physnet":
@@ -95,6 +102,7 @@ def train_and_test(config, data_loader_dict):
         raise ValueError('Your Model is Not Supported  Yet!')
     model_trainer.train(data_loader_dict)
     model_trainer.test(data_loader_dict)
+    analysis_report(config, model_trainer)
 
 
 def test(config, data_loader_dict):
@@ -128,6 +136,7 @@ def test(config, data_loader_dict):
     else:
         raise ValueError('Your Model is Not Supported  Yet!')
     model_trainer.test(data_loader_dict)
+    analysis_report(config, model_trainer)
 
 
 def unsupervised_method_inference(config, data_loader):

@@ -94,7 +94,19 @@ def fold_config(raw, fold, output_root):
     return config, log_path
 
 
+def merge_reports(output_root):
+    """Pool the analysis reports of the folds (evaluation/vhrm_report) into <output_root>/report/cross_validation."""
+    if not glob.glob(os.path.join(output_root, "fold_*", "*", "report", "*", "test_set", "run_config.json")):
+        return
+    try:
+        from evaluation.vhrm_report import merge_cross_validation
+        merge_cross_validation(output_root)
+    except Exception as error:  # the window summaries above stay valid
+        print(f"WARNING: the analysis reports of the folds were not merged: {error}")
+
+
 def aggregate(output_root):
+    merge_reports(output_root)
     frames = []
     for fold_dir in sorted(glob.glob(os.path.join(output_root, "fold_*"))):
         for path in glob.glob(os.path.join(fold_dir, "**", "window_results.csv"), recursive=True):
