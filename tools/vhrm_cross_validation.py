@@ -65,7 +65,8 @@ def participant_pool(config):
     data = config.TRAIN.DATA
     if data.DATASET != "vHRM":
         raise ValueError("TRAIN.DATA.DATASET must be vHRM for vHRM cross-validation")
-    recordings = select_recordings(discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data)),
+    recordings = select_recordings(discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data),
+                                                     data.VHRM.EXPERIMENT_PATHS),
                                    data.VHRM, warn=lambda message: None)
     return sorted({recording["participant"] for recording in recordings})
 

@@ -26,9 +26,12 @@
 | Key | Meaning |
 |---|---|
 | `EXPERIMENTS`, `PARTICIPANTS`, `EXCLUDE_PARTICIPANTS`, `LABELS`, `EXCLUDE_LABELS` | Which data a split uses. An empty list means all. |
+| `EXPERIMENT_PATHS` | Experiments stored outside `DATA_PATH`: `['RM=F:/Datasets_vhrm/laboratory/RM']` points to the experiment folder itself (it holds the participant folders). It replaces a `DATA_PATH` sub-folder of the same name. Only the experiments a split selects must exist. |
 | `LABEL_ALIASES`, `VIEW_ALIASES` | `old=new` renames. The default `recover=recovery` merges jzc14's spelling. |
 | `VIEWS` | `front`, `back-left`, `back-right`, or any combination. |
-| `CROP_MODE_BY_VIEW` | Image region per view. `face` keeps the last face box when detection fails. `face_or_full` uses the full frame when no face is found. `full` uses the whole frame. `roi:x,y,w,h` is a rectangle in pixels, or in fractions when every value is ≤ 1. |
+| `MIN_FACE_FRACTION` | Face crop: a clip or evaluation window has a reading only when the face detector found a face in at least this fraction of its frames (each frame takes the result of its last detection, every `DYNAMIC_DETECTION_FREQUENCY` frames). TRAIN and VALID drop the other clips; TEST and UNSUPERVISED keep them and count their windows as "no reading": the metrics use the windows with a reading, and `coverage` is their share. 0 = off. The UV input always reads. |
+| `FACE_SEARCH_WIDTH` | Face crop: faces are searched in the central part of each frame only, this fraction of its width (1 = the whole frame). A frame whose only faces lie outside it has no face, as when no face is found. Ignores people at the edges of the frame; it cannot tell a participant from someone standing near the middle. |
+| `CROP_MODE_BY_VIEW` | Image region per view. `face` keeps the last face box when detection fails. `person_face` does too, but searches the face inside the largest person of the frame only: a person detector (torchvision Faster R-CNN, COCO; weights downloaded once, 167 MB) runs first, so other people are ignored unless their face lies inside that person's box. `face_or_full` uses the full frame when no face is found. `full` uses the whole frame. `roi:x,y,w,h` is a rectangle in pixels, or in fractions when every value is ≤ 1. |
 | `MAX_DURATION_SEC`, `MAX_DURATION_SEC_BY_LABEL` | Preprocess only the first N seconds of each recording; the rest of the video is ignored (not decoded, no clips, no labels). `MAX_DURATION_SEC: 120.0` applies to every recording of the split (write a float: `120` is a yacs type error). `MAX_DURATION_SEC_BY_LABEL: ['resting=120']` sets a label's limit and replaces `MAX_DURATION_SEC` for it (labels after `LABEL_ALIASES`; `curl=0` keeps whole curl videos). 0 / empty = whole video. The splits share one cache: give every split the same limits (the launcher syncs them from the training data), or a recording that changes split (cross-validation folds, the report) is decoded again each time. |
 | `PPG_SOURCE` | Training waveform. `synthetic` uses `synthetic_ppg.csv`. `rpeak_sine` and `rpeak_gaussian` are rebuilt from the ECG R-peaks and shifted by `RPEAK_PULSE_DELAY_SEC`. `pos_pseudo` is weak supervision: a POS pulse computed from the cropped video itself (band-passed 0.7–3 Hz, Hilbert-envelope normalized, flipped to PPG polarity), as the toolbox's `USE_PSUEDO_PPG_LABEL` does for other datasets. It is in sync by construction and needs no pulse sensor, but its morphology is poor and the model learns to imitate POS. `PPG_DELAY_SEC` and the lag table still shift the measured HR/HRV/BR. vHRM rejects `USE_PSUEDO_PPG_LABEL`. |
 | `PPG_DELAY_SEC`, `LAG_TABLE_PATH` | Video/signal sync correction: one global value, plus optional per-segment values from `tools/vhrm_sync_check.py`. A positive value shifts the signals later. These are added to the timing in `meta.json`: leave them at 0 / empty for participants whose offset was applied in the preprocessing tool (PPG alignment step, `video_signal_offset_sec` in `meta.json`), or the correction is counted twice. |
@@ -166,10 +169,12 @@ python tools/vhrm_inventory.py --data-path <converted experiments root> --uv    
 
 ## Evaluation output (`<LOG.PATH>/<cache>/saved_test_outputs/`)
 
-- `window_results.csv` holds one row per evaluation window:
+- `window_results.csv` holds one row per evaluation window (`start_frame`, `end_frame`; `face_fraction` and
+  `has_reading` for the face crop):
   - predicted HR vs the measured HR (`HR_SOURCE`, the primary metric);
   - predicted HR vs the HR of the PPG label (`label_hr_bpm`), comparable with the usual toolbox numbers.
-- Summaries: `overall_summary.csv`, `summary.json`, `by_experiment` / `by_movement` / `by_participant` / `by_view` CSVs, plus plots.
+- Summaries (`coverage`, `all_windows`, `mae_all_windows_bpm` next to the metrics of the windows with a reading):
+  `overall_summary.csv`, `summary.json`, `by_experiment` / `by_movement` / `by_participant` / `by_view` CSVs, plus plots.
 - `*_outputs.pickle` keeps the per-frame prediction and PPG label of every recording, plus the measured
   ground truth (`gt`: HR, HRV, respiration, PPG-valid mask). Unsupervised runs write one per method in
   `saved_outputs/<method>/`. Browse them in the launcher (Results → Predictions).
@@ -203,6 +208,20 @@ python tools/vhrm_report.py --config <run config> --checkpoint <run>/<cache>/Pre
 | `EXPORT_CSV` | Also write every time series as CSV files (`data_csv/`). |
 
 In the launcher: Results → Checkpoints → *Report…*, and the experiment's *Report* tab (see `launcher/README.md`).
+
+## Other datasets: subject lists, PURE, COHFACE
+
+- **Subject lists:** `<SPLIT>.DATA.SUBJECTS` (UBFC-rPPG, PURE, COHFACE) selects a split's subjects by name instead of
+  the `BEGIN`/`END` fractions of the folder listing: `subject38` or `38` (UBFC-rPPG), `07` (PURE), `3` (COHFACE).
+  Each list gets its own file list (`..._S<hash>.csv`), so the splits share one cache. A missing subject is an error.
+- **PURE** reads the toolbox layout (`01-01/01-01/*.png`, `01-01/01-01.json`) and the layout the dataset is
+  distributed in (`01-01/*.png` next to `01-01.json`), and their vHRM Studio conversions.
+- **COHFACE** (`DATASET: COHFACE`, `FS: 20`): sessions 0-3 of every subject folder (the 160 videos), split by subject.
+  The dataset's protocols (`protocols/all/train.txt`, ...) give the usual subject lists.
+- **Per-window results:** every dataset writes `window_results.csv` (HR of the PPG label as the ground truth for the
+  generic datasets), the input of `tools/paired_comparison.py`.
+- **Thesis experiments:** `thesis/README.md` (configs in `configs/launcher/thesis/`, generated by
+  `tools/thesis_configs.py`; window movement and visibility by `tools/vhrm_window_features.py`).
 
 ## Caveats
 

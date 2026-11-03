@@ -90,7 +90,8 @@ def split_selection(config, split):
     data = getattr(config, split).DATA
     if data.DATASET != "vHRM" or not data.DATA_PATH:
         return None
-    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data))
+    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data),
+                                 data.VHRM.EXPERIMENT_PATHS)
     recordings = select_recordings(segments, data.VHRM, warn=lambda message: None)
     if not (data.BEGIN == 0 and data.END == 1):
         participants = sorted({recording["participant"] for recording in recordings})

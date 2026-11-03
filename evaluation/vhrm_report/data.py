@@ -18,7 +18,7 @@ from config import _vhrm_selection_suffix
 from dataset.data_loader import VHRMLoader as vhrm
 
 SPLIT_ORDER = ("test", "validation", "training")
-FACE_MODES = ("face", "face_or_full")
+FACE_MODES = vhrm.FACE_CROP_MODES
 
 
 def report_data_config(config, labels=None, participants=None):
@@ -58,9 +58,10 @@ def participant_splits(config):
     for split, data in blocks:
         if data.DATASET != "vHRM" or not data.DATA_PATH:
             continue
-        key = (data.DATA_PATH, tuple(data.VHRM.EXPERIMENTS), vhrm.source_suffix(data))
+        key = (data.DATA_PATH, tuple(data.VHRM.EXPERIMENTS), vhrm.source_suffix(data),
+               tuple(data.VHRM.EXPERIMENT_PATHS))
         if key not in discovered:
-            discovered[key] = vhrm.discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, key[2])
+            discovered[key] = vhrm.discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, key[2], key[3])
         recordings = vhrm.select_recordings(discovered[key], data.VHRM, warn=lambda message: None)
         # split_raw_data only uses its arguments (the BEGIN/END participant fractions).
         for recording in vhrm.VHRMLoader.split_raw_data(None, recordings, data.BEGIN, data.END):

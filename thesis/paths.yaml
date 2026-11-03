@@ -1,0 +1,27 @@
+# Where the thesis datasets are, and where runs and caches go (tools/thesis_configs.py reads it).
+# After moving a drive: python tools/thesis_configs.py --find-paths   (fills the entries it can find, keeps the rest)
+# then:                 python tools/thesis_configs.py                (writes every config again)
+
+cache: C:/Datasets_Preprocessed            # preprocessing caches (shared by every run)
+runs: C:/Run/thesis                        # LOG.PATH root: <runs>/<batch>/<run name>
+
+# Face crop input: the original videos.
+video:
+  UBFC-rPPG: F:/Datasets literature/UBFC_dataset/DATASET_2
+  PURE: F:/Datasets literature/PURE
+  COHFACE: F:/Datasets literature/COHFACE
+  lab: F:/Datasets preparation              # holds baseline/, JZC/ and RM/
+
+# UV input: the vHRM Studio conversions (mirror mode).
+uv:
+  UBFC-rPPG: F:/Datasets_vhrm/literature/UBFC_dataset/DATASET_2
+  PURE: F:/Datasets_vhrm/literature/PURE
+  COHFACE: F:/Datasets_vhrm/literature/COHFACE
+  lab:                                      # one folder per experiment (they need not share a parent)
+    baseline: F:/Datasets_vhrm/laboratory/baseline
+    JZC: ''
+    RM: F:/Datasets_vhrm/laboratory/RM
+
+options:
+  device: cuda:0
+  wandb: true                               # Weights & Biases logging (WANDB.ENABLED)

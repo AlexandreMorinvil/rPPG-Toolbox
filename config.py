@@ -9,7 +9,7 @@ import hashlib, json, os, re
 import yaml
 from yacs.config import CfgNode as CN
 from cache_naming import (compact_name, flatten_settings, legacy_cache_matches, legacy_name, preprocessing_identity,
-                          uv_identity)
+                          subjects_suffix, uv_identity)
 from neural_methods.early_stopping import validate_settings as validate_early_stopping
 
 _C = CN()
@@ -20,6 +20,8 @@ def _vhrm_node(require_ppg=True):
     node = CN()
     # Selection. Empty lists mean "everything". Names are matched case-insensitively.
     node.EXPERIMENTS = []             # sub-folders of DATA_PATH, e.g. ['JZC', 'baseline']
+    # Experiments stored outside DATA_PATH: ['RM=F:/Datasets_vhrm/RM'] (the experiment folder itself).
+    node.EXPERIMENT_PATHS = []
     node.PARTICIPANTS = []            # participant folder names, e.g. ['jzc01', 'jzc02_baseline']
     node.EXCLUDE_PARTICIPANTS = []
     node.LABELS = []                  # segment labels, e.g. ['Resting', 'Recovery']
@@ -30,8 +32,16 @@ def _vhrm_node(require_ppg=True):
     # Keep only the first N seconds of each recording; the rest of the video is ignored (0 = whole video).
     node.MAX_DURATION_SEC = 0.0       # every recording of the split, e.g. 120.0
     node.MAX_DURATION_SEC_BY_LABEL = []  # per label, over MAX_DURATION_SEC: ['resting=120', 'curl=0']
-    # Image region per view: face | face_or_full | full | roi:x,y,w,h (source pixels)
+    # Image region per view: face | face_or_full | person_face | full | roi:x,y,w,h (source pixels).
+    # person_face: the face is searched inside the largest person of the frame only (a person detector runs first).
     node.CROP_MODE_BY_VIEW = ['front=face', 'back-left=face_or_full', 'back-right=face_or_full']
+    # Face crop: a clip or evaluation window has a reading only when a face is found in at least this fraction
+    # of its frames. TRAIN/VALID drop the other clips; TEST/UNSUPERVISED score them as "no reading" (coverage).
+    # 0 = off. Not used by the UV input.
+    node.MIN_FACE_FRACTION = 0.0
+    # Face crop: faces are searched in the central part of each frame only, this fraction of its width (1 = the whole
+    # frame). A frame whose only faces are outside it has no face (bystanders at the edges are ignored).
+    node.FACE_SEARCH_WIDTH = 1.0
     # Training waveform: synthetic | rpeak_sine | rpeak_gaussian | pos_pseudo (POS from the video)
     node.PPG_SOURCE = 'synthetic'
     node.RPEAK_PULSE_DELAY_SEC = 0.2  # R-peak -> pulse peak delay, rpeak_* sources only
@@ -125,6 +135,7 @@ _C.TRAIN.DATA.DO_PREPROCESS = False
 _C.TRAIN.DATA.DATA_FORMAT = 'NDCHW'
 _C.TRAIN.DATA.BEGIN = 0.0
 _C.TRAIN.DATA.END = 1.0
+_C.TRAIN.DATA.SUBJECTS = []  # subjects of this split (UBFC-rPPG, PURE, COHFACE), [] = BEGIN/END
 _C.TRAIN.DATA.FOLD = CN()
 _C.TRAIN.DATA.FOLD.FOLD_NAME = ''
 _C.TRAIN.DATA.FOLD.FOLD_PATH = ''
@@ -197,6 +208,7 @@ _C.VALID.DATA.DO_PREPROCESS = False
 _C.VALID.DATA.DATA_FORMAT = 'NDCHW'
 _C.VALID.DATA.BEGIN = 0.0
 _C.VALID.DATA.END = 1.0
+_C.VALID.DATA.SUBJECTS = []  # subjects of this split (UBFC-rPPG, PURE, COHFACE), [] = BEGIN/END
 _C.VALID.DATA.FOLD = CN()
 _C.VALID.DATA.FOLD.FOLD_NAME = ''
 _C.VALID.DATA.FOLD.FOLD_PATH = ''
@@ -267,6 +279,7 @@ _C.TEST.DATA.DO_PREPROCESS = False
 _C.TEST.DATA.DATA_FORMAT = 'NDCHW'
 _C.TEST.DATA.BEGIN = 0.0
 _C.TEST.DATA.END = 1.0
+_C.TEST.DATA.SUBJECTS = []  # subjects of this split (UBFC-rPPG, PURE, COHFACE), [] = BEGIN/END
 _C.TEST.DATA.FOLD = CN()
 _C.TEST.DATA.FOLD.FOLD_NAME = ''
 _C.TEST.DATA.FOLD.FOLD_PATH = ''
@@ -336,6 +349,7 @@ _C.UNSUPERVISED.DATA.DO_PREPROCESS = False
 _C.UNSUPERVISED.DATA.DATA_FORMAT = 'NDCHW'
 _C.UNSUPERVISED.DATA.BEGIN = 0.0
 _C.UNSUPERVISED.DATA.END = 1.0
+_C.UNSUPERVISED.DATA.SUBJECTS = []  # subjects of this split (UBFC-rPPG, PURE, COHFACE), [] = BEGIN/END
 _C.UNSUPERVISED.DATA.FOLD = CN()
 _C.UNSUPERVISED.DATA.FOLD.FOLD_NAME = ''
 _C.UNSUPERVISED.DATA.FOLD.FOLD_PATH = ''
@@ -550,6 +564,8 @@ def _vhrm_exp_data_name(data, generic_name):
         'median': crop.DETECTION.USE_MEDIAN_FACE_BOX, 'dtype': data.VHRM.CACHE_DTYPE,
         'crop_modes': sorted(str(item).strip().lower() for item in data.VHRM.CROP_MODE_BY_VIEW),
     }
+    if float(data.VHRM.FACE_SEARCH_WIDTH) != 1.0:  # absent for the whole frame: existing cache names are unchanged
+        settings['face_search_width'] = float(data.VHRM.FACE_SEARCH_WIDTH)
     uv = uv_identity(data)
     if uv:
         # The face-crop settings do not change UV clips.
@@ -581,8 +597,17 @@ def _vhrm_selection_suffix(data):
     if vhrm.MAX_DURATION_SEC or vhrm.MAX_DURATION_SEC_BY_LABEL:  # absent when off: file-list names are unchanged
         selection['max_duration'] = [float(vhrm.MAX_DURATION_SEC),
                                      sorted(str(item).strip().lower() for item in vhrm.MAX_DURATION_SEC_BY_LABEL)]
+    if vhrm.MIN_FACE_FRACTION:  # absent when off
+        selection['min_face_fraction'] = float(vhrm.MIN_FACE_FRACTION)
     digest = hashlib.sha1(json.dumps(selection, sort_keys=True).encode('utf-8')).hexdigest()[:8]
     return '_vHRM' + digest
+
+
+def _selection_suffix(data):
+    """Distinguishes the file lists of splits that share one preprocessing cache (vHRM selection, DATA.SUBJECTS)."""
+    if data.DATASET == 'vHRM':
+        return _vhrm_selection_suffix(data)
+    return subjects_suffix(data.SUBJECTS)
 
 
 def _cache_directory(data, prefix, automatic):
@@ -662,7 +687,7 @@ def update_config(config, args):
     name, ext = os.path.splitext(config.TRAIN.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
         FOLD_STR = ('_' + config.TRAIN.DATA.FOLD.FOLD_NAME if config.TRAIN.DATA.FOLD.FOLD_NAME else '') + \
-            _vhrm_selection_suffix(config.TRAIN.DATA)
+            _selection_suffix(config.TRAIN.DATA)
         config.TRAIN.DATA.FILE_LIST_PATH = os.path.join(config.TRAIN.DATA.FILE_LIST_PATH, \
                                                         config.TRAIN.DATA.EXP_DATA_NAME + '_' + \
                                                         str(config.TRAIN.DATA.BEGIN) + '_' + \
@@ -687,7 +712,7 @@ def update_config(config, args):
         name, ext = os.path.splitext(config.VALID.DATA.FILE_LIST_PATH)
         if not ext:  # no file extension
             FOLD_STR = ('_' + config.VALID.DATA.FOLD.FOLD_NAME if config.VALID.DATA.FOLD.FOLD_NAME else '') + \
-                _vhrm_selection_suffix(config.VALID.DATA)
+                _selection_suffix(config.VALID.DATA)
             config.VALID.DATA.FILE_LIST_PATH = os.path.join(config.VALID.DATA.FILE_LIST_PATH, \
                                                             config.VALID.DATA.EXP_DATA_NAME + '_' + \
                                                             str(config.VALID.DATA.BEGIN) + '_' + \
@@ -713,7 +738,7 @@ def update_config(config, args):
     name, ext = os.path.splitext(config.TEST.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
         FOLD_STR = ('_' + config.TEST.DATA.FOLD.FOLD_NAME if config.TEST.DATA.FOLD.FOLD_NAME else '') + \
-            _vhrm_selection_suffix(config.TEST.DATA)
+            _selection_suffix(config.TEST.DATA)
         config.TEST.DATA.FILE_LIST_PATH = os.path.join(config.TEST.DATA.FILE_LIST_PATH, \
                                                        config.TEST.DATA.EXP_DATA_NAME + '_' + \
                                                        str(config.TEST.DATA.BEGIN) + '_' + \
@@ -771,7 +796,7 @@ def update_config(config, args):
     name, ext = os.path.splitext(config.UNSUPERVISED.DATA.FILE_LIST_PATH)
     if not ext: # no file extension
         FOLD_STR = ('_' + config.UNSUPERVISED.DATA.FOLD.FOLD_NAME if config.UNSUPERVISED.DATA.FOLD.FOLD_NAME else '') + \
-            _vhrm_selection_suffix(config.UNSUPERVISED.DATA)
+            _selection_suffix(config.UNSUPERVISED.DATA)
         config.UNSUPERVISED.DATA.FILE_LIST_PATH = os.path.join(config.UNSUPERVISED.DATA.FILE_LIST_PATH, \
                                                         config.UNSUPERVISED.DATA.EXP_DATA_NAME + '_' + \
                                                         str(config.UNSUPERVISED.DATA.BEGIN) + '_' + \

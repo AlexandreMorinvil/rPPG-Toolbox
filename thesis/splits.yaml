@@ -1,0 +1,80 @@
+# Train / validation / test split of the thesis experiments (tools/thesis_configs.py reads it).
+#
+# Lab data (baseline, JZC, RM): the unit is the PERSON. Every session of a person is in the person's split, in every
+# experiment and batch, so that no test person is ever trained on. A session is <experiment folder>/<participant
+# folder> as on disk. Same person, checked by recording date or confirmed by the experimenter:
+#   jzcNN = jzcNN_baseline;  RMNN = RMNN_baseline_before/_after (RM010_baseline_* is RM10);
+#   jzc04 = RM01, jzc07 = RM06, jzc11 = RM09;  H04_baseline_* = HH/H04 (HH is not used).
+# Test and validation people were chosen without looking at results: jzc13/jzc14 (validation) and jzc16/jzc17 (test)
+# are kept from the earlier JZC runs; people with a missing camera (jzc04, jzc15_baseline, RM08_baseline_after) are in
+# training so that every test person has the three views; the RM test people have their front-view UV conversions.
+#
+# Literature datasets: the unit is the subject (DATA.SUBJECTS).
+#   UBFC-rPPG: last 12 subjects = test (the usual 30/12 intra-dataset split), validation taken from the first 30.
+#   PURE: 60/40 by subject. COHFACE: the dataset's own protocol (protocols/all/train|dev|test.txt).
+
+lab:
+  persons:
+    # ------------------------------------------------------------------ training (21 people)
+    jzc01: {split: train, sessions: [JZC/jzc01, baseline/jzc01_baseline]}
+    jzc03: {split: train, sessions: [JZC/jzc03, baseline/jzc03_baseline]}
+    jzc04: {split: train, sessions: [JZC/jzc04, baseline/jzc04_baseline,
+                                     RM/RM01, baseline/RM01_baseline_before, baseline/RM01_baseline_after]}
+    jzc05: {split: train, sessions: [JZC/jzc05, baseline/jzc05_baseline]}
+    jzc06: {split: train, sessions: [JZC/jzc06, baseline/jzc06_baseline]}
+    jzc08: {split: train, sessions: [JZC/jzc08, baseline/jzc08_baseline]}
+    jzc09: {split: train, sessions: [JZC/jzc09, baseline/jzc09_baseline]}
+    jzc15: {split: train, sessions: [JZC/jzc15, baseline/jzc15_baseline]}
+    RM04: {split: train, sessions: [RM/RM04, baseline/RM04_baseline_before, baseline/RM04_baseline_after]}
+    RM07: {split: train, sessions: [RM/RM07, baseline/RM07_baseline_before, baseline/RM07_baseline_after]}
+    RM08: {split: train, sessions: [RM/RM08, baseline/RM08_baseline_before, baseline/RM08_baseline_after]}
+    RM10: {split: train, sessions: [RM/RM10, baseline/RM010_baseline_before, baseline/RM010_baseline_after]}
+    RM18: {split: train, sessions: [RM/RM18, baseline/RM18_baseline_before, baseline/RM18_baseline_after]}
+    RM19: {split: train, sessions: [RM/RM19, baseline/RM19_baseline_before, baseline/RM19_baseline_after]}
+    RM22: {split: train, sessions: [RM/RM22, baseline/RM22_baseline_before, baseline/RM22_baseline_after]}
+    RM23: {split: train, sessions: [RM/RM23, baseline/RM23_baseline_before, baseline/RM23_baseline_after]}
+    RM24: {split: train, sessions: [RM/RM24, baseline/RM24_baseline_after]}
+    H04: {split: train, sessions: [baseline/H04_baseline_before, baseline/H04_baseline_after]}
+    PO01: {split: train, sessions: [baseline/PO01_baseline]}
+    PO05: {split: train, sessions: [baseline/PO05_baseline]}
+    PO07: {split: train, sessions: [baseline/PO07_baseline]}
+    # ------------------------------------------------------------------ validation (5 people)
+    jzc11: {split: valid, sessions: [JZC/jzc11, baseline/jzc11_baseline,
+                                     RM/RM09, baseline/RM09_baseline_before, baseline/RM09_baseline_after]}
+    jzc13: {split: valid, sessions: [JZC/jzc13, baseline/jzc13_baseline]}
+    jzc14: {split: valid, sessions: [JZC/jzc14, baseline/jzc14_baseline]}
+    RM14: {split: valid, sessions: [RM/RM14, baseline/RM14_baseline_before, baseline/RM14_baseline_after]}
+    PO04: {split: valid, sessions: [baseline/PO04_baseline]}
+    # ------------------------------------------------------------------ test (14 people)
+    jzc02: {split: test, sessions: [JZC/jzc02, baseline/jzc02_baseline]}
+    jzc07: {split: test, sessions: [JZC/jzc07, baseline/jzc07_baseline,
+                                    RM/RM06, baseline/RM06_baseline_before, baseline/RM06_baseline_after]}
+    jzc10: {split: test, sessions: [JZC/jzc10, baseline/jzc10_baseline]}
+    jzc12: {split: test, sessions: [JZC/jzc12, baseline/jzc12_baseline]}
+    jzc16: {split: test, sessions: [JZC/jzc16, baseline/jzc16_baseline]}
+    jzc17: {split: test, sessions: [JZC/jzc17, baseline/jzc17_baseline]}
+    RM12: {split: test, sessions: [RM/RM12, baseline/RM12_baseline_before, baseline/RM12_baseline_after]}
+    RM15: {split: test, sessions: [RM/RM15, baseline/RM15_baseline_before, baseline/RM15_baseline_after]}
+    RM16: {split: test, sessions: [RM/RM16, baseline/RM16_baseline_before, baseline/RM16_baseline_after]}
+    RM17: {split: test, sessions: [RM/RM17, baseline/RM17_baseline_before, baseline/RM17_baseline_after]}
+    RM20: {split: test, sessions: [RM/RM20, baseline/RM20_baseline_before, baseline/RM20_baseline_after]}
+    H03: {split: test, sessions: [baseline/H03_baseline_before, baseline/H03_baseline_after]}
+    PO06: {split: test, sessions: [baseline/PO06_baseline]}
+    PO08: {split: test, sessions: [baseline/PO08_baseline]}
+
+literature:
+  UBFC-rPPG:
+    train: [subject1, subject3, subject4, subject5, subject8, subject9, subject10, subject11, subject12, subject13,
+            subject14, subject15, subject16, subject17, subject18, subject20, subject22, subject23, subject24,
+            subject25, subject26, subject27, subject30, subject31]
+    valid: [subject32, subject33, subject34, subject35, subject36, subject37]
+    test: [subject38, subject39, subject40, subject41, subject42, subject43, subject44, subject45, subject46,
+           subject47, subject48, subject49]
+  PURE:
+    train: ['01', '02', '03', '04', '05']
+    valid: ['06']
+    test: ['07', '08', '09', '10']
+  COHFACE:
+    train: [1, 4, 16, 21, 25, 27, 28, 29, 31, 33, 35, 38]
+    valid: [2, 5, 6, 7, 9, 17, 18, 19, 24, 36, 37, 39]
+    test: [3, 8, 10, 11, 12, 13, 14, 15, 20, 22, 23, 26, 30, 32, 34, 40]

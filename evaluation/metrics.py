@@ -5,6 +5,7 @@ from evaluation.post_process import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
 from neural_methods import wandb_logger
+from evaluation import prediction_store
 
 def read_label(dataset):
     """Read manually corrected labels."""
@@ -43,6 +44,27 @@ def _reform_data_from_dict(data, flatten=True):
     return sort_data
 
 
+def window_row(data_config, recording_id, start, length, gt_hr, predicted_hr, snr, macc):
+    """One row of the window_results.csv of the generic datasets (HR of the PPG label as the ground truth)."""
+    gt_hr, predicted_hr = float(gt_hr), float(predicted_hr)
+    return {
+        "recording_id": str(recording_id),
+        "participant": prediction_store.subject_of_recording(data_config.DATASET, recording_id),
+        "dataset": data_config.DATASET,
+        "start_frame": int(start),
+        "end_frame": int(start + length),
+        "start_seconds": start / data_config.FS,
+        "end_seconds": (start + length) / data_config.FS,
+        "has_reading": True,
+        "ground_truth_hr_bpm": gt_hr,
+        "predicted_hr_bpm": predicted_hr,
+        "error_bpm": predicted_hr - gt_hr,
+        "absolute_error_bpm": abs(predicted_hr - gt_hr),
+        "snr_db": float(snr),
+        "macc": float(macc),
+    }
+
+
 def calculate_metrics(predictions, labels, config):
     """Calculate rPPG Metrics (MAE, RMSE, MAPE, Pearson Coef.)."""
     if config.TEST.DATA.DATASET == "vHRM":
@@ -59,6 +81,7 @@ def calculate_metrics(predictions, labels, config):
     gt_hr_peak_all = list()
     SNR_all = list()
     MACC_all = list()
+    window_rows = list()
     print("Calculating metrics!")
     for index in tqdm(predictions.keys(), ncols=80):
         prediction = _reform_data_from_dict(predictions[index])
@@ -95,6 +118,7 @@ def calculate_metrics(predictions, labels, config):
                 predict_hr_peak_all.append(pred_hr_peak)
                 SNR_all.append(SNR)
                 MACC_all.append(macc)
+                gt_hr, pred_hr = gt_hr_peak, pred_hr_peak
             elif config.INFERENCE.EVALUATION_METHOD == "FFT":
                 gt_hr_fft, pred_hr_fft, SNR, macc = calculate_metric_per_video(
                     pred_window, label_window, diff_flag=diff_flag_test, fs=config.TEST.DATA.FS, hr_method='FFT')
@@ -102,8 +126,11 @@ def calculate_metrics(predictions, labels, config):
                 predict_hr_fft_all.append(pred_hr_fft)
                 SNR_all.append(SNR)
                 MACC_all.append(macc)
+                gt_hr, pred_hr = gt_hr_fft, pred_hr_fft
             else:
                 raise ValueError("Inference evaluation method name wrong!")
+            window_rows.append(window_row(config.TEST.DATA, index, i, len(pred_window), gt_hr, pred_hr, SNR, macc))
+    prediction_store.write_window_results(window_rows, config.TEST.OUTPUT_SAVE_DIR)
     
     # Filename ID to be used in any results files (e.g., Bland-Altman plots) that get saved
     if config.TOOLBOX_MODE == 'train_and_test':

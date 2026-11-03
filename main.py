@@ -199,6 +199,8 @@ if __name__ == "__main__":
             train_loader = data_loader.LADHLoader.LADHLoader
         elif config.TRAIN.DATA.DATASET == "SUMS":
             train_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TRAIN.DATA.DATASET == "COHFACE":
+            train_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.TRAIN.DATA.DATASET == "vHRM":
             train_loader = data_loader.VHRMLoader.VHRMLoader
         else:
@@ -248,6 +250,8 @@ if __name__ == "__main__":
             valid_loader = data_loader.LADHLoader.LADHLoader
         elif config.VALID.DATA.DATASET == "SUMS":
             valid_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.VALID.DATA.DATASET == "COHFACE":
+            valid_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.VALID.DATA.DATASET == "vHRM":
             valid_loader = data_loader.VHRMLoader.VHRMLoader
         elif config.VALID.DATA.DATASET is None and not config.TEST.USE_LAST_EPOCH:
@@ -299,6 +303,8 @@ if __name__ == "__main__":
             test_loader = data_loader.LADHLoader.LADHLoader
         elif config.TEST.DATA.DATASET == "SUMS":
             test_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TEST.DATA.DATASET == "COHFACE":
+            test_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.TEST.DATA.DATASET == "vHRM":
             test_loader = data_loader.VHRMLoader.VHRMLoader
         else:
@@ -343,6 +349,8 @@ if __name__ == "__main__":
             unsupervised_loader = data_loader.UBFCPHYSLoader.UBFCPHYSLoader
         elif config.UNSUPERVISED.DATA.DATASET == "iBVP":
             unsupervised_loader = data_loader.iBVPLoader.iBVPLoader
+        elif config.UNSUPERVISED.DATA.DATASET == "COHFACE":
+            unsupervised_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.UNSUPERVISED.DATA.DATASET == "vHRM":
             unsupervised_loader = data_loader.VHRMLoader.VHRMLoader
         else:

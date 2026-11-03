@@ -12,10 +12,10 @@ MODELS = [
 ]
 TRAIN_DATASETS = [
     "UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "BP4DPlusBigSmall",
-    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS", "vHRM",
+    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS", "COHFACE", "vHRM",
 ]
 TEST_DATASETS = list(TRAIN_DATASETS)
-UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP", "vHRM"]
+UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP", "COHFACE", "vHRM"]
 DATA_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 LABEL_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 DATA_FORMATS = ["NDCHW", "NCDHW", "NDHWC"]
@@ -174,6 +174,9 @@ def _split_fields(prefix, spec):
         min=1, max=1000, required=True)
     add("BEGIN", "float", 0.0, "Split begin", "Fraction of the subjects where this split starts.", min=0.0, max=1.0)
     add("END", "float", 1.0, "Split end", "Fraction of the subjects where this split ends.", min=0.0, max=1.0)
+    add("SUBJECTS", "list", [], "Subjects",
+        "Subjects of this split, e.g. subject38 or 38 (UBFC-rPPG), 07 (PURE), 3 (COHFACE). Empty = BEGIN/END. "
+        "vHRM uses its participant lists.", when_extra={"dataset": [prefix, ["UBFC-rPPG", "PURE", "COHFACE"]]})
     add("DATA_FORMAT", "enum", "NDCHW", "Tensor layout", "Must match the model.", options=DATA_FORMATS,
         group="Preprocessing")
     add("PREPROCESS.DATA_TYPE", "multi", [""], "Input transforms",
@@ -225,6 +228,9 @@ def _split_fields(prefix, spec):
     vhrm = {"dataset": [prefix, ["vHRM"]]}
     add("VHRM.EXPERIMENTS", "list", [], "Experiments",
         "Sub-folders of the data folder to use, e.g. JZC, baseline. Empty = all.", group="vHRM", when_extra=vhrm)
+    add("VHRM.EXPERIMENT_PATHS", "list", [], "Experiments stored elsewhere",
+        "experiment=folder, e.g. RM=F:/Datasets_vhrm/RM: the experiment folder itself, outside the data folder.",
+        group="vHRM", when_extra=vhrm)
     add("VHRM.PARTICIPANTS", "list", [], "Participants",
         "Participant folders to include, e.g. jzc01, jzc02_baseline. Empty = all.", group="vHRM",
         when_extra=vhrm)
@@ -236,8 +242,17 @@ def _split_fields(prefix, spec):
     add("VHRM.VIEWS", "list", ["front"], "Camera views", "front, back-left, back-right. Empty = all three.",
         group="vHRM", when_extra=vhrm)
     add("VHRM.CROP_MODE_BY_VIEW", "yamllist", ["front=face", "back-left=face_or_full", "back-right=face_or_full"],
-        "Image region per view", "view=face | face_or_full | full | roi:x,y,w,h (pixels, or fractions <= 1).",
+        "Image region per view", "view=face | face_or_full | person_face | full | roi:x,y,w,h (pixels, or fractions "
+        "<= 1). person_face: the face is searched inside the largest person of the frame only.",
         group="vHRM", when_extra=vhrm)
+    add("VHRM.MIN_FACE_FRACTION", "float", 0.0, "Minimum face fraction",
+        "Face crop: clips and windows need a face in at least this fraction of their frames. Training and "
+        "validation drop the other clips; test windows without it count as no reading (coverage). 0 = off.",
+        min=0.0, max=1.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.FACE_SEARCH_WIDTH", "float", 1.0, "Face search width",
+        "Face crop: faces are searched in the central part of the frame only, this fraction of its width. A frame "
+        "whose only faces are outside it has no face. 1 = the whole frame.",
+        min=0.05, max=1.0, group="vHRM", when_extra=vhrm)
     add("VHRM.MAX_DURATION_SEC", "float", 0.0, "Max duration per video (s)",
         "Preprocess only the first N seconds of each recording; the rest of the video is ignored. 0 = whole video.",
         min=0.0, max=86400.0, group="vHRM", when_extra=vhrm)

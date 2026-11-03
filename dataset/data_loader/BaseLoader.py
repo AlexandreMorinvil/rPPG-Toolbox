@@ -31,7 +31,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from cache_naming import flatten_settings, preprocessing_identity, settings_path
+from cache_naming import flatten_settings, preprocessing_identity, settings_path, subject_key
 from dataset.data_loader.uv_source import UVVideoReader
 
 class BaseLoader(Dataset):
@@ -97,6 +97,9 @@ class BaseLoader(Dataset):
         assert (config_data.BEGIN < config_data.END)
         assert (config_data.BEGIN > 0 or config_data.BEGIN == 0)
         assert (config_data.END < 1 or config_data.END == 1)
+        if self._subjects() and type(self).preprocess_dataset is not BaseLoader.preprocess_dataset:
+            raise ValueError(f"{dataset_name}: DATA.SUBJECTS is not supported for {config_data.DATASET}"
+                             + (" (use VHRM.PARTICIPANTS)" if config_data.DATASET == 'vHRM' else ""))
         if config_data.DO_PREPROCESS:
             self.raw_data_dirs = self.get_raw_data(self.raw_data_path)
             self.preprocess_dataset(self.raw_data_dirs, config_data.PREPROCESS, config_data.BEGIN, config_data.END)
@@ -171,6 +174,23 @@ class BaseLoader(Dataset):
         """
         raise Exception("'split_raw_data' Not Implemented")
 
+    def _subjects(self):
+        return {subject_key(item) for item in getattr(self.config_data, 'SUBJECTS', []) if str(item).strip()}
+
+    def subject_of(self, data_dir):
+        """Subject of a raw-data entry for DATA.SUBJECTS: its 'subject' field, else its index."""
+        return data_dir.get('subject', data_dir['index'])
+
+    def select_split(self, data_dirs, begin, end):
+        """The subjects listed in DATA.SUBJECTS (all when empty), then the BEGIN/END split of split_raw_data."""
+        subjects = self._subjects()
+        if subjects:
+            missing = sorted(subjects - {subject_key(self.subject_of(data_dir)) for data_dir in data_dirs})
+            if missing:
+                raise ValueError(f"{self.dataset_name}: DATA.SUBJECTS not found in {self.raw_data_path}: {missing}")
+            data_dirs = [data_dir for data_dir in data_dirs if subject_key(self.subject_of(data_dir)) in subjects]
+        return self.split_raw_data(data_dirs, begin, end)
+
     def read_npy_video(self, video_file):
         """Reads a video file in the numpy format (.npy), returns frames(T,H,W,3)"""
         frames = np.load(video_file[0])
@@ -239,7 +259,7 @@ class BaseLoader(Dataset):
             begin(float): index of begining during train/val split.
             end(float): index of ending during train/val split.
         """
-        data_dirs_split = self.split_raw_data(data_dirs, begin, end)  # partition dataset
+        data_dirs_split = self.select_split(data_dirs, begin, end)  # partition dataset
         # send data directories to be processed
         # NUM_WORKERS is configurable per-split via config (default 4). Tune down if
         # host RAM is limited: each worker buffers a full video (~1.5-2 GiB raw uint8
@@ -603,7 +623,7 @@ class BaseLoader(Dataset):
         """
 
         # get data split based on begin and end indices.
-        data_dirs_subset = self.split_raw_data(data_dirs, begin, end)
+        data_dirs_subset = self.select_split(data_dirs, begin, end)
 
         # generate a list of unique raw-data file names
         filename_list = []

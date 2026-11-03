@@ -8,7 +8,8 @@ import os
 import re
 from pathlib import Path
 
-from cache_naming import _uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
+from cache_naming import (_uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity,
+                          subject_key, subjects_suffix)
 from . import configs, paths, schema
 
 RAW_LAYOUTS = {
@@ -19,6 +20,7 @@ RAW_LAYOUTS = {
     "iBVP": ("*_*", "recording folders"),
     "LADH": ("p_*", "participant folders"),
     "SUMS": ("0602*", "recording folders"),
+    "COHFACE": ("*/*/data.hdf5", "recordings (<subject>/<session>/)"),
     "vHRM": ("*/*/labelled_segments/*/meta.json", "labelled segments (<experiment>/<participant>/...)"),
 }
 MOTION_AUG_DATASETS = {"UBFC-rPPG", "PURE", "iBVP", "PhysDrive"}
@@ -82,6 +84,8 @@ def vhrm_exp_data_name(values, prefix):
         "dtype": values[prefix + ".VHRM.CACHE_DTYPE"],
         "crop_modes": _vhrm_items(values, prefix + ".VHRM.CROP_MODE_BY_VIEW"),
     }
+    if float(values.get(prefix + ".VHRM.FACE_SEARCH_WIDTH", 1.0)) != 1.0:
+        settings["face_search_width"] = float(values[prefix + ".VHRM.FACE_SEARCH_WIDTH"])
     uv = _uv_values(values, prefix)
     if uv:
         settings = {key: settings[key] for key in ("fs", "data_type", "data_aug", "do_chunk", "chunk", "resize",
@@ -93,9 +97,9 @@ def vhrm_exp_data_name(values, prefix):
 
 
 def vhrm_selection_suffix(values, prefix):
-    """Replicates config.py's _vhrm_selection_suffix (file-list name of a vHRM split)."""
+    """Replicates config.py's _selection_suffix (file-list name of a vHRM split, or DATA.SUBJECTS)."""
     if values.get(prefix + ".DATASET") != "vHRM":
-        return ""
+        return subjects_suffix(values.get(prefix + ".SUBJECTS"))
     v = prefix + ".VHRM."
     selection = {key: _vhrm_items(values, v + key) for key in (
         "EXPERIMENTS", "PARTICIPANTS", "EXCLUDE_PARTICIPANTS", "LABELS", "EXCLUDE_LABELS", "LABEL_ALIASES",
@@ -109,6 +113,8 @@ def vhrm_selection_suffix(values, prefix):
     caps = _vhrm_duration_caps(values, prefix)
     if caps[0] or caps[1]:
         selection["max_duration"] = caps
+    if float(values.get(v + "MIN_FACE_FRACTION") or 0):
+        selection["min_face_fraction"] = float(values[v + "MIN_FACE_FRACTION"])
     return "_vHRM" + _short_hash(selection, 8)
 
 
@@ -428,9 +434,21 @@ def _check_split(values, prefix, backend, report, env, active_fields):
             pattern, noun = RAW_LAYOUTS[dataset]
             count = sum(1 for _ in raw_host.glob(pattern))
             report.paths[prefix + ".DATA_PATH"]["found"] = f"{count} {noun}"
-            if count == 0:
+            elsewhere = dataset == "vHRM" and values.get(prefix + ".VHRM.EXPERIMENT_PATHS")
+            if count == 0 and not elsewhere:
                 report.error(f"{section}: no {noun} matching '{pattern}' in {raw_host}. "
                              f"Is this the {dataset} root?", prefix + ".DATA_PATH")
+        if dataset == "vHRM":
+            for item in values.get(prefix + ".VHRM.EXPERIMENT_PATHS") or []:
+                name, separator, folder = str(item).partition("=")
+                if not separator or not name.strip() or not folder.strip():
+                    report.error(f"{section}: experiment folders must look like experiment=folder: {item!r}",
+                                 prefix + ".VHRM.EXPERIMENT_PATHS")
+                    continue
+                host, problem = paths.config_host_path(folder.strip(), backend, env)
+                if problem or host is None or not host.is_dir():
+                    report.error(f"{section}: folder of experiment {name.strip()} not found: {host or folder.strip()}",
+                                 prefix + ".VHRM.EXPERIMENT_PATHS")
         if locations["file_list_exists"]:
             if dataset == "vHRM" and values.get(prefix + ".VHRM.INCREMENTAL_PREPROCESS"):
                 report.note(f"{section}: existing vHRM cache found; only new or changed recordings are processed.",
@@ -594,6 +612,16 @@ def _check_split_consistency(values, report, splits):
             if shared:
                 report.warn(f"{section} shares participants with the training data (data leakage): "
                             f"{', '.join(sorted(shared))}.", f"{other}.VHRM.PARTICIPANTS")
+        elif same_source and (values.get(f"{train}.SUBJECTS") or values.get(f"{other}.SUBJECTS")):
+            # Splits chosen by DATA.SUBJECTS lists (BEGIN/END then apply within each list).
+            first, second = ({subject_key(item) for item in values.get(f"{split}.SUBJECTS") or [] if str(item).strip()}
+                             for split in (train, other))
+            if not (first and second):
+                report.warn(f"{section}: only one of this split and the training data lists its subjects; the "
+                            f"other uses BEGIN/END and may overlap it.", f"{other}.SUBJECTS")
+            elif first & second:
+                report.warn(f"{section} shares subjects with the training data (data leakage): "
+                            f"{', '.join(sorted(first & second, key=lambda key: (len(key), key)))}.", f"{other}.SUBJECTS")
         elif same_source:
             if max(values[f"{train}.BEGIN"], values[f"{other}.BEGIN"]) < min(values[f"{train}.END"],
                                                                            values[f"{other}.END"]):
@@ -684,6 +712,11 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
                 report.error("Improvement tolerance must be finite.", "TRAIN.EARLY_STOPPING.TOLERANCE")
             report.note("Epochs is an upper limit. Early stopping preserves the lowest-loss checkpoint "
                         "and its patience state across pause/resume.", "TRAIN.EARLY_STOPPING.ENABLED")
+        if values.get("MODEL.INIT_WEIGHTS") and not values.get("MODEL.RESUME"):
+            host = _check_path(schema.FIELD_MAP["MODEL.INIT_WEIGHTS"], values["MODEL.INIT_WEIGHTS"], backend, report,
+                               env)
+            if host is not None and not host.is_file():
+                report.error(f"Initial weights not found: {host}", "MODEL.INIT_WEIGHTS")
         if values.get("MODEL.RESUME"):
             host = _check_path(schema.FIELD_MAP["MODEL.RESUME"], values["MODEL.RESUME"], backend, report, env)
             if host is not None and not host.is_file():
