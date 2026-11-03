@@ -198,11 +198,12 @@ def _unpack_mask(packed):
     return np.unpackbits(np.asarray(packed), axis=-1).astype(bool)
 
 
-def read_uv_frames(h5_path, settings, size, target_fps=None, progress=None):
+def read_uv_frames(h5_path, settings, size, target_fps=None, progress=None, max_frames=None):
     """Pooled UV frames of one file.
 
-    settings: uv_settings(...) dict. Returns frames (T, size, size, 3) float32 (0 = invalid), valid (T, size, size)
-    bool and an info dict (fps, stride, rows, coverage)."""
+    settings: uv_settings(...) dict. max_frames keeps only the first output frames (None = all). Returns frames
+    (T, size, size, 3) float32 (0 = invalid), valid (T, size, size) bool and an info dict (fps, stride, rows,
+    coverage)."""
     import h5py
 
     layout = settings["layout"]
@@ -227,6 +228,8 @@ def read_uv_frames(h5_path, settings, size, target_fps=None, progress=None):
             rows = resample_rows(timestamps, target_fps)
         else:
             rows = np.arange(len(status))
+        if max_frames is not None:
+            rows = rows[:max_frames]
 
         region = region_mask(h5, layout, settings["charts"], settings["exclude_charts"])
         region_count = pool_region(region, size)
@@ -301,11 +304,12 @@ def fill_invalid(frames, valid, mode):
     return frames
 
 
-def load_uv_video(source_path, uv_node, size, data_root=None, target_fps=None, progress=None):
+def load_uv_video(source_path, uv_node, size, data_root=None, target_fps=None, progress=None, max_frames=None):
     """Resolve, read and fill: the frames a loader gets instead of the decoded video."""
     settings = uv_settings(uv_node)
     h5_path = resolve_uv_path(source_path, data_root, uv_node.H5_SUFFIX or H5_SUFFIX)
-    frames, valid, info = read_uv_frames(h5_path, settings, size, target_fps=target_fps, progress=progress)
+    frames, valid, info = read_uv_frames(h5_path, settings, size, target_fps=target_fps, progress=progress,
+                                         max_frames=max_frames)
     fill_invalid(frames, valid, settings["fill"])
     return frames, info
 

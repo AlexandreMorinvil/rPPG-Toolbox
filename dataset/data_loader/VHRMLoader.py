@@ -8,7 +8,8 @@ Expected layout (produced by the vHRM video research tool):
             meta.json, cam<N>_Camera_<View>.mp4, zephyr_1.csv, synthetic_ppg/*.csv
 
 One recording is one (segment, camera view). Videos are resampled to DATA.FS and cached
-as clips shared by every split. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
+as clips shared by every split; VHRM.MAX_DURATION_SEC(_BY_LABEL) keeps only the first seconds
+of each recording and ignores the rest of the video. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
 converted by vHRM Studio: each camera is read from `cam<N>_Camera_<View>_skin_uv.h5` (the compact
 body UV map, pooled to RESIZE and resampled to DATA.FS) instead of the video. Labels are a PPG
 waveform sampled on the absolute time of each frame, or a POS pseudo-PPG computed from the cached
@@ -110,6 +111,38 @@ def parse_crop_modes(items):
         key = "*" if view.strip() == "*" else slug(view)
         modes[key] = (mode, roi)
     return modes
+
+
+def parse_duration_caps(items, label_aliases=None):
+    """Parse ['resting=120', 'curl=0'] into {label: seconds} (labels after LABEL_ALIASES; 0 = no cap)."""
+    label_aliases = label_aliases or {}
+    caps = {}
+    for item in items:
+        if not str(item).strip():
+            continue
+        label, separator, seconds = str(item).partition("=")
+        try:
+            value = float(seconds) if separator and label.strip() else math.nan
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"vHRM MAX_DURATION_SEC_BY_LABEL entries must look like 'label=seconds' "
+                             f"with seconds >= 0: {item!r}")
+        caps[label_aliases.get(slug(label), slug(label))] = value
+    return caps
+
+
+def cached_frames_fit(entry, max_frames):
+    """Whether a cached decode equals a decode of the first max_frames frames (None = the whole video).
+
+    A cap only changes the recordings it truncates: a decode that reached the end of its video
+    is reused under any cap it fits in, so a new cap decodes only the longer videos again."""
+    cached_cap = entry.get("max_frames")
+    if cached_cap == max_frames:
+        return True
+    frame_count = entry.get("frame_count", 0)
+    complete = cached_cap is None or frame_count < cached_cap
+    return complete and (max_frames is None or frame_count <= max_frames)
 
 
 def _parse_utc(value):
@@ -255,6 +288,10 @@ def select_recordings(segments, vhrm, warn=print):
     excluded_labels = {canonical_label(item) for item in vhrm.EXCLUDE_LABELS if str(item).strip()}
     views = {canonical_view(item) for item in vhrm.VIEWS if str(item).strip()}
     crop_modes = parse_crop_modes(vhrm.CROP_MODE_BY_VIEW)
+    default_cap = float(vhrm.MAX_DURATION_SEC or 0)
+    if not math.isfinite(default_cap) or default_cap < 0:
+        raise ValueError(f"vHRM MAX_DURATION_SEC must be >= 0 (0 = the whole video): {vhrm.MAX_DURATION_SEC!r}")
+    duration_caps = parse_duration_caps(vhrm.MAX_DURATION_SEC_BY_LABEL, label_aliases)
 
     recordings = []
     for segment in segments:
@@ -292,6 +329,8 @@ def select_recordings(segments, vhrm, warn=print):
                 "path": camera["path"],
                 "camera_fps": camera["fps"],
                 "crop_mode": crop_modes.get(view, crop_modes.get("*", ("face", None))),
+                # Seconds kept from the start of the video; 0 = the whole video.
+                "max_duration_sec": duration_caps.get(label, default_cap),
             })
     return recordings
 
@@ -560,6 +599,7 @@ class VHRMLoader(BaseLoader):
             raise ValueError("VHRM.CACHE_DTYPE must be 'float16' or 'float32'")
         self.cache_dtype = np.dtype(self.cache_dtype_name)
         parse_crop_modes(vhrm.CROP_MODE_BY_VIEW)  # fail early on a malformed entry
+        parse_duration_caps(vhrm.MAX_DURATION_SEC_BY_LABEL)
         self.gt_files = []
         self._video_codec_cache = {}
         self._nvdec_decoders = None
@@ -640,6 +680,14 @@ class VHRMLoader(BaseLoader):
             })
         return _fingerprint(settings)
 
+    def _max_frames(self, recording):
+        """Frames kept from the start of the recording (MAX_DURATION_SEC*), or None for the whole video.
+
+        Not part of the video fingerprint: the manifest records the cap of each decode, and
+        cached_frames_fit decides whether it still holds, so a cap re-decodes only the videos it cuts."""
+        seconds = recording.get("max_duration_sec") or 0
+        return max(1, int(round(seconds * self.config_data.FS))) if seconds > 0 else None
+
     def _sync_delay(self, recording):
         return float(self.vhrm.PPG_DELAY_SEC) + lookup_lag(self.lag_table, recording)
 
@@ -711,6 +759,7 @@ class VHRMLoader(BaseLoader):
                 entries[recording["index"]] = {
                     "source": _file_signature(recording["path"]),
                     "video_fingerprint": self._video_fingerprint(recording, config_preprocess),
+                    "max_frames": self._max_frames(recording),
                     "frame_count": result["frame_count"],
                     "chunk_count": result["chunk_count"],
                     "crop": result["crop"],
@@ -766,7 +815,10 @@ class VHRMLoader(BaseLoader):
         recording_id = recording["index"]
         started_at = time.perf_counter()
         progress_position = 1 + index % max(1, config_preprocess.NUM_WORKERS)
+        max_frames = self._max_frames(recording)
         expected_frames = round(recording["duration_sec"] * self.config_data.FS)
+        if max_frames is not None:
+            expected_frames = min(expected_frames or max_frames, max_frames)
         decode_progress = tqdm(
             total=expected_frames or None,
             desc=f"{recording_id} | decode",
@@ -776,22 +828,27 @@ class VHRMLoader(BaseLoader):
             dynamic_ncols=True,
             disable=not self.show_video_progress,
         )
+        kept = f", first {recording['max_duration_sec']:g}s kept" if max_frames is not None else ""
         self._progress_message(
-            f"[{recording_id}] Starting: {recording['duration_sec']:.1f}s, "
+            f"[{recording_id}] Starting: {recording['duration_sec']:.1f}s{kept}, "
             f"target {self.config_data.FS} FPS ({expected_frames} frames).")
         try:
             crop_mode = self._crop_mode(recording, config_preprocess)
             crop_stats = {"mode": crop_mode[0], "attempts": 0, "failures": 0}
             try:
                 if self.uv_enabled:
-                    frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats)
+                    frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats, max_frames)
                 else:
                     frames = self.read_video(recording["path"], self.config_data.FS, config_preprocess,
-                                             decode_progress, crop_mode, crop_stats, label=recording_id)
+                                             decode_progress, crop_mode, crop_stats, label=recording_id,
+                                             max_frames=max_frames)
             finally:
                 decode_progress.close()
             decoded_seconds = len(frames) / self.config_data.FS
-            if recording["duration_sec"] and abs(decoded_seconds - recording["duration_sec"]) > 1.0:
+            expected_seconds = recording["duration_sec"]
+            if expected_seconds and max_frames is not None:
+                expected_seconds = min(expected_seconds, max_frames / self.config_data.FS)
+            if expected_seconds and abs(decoded_seconds - expected_seconds) > 1.0:
                 print(f"WARNING: [{recording_id}] decoded {decoded_seconds:.2f}s but meta.json says "
                       f"{recording['duration_sec']:.2f}s; labels assume the video starts at the segment start.")
             if crop_stats["attempts"] and crop_stats["failures"] > crop_stats["attempts"] / 2:
@@ -815,11 +872,11 @@ class VHRMLoader(BaseLoader):
             return masked_spatial_mean(frames).reshape(len(frames), 3)
         return np.mean(frames, axis=(1, 2), dtype=np.float64)
 
-    def _read_uv(self, recording, config_preprocess, progress, crop_stats):
+    def _read_uv(self, recording, config_preprocess, progress, crop_stats, max_frames=None):
         """Body UV frames of the recording's HDF5 file, resampled to DATA.FS (same timing as the video path)."""
         frames, info = uv_source.load_uv_video(
             recording["path"], self.config_data.UV, config_preprocess.RESIZE.W,
-            target_fps=self.config_data.FS, progress=progress)
+            target_fps=self.config_data.FS, progress=progress, max_frames=max_frames)
         crop_stats.update({"mode": "uv", "mean_valid_fraction": round(info["mean_valid_fraction"], 4),
                            "empty_frames": info["empty_frames"], "bad_rows": info["bad_rows"]})
         if info["mean_valid_fraction"] < 0.01 or info["empty_frames"] > len(frames) / 2:
@@ -836,6 +893,8 @@ class VHRMLoader(BaseLoader):
         if not entry or entry.get("video_fingerprint") != self._video_fingerprint(recording, config_preprocess):
             return False
         if entry.get("source") != _file_signature(recording["path"]):
+            return False
+        if not cached_frames_fit(entry, self._max_frames(recording)):
             return False
         # Caches decoded before the RGB trace was saved are decoded again for pos_pseudo.
         if self.vhrm.PPG_SOURCE == "pos_pseudo" and not os.path.isfile(self._rgb_trace_path(recording)):
@@ -1013,7 +1072,8 @@ class VHRMLoader(BaseLoader):
         return [left, top, width, height]
 
     def read_video(self, video_path, target_fps, config_preprocess, progress=None,
-                   crop_mode=("face", None), crop_stats=None, label=None):
+                   crop_mode=("face", None), crop_stats=None, label=None, max_frames=None):
+        """Frames resampled to target_fps; only the first max_frames of them when it is set."""
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
         # Recordings share video file names, so the progress bar names the recording when known.
         label = label or os.path.basename(video_path)
@@ -1022,7 +1082,7 @@ class VHRMLoader(BaseLoader):
                 if progress is not None:
                     progress.set_description(f"{label} | decode (NVDEC)", refresh=True)
                 frames = self._read_video_nvdec(
-                    video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
+                    video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats, max_frames)
                 self._progress_message(f"Using FFmpeg/NVDEC: {video_path}")
                 return frames
             except (OSError, RuntimeError, ValueError) as error:
@@ -1034,7 +1094,7 @@ class VHRMLoader(BaseLoader):
         if progress is not None:
             progress.set_description(f"{label} | decode (OpenCV)", refresh=True)
         return self._read_video_opencv(
-            video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
+            video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats, max_frames)
 
     def _can_use_nvdec(self, video_path, config_preprocess):
         if self.video_decoder == "opencv":
@@ -1068,7 +1128,7 @@ class VHRMLoader(BaseLoader):
             return False
 
     def _read_video_nvdec(self, video_path, target_fps, config_preprocess, progress=None,
-                          crop_mode=("face", None), crop_stats=None):
+                          crop_mode=("face", None), crop_stats=None, max_frames=None):
         capture, rotation = self._open_capture(video_path)
         source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1106,8 +1166,11 @@ class VHRMLoader(BaseLoader):
             "-resize", f"{decoded_width}x{decoded_height}",
             "-i", video_path,
             "-vf", f"fps={target_fps},hwdownload,format=nv12,format=rgb24",
-            "-an", "-sn", "-dn", "-f", "rawvideo", "pipe:1",
         ])
+        if max_frames is not None:
+            # FFmpeg stops decoding once it has written max_frames resampled frames.
+            command.extend(["-frames:v", str(max_frames)])
+        command.extend(["-an", "-sn", "-dn", "-f", "rawvideo", "pipe:1"])
 
         frame_size = decoded_width * decoded_height * 3
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1171,7 +1234,7 @@ class VHRMLoader(BaseLoader):
         return left, top, right, bottom
 
     def _read_video_opencv(self, video_path, target_fps, config_preprocess, progress=None,
-                           crop_mode=("face", None), crop_stats=None):
+                           crop_mode=("face", None), crop_stats=None, max_frames=None):
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
         capture, rotation = self._open_capture(video_path)
         source_fps = capture.get(cv2.CAP_PROP_FPS)
@@ -1189,7 +1252,7 @@ class VHRMLoader(BaseLoader):
             capture.release()
             raise ValueError("vHRM streaming preprocessing does not support USE_MEDIAN_FACE_BOX")
         success, frame = capture.read()
-        while success:
+        while success and (max_frames is None or sampled_index < max_frames):
             frame_time = source_index / source_fps
             if frame_time + (0.5 / source_fps) >= next_sample_time:
                 frame = self._rotate_frame(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), rotation)

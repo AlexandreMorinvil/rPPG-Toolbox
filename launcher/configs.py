@@ -203,6 +203,8 @@ def build_tree(values, extras=None):
         if (key.endswith((".FILE_LIST_PATH", ".EXP_DATA_NAME")) or key == "DESCRIPTION") and value == "":
             # An empty DESCRIPTION is omitted so Docker images built before the key existed still accept the YAML.
             continue
+        if ".VHRM.MAX_DURATION_SEC" in key and not differs:
+            continue  # likewise, the duration limits are only written when set
         if field["type"] == "float":
             value = float(value)
         if key == "INFERENCE.MODEL_PATH":

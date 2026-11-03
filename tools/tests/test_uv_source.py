@@ -181,6 +181,10 @@ class FileTests(unittest.TestCase):
         np.testing.assert_allclose(frames[:6, 0, 0, 0], [10, 10, 20, 20, 20, 30])
         self.assertEqual(len(frames), 16)
         self.assertEqual(info["frame_stride"], 3)
+        # MAX_DURATION_SEC: the first resampled frames only.
+        capped, _, info = U.read_uv_frames(path, U.uv_settings(settings()), 2, target_fps=30.0, max_frames=4)
+        np.testing.assert_allclose(capped[:, 0, 0, 0], [10, 10, 20, 20])
+        self.assertEqual(info["frames"], 4)
 
     def test_reader_replaces_a_loader_read_video(self):
         subject = self.root / "subject3"

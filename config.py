@@ -27,6 +27,9 @@ def _vhrm_node(require_ppg=True):
     node.LABEL_ALIASES = ['recover=recovery']
     node.VIEWS = ['front']            # front | back-left | back-right
     node.VIEW_ALIASES = []            # e.g. ['camera-1=back-left']
+    # Keep only the first N seconds of each recording; the rest of the video is ignored (0 = whole video).
+    node.MAX_DURATION_SEC = 0.0       # every recording of the split, e.g. 120.0
+    node.MAX_DURATION_SEC_BY_LABEL = []  # per label, over MAX_DURATION_SEC: ['resting=120', 'curl=0']
     # Image region per view: face | face_or_full | full | roi:x,y,w,h (source pixels)
     node.CROP_MODE_BY_VIEW = ['front=face', 'back-left=face_or_full', 'back-right=face_or_full']
     # Training waveform: synthetic | rpeak_sine | rpeak_gaussian | pos_pseudo (POS from the video)
@@ -575,6 +578,9 @@ def _vhrm_selection_suffix(data):
         'lag_table': vhrm.LAG_TABLE_PATH, 'hr_source': vhrm.HR_SOURCE,
         'require_ppg': vhrm.REQUIRE_PPG,
     })
+    if vhrm.MAX_DURATION_SEC or vhrm.MAX_DURATION_SEC_BY_LABEL:  # absent when off: file-list names are unchanged
+        selection['max_duration'] = [float(vhrm.MAX_DURATION_SEC),
+                                     sorted(str(item).strip().lower() for item in vhrm.MAX_DURATION_SEC_BY_LABEL)]
     digest = hashlib.sha1(json.dumps(selection, sort_keys=True).encode('utf-8')).hexdigest()[:8]
     return '_vHRM' + digest
 

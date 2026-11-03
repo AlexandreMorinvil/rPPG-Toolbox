@@ -57,6 +57,11 @@ def _vhrm_items(values, key):
     return sorted(str(item).strip().lower() for item in (values.get(key) or []))
 
 
+def _vhrm_duration_caps(values, prefix):
+    v = prefix + ".VHRM."
+    return [float(values[v + "MAX_DURATION_SEC"]), _vhrm_items(values, v + "MAX_DURATION_SEC_BY_LABEL")]
+
+
 def _short_hash(settings, length):
     return hashlib.sha1(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()[:length]
 
@@ -101,6 +106,9 @@ def vhrm_selection_suffix(values, prefix):
         "lag_table": values[v + "LAG_TABLE_PATH"], "hr_source": values[v + "HR_SOURCE"],
         "require_ppg": values[v + "REQUIRE_PPG"],
     })
+    caps = _vhrm_duration_caps(values, prefix)
+    if caps[0] or caps[1]:
+        selection["max_duration"] = caps
     return "_vHRM" + _short_hash(selection, 8)
 
 
@@ -389,6 +397,7 @@ def _check_split(values, prefix, backend, report, env, active_fields):
         if prefix == "TEST.DATA" and values[prefix + ".VHRM.PPG_SOURCE"] == "pos_pseudo":
             report.warn(f"{section}: label-based metrics will compare against POS, not a pulse sensor; "
                         "metrics against the measured HR are unaffected.", prefix + ".VHRM.PPG_SOURCE")
+        _check_vhrm_duration_caps(values, prefix, section, report)
     if prefix == "UNSUPERVISED.DATA" and values[p + ".USE_PSUEDO_PPG_LABEL"]:
         report.error("Pseudo PPG labels are not supported for unsupervised methods.", p + ".USE_PSUEDO_PPG_LABEL")
 
@@ -534,6 +543,25 @@ def _check_model(values, report, splits):
                 break
 
 
+def _check_vhrm_duration_caps(values, prefix, section, report):
+    key = prefix + ".VHRM.MAX_DURATION_SEC_BY_LABEL"
+    for item in values.get(key) or []:
+        label, separator, seconds = str(item).partition("=")
+        try:
+            valid = bool(separator and label.strip()) and math.isfinite(float(seconds)) and float(seconds) >= 0
+        except ValueError:
+            valid = False
+        if not valid:
+            report.error(f"{section}: max duration entries must look like label=seconds with seconds >= 0 "
+                         f"(e.g. resting=120): {item!r}.", key)
+    every, by_label = _vhrm_duration_caps(values, prefix)
+    if every or by_label:
+        limits = ([f"every video={every:g}"] if every else []) + by_label
+        report.note(f"{section}: only the first seconds of each recording are preprocessed ({', '.join(limits)} s). "
+                    "Recordings longer than their limit are decoded again once; the others keep their cached clips.",
+                    prefix + ".VHRM.MAX_DURATION_SEC")
+
+
 def _check_split_consistency(values, report, splits):
     if values["TOOLBOX_MODE"] != "train_and_test":
         return
@@ -553,6 +581,11 @@ def _check_split_consistency(values, report, splits):
                 (report.error if severity == "error" else report.warn)(message, f"{other}.{suffix}")
         same_source = values[f"{train}.DATASET"] == values[f"{other}.DATASET"] and \
             values[f"{train}.DATA_PATH"] == values[f"{other}.DATA_PATH"]
+        if same_source and values[f"{train}.DATASET"] == "vHRM" and \
+                _vhrm_duration_caps(values, train) != _vhrm_duration_caps(values, other):
+            report.warn(f"{section}: max duration differs from training data. The splits share one cache, so a "
+                        "recording used with both settings (another cross-validation fold, the report) is decoded "
+                        "again each time it changes split.", f"{other}.VHRM.MAX_DURATION_SEC")
         if same_source and values[f"{train}.DATASET"] == "vHRM" and schema.cross_validation_enabled(values):
             pass  # Each fold sets disjoint participant lists.
         elif same_source and values[f"{train}.DATASET"] == "vHRM":

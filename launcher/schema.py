@@ -238,6 +238,12 @@ def _split_fields(prefix, spec):
     add("VHRM.CROP_MODE_BY_VIEW", "yamllist", ["front=face", "back-left=face_or_full", "back-right=face_or_full"],
         "Image region per view", "view=face | face_or_full | full | roi:x,y,w,h (pixels, or fractions <= 1).",
         group="vHRM", when_extra=vhrm)
+    add("VHRM.MAX_DURATION_SEC", "float", 0.0, "Max duration per video (s)",
+        "Preprocess only the first N seconds of each recording; the rest of the video is ignored. 0 = whole video.",
+        min=0.0, max=86400.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.MAX_DURATION_SEC_BY_LABEL", "list", [], "Max duration per label (s)",
+        "label=seconds, e.g. resting=120. Replaces the value above for that label; 0 = whole video.",
+        group="vHRM", when_extra=vhrm)
     add("VHRM.PPG_SOURCE", "enum", "synthetic", "Training waveform",
         "synthetic: the synthetic PPG CSV; rpeak_*: a waveform rebuilt from the ECG R-peaks; "
         "pos_pseudo: POS pseudo-labels computed from the video itself (weak supervision, always in sync).",
