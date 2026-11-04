@@ -2,7 +2,7 @@
 BASE: ['']
 TOOLBOX_MODE: unsupervised_method
 DESCRIPTION: Batch 2 - POS on RM, front camera, UV map of every body part except the head, every participant. First 120 s
-  of each recording.
+  of each recording. Squat segments only.
 LOG:
   PATH: C:/Run/thesis/batch2_lab_front/b2_rm_pos_uvbody
 DEVICE: cuda:0
@@ -46,7 +46,7 @@ UNSUPERVISED:
       EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
       PARTICIPANTS: []
       EXCLUDE_PARTICIPANTS: []
-      LABELS: []
+      LABELS: [Squat]
       EXCLUDE_LABELS: []
       VIEWS: [front]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
@@ -86,7 +86,7 @@ WANDB:
   JOB_TYPE: ''
   TAGS: [thesis, batch2, RM, front, pos, uvbody]
   NOTES: Batch 2 - POS on RM, front camera, UV map of every body part except the head, every participant. First 120 s of each
-    recording.
+    recording. Squat segments only.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
 REPORT:

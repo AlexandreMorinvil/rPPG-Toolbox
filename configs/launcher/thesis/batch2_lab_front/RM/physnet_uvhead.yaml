@@ -3,7 +3,7 @@ BASE: ['']
 TOOLBOX_MODE: train_and_test
 DESCRIPTION: |-
   Batch 2 - Physnet on RM, front camera, UV map of the head only.
-  Trained on the 10 training people of thesis/splits.yaml, best epoch on the 2 validation people, tested on the 6 test people. First 120 s of each recording.
+  Trained on the 10 training people of thesis/splits.yaml, best epoch on the 2 validation people, tested on the 6 test people. First 120 s of each recording. Squat segments only.
 MODEL:
   NAME: Physnet
   DROP_RATE: 0.2
@@ -16,12 +16,12 @@ LOG:
 DEVICE: cuda:0
 NUM_OF_GPU_TRAIN: 1
 TRAIN:
-  EPOCHS: 30
+  EPOCHS: 20
   BATCH_SIZE: 4
   LR: 0.009
   EARLY_STOPPING:
-    ENABLED: false
-    PATIENCE: 6
+    ENABLED: true
+    PATIENCE: 4
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b2_rm_physnet_uvhead
   PLOT_LOSSES_AND_LR: true
@@ -62,7 +62,7 @@ TRAIN:
       EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
       PARTICIPANTS: [RM01, RM04, RM07, RM08, RM10, RM18, RM19, RM22, RM23, RM24]
       EXCLUDE_PARTICIPANTS: []
-      LABELS: []
+      LABELS: [Squat]
       EXCLUDE_LABELS: []
       VIEWS: [front]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
@@ -115,7 +115,7 @@ VALID:
       EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
       PARTICIPANTS: [RM09, RM14]
       EXCLUDE_PARTICIPANTS: []
-      LABELS: []
+      LABELS: [Squat]
       EXCLUDE_LABELS: []
       VIEWS: [front]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
@@ -168,7 +168,7 @@ TEST:
       EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
       PARTICIPANTS: [RM06, RM12, RM15, RM16, RM17, RM20]
       EXCLUDE_PARTICIPANTS: []
-      LABELS: []
+      LABELS: [Squat]
       EXCLUDE_LABELS: []
       VIEWS: [front]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]

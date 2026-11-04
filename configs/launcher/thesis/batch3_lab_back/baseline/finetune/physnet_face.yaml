@@ -20,8 +20,8 @@ TRAIN:
   BATCH_SIZE: 4
   LR: 0.0009
   EARLY_STOPPING:
-    ENABLED: false
-    PATIENCE: 6
+    ENABLED: true
+    PATIENCE: 4
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b3_baseline_ft_physnet_face
   PLOT_LOSSES_AND_LR: true

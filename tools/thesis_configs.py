@@ -61,6 +61,8 @@ BATCH_INPUTS = {"batch1": ("face", "uvhead", "uvfull"), "batch2": ("face", "uvhe
 LITERATURE = {"UBFC-rPPG": {"short": "UBFC", "fs": 30}, "PURE": {"short": "PURE", "fs": 30},
               "COHFACE": {"short": "COHFACE", "fs": 20}}
 LAB_EXPERIMENTS = {"batch2": ["baseline", "JZC", "RM"], "batch3": ["baseline", "JZC"]}
+# Segment labels kept per experiment (VHRM.LABELS) in every split; an experiment not listed keeps every label.
+LAB_LABELS = {"RM": ["Squat"]}
 FACE_CROP = {"DO_CROP_FACE": True, "BACKEND": "Y5F", "USE_LARGE_FACE_BOX": True, "LARGE_BOX_COEF": 1.5,
              "DETECTION": {"DO_DYNAMIC_DETECTION": True, "DYNAMIC_DETECTION_FREQUENCY": 30,
                            "USE_MEDIAN_FACE_BOX": False}}
@@ -74,7 +76,8 @@ MIN_FACE_FRACTION = 0.5      # face crop: a clip or window needs a face in half 
 FACE_SEARCH_WIDTH = 0.7
 MAX_DURATION_SEC = 120.0     # first 2 minutes of each lab recording
 WINDOW_SEC = 30
-EPOCHS = 30
+EPOCHS = 20
+PATIENCE = 4                 # early stopping: epochs without a lower validation loss
 FINETUNE = {"epochs": 10, "lr_factor": 0.1}
 MISSING = "<not set: {key} in thesis/paths.yaml>"
 
@@ -132,7 +135,7 @@ def lab_paths(setup, uv, experiments):
 # ---------------------------------------------------------------- config blocks
 
 def data_block(setup, dataset, input_key, prep, role, subjects=None, lab=None):
-    """One split's DATA block. lab: {experiments, participants, views} for the vHRM lab data."""
+    """One split's DATA block. lab: {experiments, participants, views} for the vHRM lab data (labels: LAB_LABELS)."""
     uv = INPUTS[input_key]["uv"]
     neural = prep is not POS
     block = {"DATASET": "vHRM" if lab else dataset}
@@ -159,7 +162,8 @@ def data_block(setup, dataset, input_key, prep, role, subjects=None, lab=None):
     if lab:
         block["VHRM"] = {
             "EXPERIMENTS": list(lab["experiments"]), "EXPERIMENT_PATHS": experiment_paths,
-            "PARTICIPANTS": list(lab["participants"]), "EXCLUDE_PARTICIPANTS": [], "LABELS": [],
+            "PARTICIPANTS": list(lab["participants"]), "EXCLUDE_PARTICIPANTS": [],
+            "LABELS": [label for experiment in lab["experiments"] for label in LAB_LABELS.get(experiment, [])],
             "EXCLUDE_LABELS": [], "VIEWS": list(lab["views"]), "CROP_MODE_BY_VIEW": list(CROP_MODES),
             "MIN_FACE_FRACTION": MIN_FACE_FRACTION if uv is None else 0.0,
             "FACE_SEARCH_WIDTH": FACE_SEARCH_WIDTH if uv is None else 1.0,
@@ -199,7 +203,7 @@ def neural_config(setup, batch, name, description, tags, model_key, blocks, mode
               "DEVICE": options.get("device", "cuda:0"), "NUM_OF_GPU_TRAIN": 1}
     if mode == "train_and_test":
         config["TRAIN"] = {"EPOCHS": epochs, "BATCH_SIZE": 4, "LR": lr or model["lr"],
-                           "EARLY_STOPPING": {"ENABLED": False, "PATIENCE": 6, "TOLERANCE": 0.0},
+                           "EARLY_STOPPING": {"ENABLED": True, "PATIENCE": PATIENCE, "TOLERANCE": 0.0},
                            "MODEL_FILE_NAME": name, "PLOT_LOSSES_AND_LR": True, "DATA_LOADER_WORKERS": 4,
                            "SAVE_RESUME": True, "DATA": blocks["train"]}
         config["VALID"] = {"DATA": blocks["valid"]}
@@ -288,6 +292,7 @@ def build_runs(setup, splits):
         people = {split: lab_people(splits, split, experiment) for split in SPLITS}
         short = experiment.lower()
         lab2 = {"experiments": [experiment], "views": ["front"]}
+        only = f" {', '.join(LAB_LABELS[experiment])} segments only." if experiment in LAB_LABELS else ""
         for input_key in BATCH_INPUTS["batch2"]:
             label = INPUTS[input_key]["label"]
             for model_key, model in MODELS.items():
@@ -297,13 +302,13 @@ def build_runs(setup, splits):
                 description = (f"Batch 2 - {model['name']} on {experiment}, front camera, {label}.\n"
                                f"Trained on the {people['train']} training people of thesis/splits.yaml, best epoch "
                                f"on the {people['valid']} validation people, tested on the {people['test']} test "
-                               f"people. First {MAX_DURATION_SEC:g} s of each recording.")
+                               f"people. First {MAX_DURATION_SEC:g} s of each recording.{only}")
                 runs[f"batch2_lab_front/{experiment}/{model_key}_{input_key}.yaml"] = neural_config(
                     setup, "batch2", name, description, [experiment, "front", model_key, input_key], model_key,
                     blocks)
             name = f"b2_{short}_pos_{input_key}"
             description = (f"Batch 2 - POS on {experiment}, front camera, {label}, every participant. First "
-                           f"{MAX_DURATION_SEC:g} s of each recording.")
+                           f"{MAX_DURATION_SEC:g} s of each recording.{only}")
             runs[f"batch2_lab_front/{experiment}/pos_{input_key}.yaml"] = pos_config(
                 setup, "batch2", name, description, [experiment, "front", "pos", input_key],
                 data_block(setup, "lab", input_key, POS, "test", lab={**lab2, "participants": []}))

@@ -51,8 +51,11 @@ and input decodes the videos (the face crop is the slow one).
 ## Settings shared by every run
 
 - Neural models: the toolbox settings of each model (PhysNet 72 px DiffNormalized clips of 128 frames; FactorizePhys
-  72 px Raw, 160 frames; RhythmFormer 128 px Standardized, 160 frames), 30 epochs, best epoch on the validation loss.
-  Batch 3 fine-tuning: 10 epochs at a tenth of the learning rate.
+  72 px Raw, 160 frames; RhythmFormer 128 px Standardized, 160 frames), at most 20 epochs (early stopping after 4
+  epochs without a lower validation loss), best epoch on the validation loss.
+  Batch 3 fine-tuning: at most 10 epochs (same early stopping) at a tenth of the learning rate.
+- RM: Squat segments only, in training, validation, test and POS (`VHRM.LABELS: [Squat]`, from `LAB_LABELS` in
+  `tools/thesis_configs.py`). The baseline sessions of the RM people (`baseline/RMNN_baseline_*`) keep every label.
 - Face crop: YOLO5Face, re-detected every second, 1.5x box, the same on every view. Lab data: faces are searched in
   the central 70 % of the frame width only (`VHRM.FACE_SEARCH_WIDTH: 0.7`; the participant's head stays inside it in
   97-100 % of the frames of every view); a clip or window needs a face in at least half of its frames

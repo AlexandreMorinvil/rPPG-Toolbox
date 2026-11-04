@@ -30,8 +30,8 @@ TRAIN:
   BATCH_SIZE: 4
   LR: 0.0001
   EARLY_STOPPING:
-    ENABLED: false
-    PATIENCE: 6
+    ENABLED: true
+    PATIENCE: 4
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b3_jzc_ft_factorizephys_uvhead
   PLOT_LOSSES_AND_LR: true
