@@ -7,16 +7,16 @@ runs: C:/Run/thesis                        # LOG.PATH root: <runs>/<batch>/<run 
 
 # Face crop input: the original videos.
 video:
-  UBFC-rPPG: F:/Datasets literature/UBFC_dataset/DATASET_2
-  PURE: F:/Datasets literature/PURE
-  COHFACE: F:/Datasets literature/COHFACE
+  UBFC-rPPG: D:/rPPG_Datasets/UBFC_dataset/DATASET_2
+  PURE: D:/rPPG_Datasets/PURE
+  COHFACE: D:/rPPG_Datasets/COHFACE
   lab: F:/Datasets preparation              # holds baseline/, JZC/ and RM/
 
 # UV input: the vHRM Studio conversions (mirror mode).
 uv:
-  UBFC-rPPG: F:/Datasets_vhrm/literature/UBFC_dataset/DATASET_2
-  PURE: F:/Datasets_vhrm/literature/PURE
-  COHFACE: F:/Datasets_vhrm/literature/COHFACE
+  UBFC-rPPG: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
+  PURE: D:/rPPG_Datasets_uv/PURE
+  COHFACE: D:/rPPG_Datasets_uv/COHFACE
   lab:                                      # one folder per experiment (they need not share a parent)
     baseline: F:/Datasets_vhrm/laboratory/baseline
     JZC: ''

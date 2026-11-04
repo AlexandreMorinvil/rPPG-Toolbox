@@ -27,7 +27,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: PURE
-    DATA_PATH: F:/Datasets_vhrm/literature/PURE
+    DATA_PATH: D:/rPPG_Datasets_uv/PURE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -59,7 +59,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: PURE
-    DATA_PATH: F:/Datasets_vhrm/literature/PURE
+    DATA_PATH: D:/rPPG_Datasets_uv/PURE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -91,7 +91,7 @@ VALID:
 TEST:
   DATA:
     DATASET: PURE
-    DATA_PATH: F:/Datasets_vhrm/literature/PURE
+    DATA_PATH: D:/rPPG_Datasets_uv/PURE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30

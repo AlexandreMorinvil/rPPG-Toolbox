@@ -29,7 +29,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: UBFC-rPPG
-    DATA_PATH: F:/Datasets_vhrm/literature/UBFC_dataset/DATASET_2
+    DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -63,7 +63,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: UBFC-rPPG
-    DATA_PATH: F:/Datasets_vhrm/literature/UBFC_dataset/DATASET_2
+    DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -95,7 +95,7 @@ VALID:
 TEST:
   DATA:
     DATASET: UBFC-rPPG
-    DATA_PATH: F:/Datasets_vhrm/literature/UBFC_dataset/DATASET_2
+    DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30

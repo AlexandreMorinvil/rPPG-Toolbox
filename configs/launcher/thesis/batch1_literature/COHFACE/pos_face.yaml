@@ -12,7 +12,7 @@ UNSUPERVISED:
   METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
   DATA:
     DATASET: COHFACE
-    DATA_PATH: F:/Datasets literature/COHFACE
+    DATA_PATH: D:/rPPG_Datasets/COHFACE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20

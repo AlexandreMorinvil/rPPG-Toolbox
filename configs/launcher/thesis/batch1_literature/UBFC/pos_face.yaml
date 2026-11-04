@@ -12,7 +12,7 @@ UNSUPERVISED:
   METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
   DATA:
     DATASET: UBFC-rPPG
-    DATA_PATH: F:/Datasets literature/UBFC_dataset/DATASET_2
+    DATA_PATH: D:/rPPG_Datasets/UBFC_dataset/DATASET_2
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30

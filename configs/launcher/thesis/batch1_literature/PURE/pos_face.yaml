@@ -12,7 +12,7 @@ UNSUPERVISED:
   METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
   DATA:
     DATASET: PURE
-    DATA_PATH: F:/Datasets literature/PURE
+    DATA_PATH: D:/rPPG_Datasets/PURE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30

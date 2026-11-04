@@ -3,7 +3,7 @@ BASE: ['']
 TOOLBOX_MODE: train_and_test
 DESCRIPTION: |-
   Batch 1 - RhythmFormer on COHFACE, UV map of the whole body.
-  Trained on the 12 training subjects of thesis/splits.yaml, best epoch on the 12 validation subjects, tested on the 16 test subjects.
+  Trained on the 12 training subjects of thesis/splits.yaml, best epoch on the 12 validation subjects, tested on the 15 test subjects.
 MODEL:
   NAME: RhythmFormer
   DROP_RATE: 0.2
@@ -27,7 +27,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: COHFACE
-    DATA_PATH: F:/Datasets_vhrm/literature/COHFACE
+    DATA_PATH: D:/rPPG_Datasets_uv/COHFACE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
@@ -59,7 +59,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: COHFACE
-    DATA_PATH: F:/Datasets_vhrm/literature/COHFACE
+    DATA_PATH: D:/rPPG_Datasets_uv/COHFACE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
@@ -91,13 +91,13 @@ VALID:
 TEST:
   DATA:
     DATASET: COHFACE
-    DATA_PATH: F:/Datasets_vhrm/literature/COHFACE
+    DATA_PATH: D:/rPPG_Datasets_uv/COHFACE
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
     BEGIN: 0.0
     END: 1.0
-    SUBJECTS: ['3', '8', '10', '11', '12', '13', '14', '15', '20', '22', '23', '26', '30', '32', '34', '40']
+    SUBJECTS: ['3', '8', '10', '12', '13', '14', '15', '20', '22', '23', '26', '30', '32', '34', '40']
     DATA_FORMAT: NDCHW
     PREPROCESS:
       DATA_TYPE: [Standardized]
