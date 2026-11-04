@@ -222,3 +222,8 @@ WANDB:
   NOTES: Batch 2 - FactorizePhys on RM, front camera, UV map of every body part except the head.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

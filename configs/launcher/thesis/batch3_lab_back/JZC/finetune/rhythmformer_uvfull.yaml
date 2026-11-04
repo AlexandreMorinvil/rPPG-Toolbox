@@ -212,3 +212,8 @@ WANDB:
     the test people (by_view.csv).'
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

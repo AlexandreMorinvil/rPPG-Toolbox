@@ -63,8 +63,9 @@ def add_args(parser):
     return parser
 
 
-def analysis_report(config, model_trainer):
-    """Analysis report of the tested checkpoint (REPORT.ENABLED); a failed report does not fail the run."""
+def analysis_report(config, model_trainer=None):
+    """Analysis report of the tested checkpoint, or of the unsupervised methods (REPORT.ENABLED); a failed report
+    does not fail the run."""
     if config.REPORT.ENABLED:
         from evaluation.vhrm_report import report_after_training
         report_after_training(config, model_trainer)
@@ -159,6 +160,7 @@ def unsupervised_method_inference(config, data_loader):
             unsupervised_predict(config, data_loader, "OMIT")
         else:
             raise ValueError("Not supported unsupervised method!")
+    analysis_report(config)
 
 
 if __name__ == "__main__":

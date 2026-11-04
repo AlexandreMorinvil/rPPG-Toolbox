@@ -75,6 +75,25 @@ class ConfigFieldTests(unittest.TestCase):
         result = validation.validate(vhrm_values(**{"REPORT.ENABLED": True, "MODEL.NAME": "BigSmall"}), backend="local")
         self.assertTrue(any(item["key"] == "REPORT.ENABLED" for item in result["errors"]))
 
+    def test_unsupervised_runs_report_their_methods(self):
+        """The report follows the data the run scores: UNSUPERVISED.DATA for an unsupervised method."""
+        values, errors, _ = configs.normalize({
+            "TOOLBOX_MODE": "unsupervised_method", "LOG.PATH": "runs/pos", "UNSUPERVISED.METHOD": ["POS"],
+            "UNSUPERVISED.DATA.DATASET": "vHRM", "UNSUPERVISED.DATA.DATA_PATH": "data", "UNSUPERVISED.DATA.FS": 30,
+            "UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE": ["Raw"], "UNSUPERVISED.DATA.PREPROCESS.DO_CHUNK": False,
+            "REPORT.ENABLED": True})
+        self.assertFalse(errors)
+        self.assertTrue(schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], values))
+        self.assertEqual(configs.build_tree(values)["REPORT"]["ENABLED"], True)
+        result = validation.validate(values, backend="local")
+        self.assertTrue(any(item["key"] == "REPORT.ENABLED" and "POS" in item["message"] for item in result["info"]))
+        self.assertFalse(any(item["key"] == "REPORT.ENABLED" for item in result["errors"]), "no clips needed")
+        other = dict(values, **{"UNSUPERVISED.DATA.DATASET": "UBFC-rPPG", "TEST.DATA.DATASET": "vHRM"})
+        self.assertFalse(schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], other))
+        self.assertNotIn("REPORT", configs.build_tree(other))
+        neural = vhrm_values(**{"REPORT.ENABLED": True, "UNSUPERVISED.DATA.DATASET": "UBFC-rPPG"})
+        self.assertTrue(schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], neural))
+
 
 class ReportFolderTests(unittest.TestCase):
     def setUp(self):

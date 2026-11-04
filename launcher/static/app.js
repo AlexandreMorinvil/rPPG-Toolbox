@@ -175,6 +175,9 @@ function isActive(field, v) {
   if (when.needs_valid && v['TEST.USE_LAST_EPOCH']) return false;
   if (when.models && !when.models.includes(v['MODEL.NAME'])) return false;
   if (when.dataset && !when.dataset[1].includes(v[when.dataset[0] + '.DATASET'])) return false;
+  // The data the run scores: UNSUPERVISED.DATA for an unsupervised method (schema.is_active).
+  if (when.evaluated_dataset && !when.evaluated_dataset.includes(
+    v[(v.TOOLBOX_MODE === 'unsupervised_method' ? 'UNSUPERVISED.DATA' : 'TEST.DATA') + '.DATASET'])) return false;
   if (when.wandb && !v['WANDB.ENABLED']) return false;
   if (when.equals && Object.entries(when.equals).some(([key, allowed]) => !allowed.includes(v[key]))) return false;
   return true;
@@ -2320,9 +2323,11 @@ function reportContent(report, detail, scope) {
   const failures = Object.keys(run.failures || {});
   const parts = [h('div', { class: 'card' }, h('h3', {}, run.title || report.title, scope === 'test' ? ' · test participants only' : ''),
     h('table', { class: 'kv' },
-      h('tr', {}, h('th', {}, 'Checkpoint'), h('td', {}, h('code', {}, run.checkpoint || ''))),
+      run.method ? h('tr', {}, h('th', {}, 'Method'), h('td', {}, `${run.method} (unsupervised, whole recordings)`))
+        : h('tr', {}, h('th', {}, 'Checkpoint'), h('td', {}, h('code', {}, run.checkpoint || ''))),
       h('tr', {}, h('th', {}, 'Recordings'), h('td', {}, `${(run.recordings || []).length} · labels ${(run.selection?.labels || []).join(', ') || 'all'} · views ${(run.selection?.views || []).join(', ') || 'all'}`)),
-      h('tr', {}, h('th', {}, 'Splits'), h('td', {}, splits.join(' · ') || 'unknown (the config did not train on vHRM)')),
+      h('tr', {}, h('th', {}, 'Splits'), h('td', {}, splits.join(' · ')
+        || (run.method ? 'none: an unsupervised method learns nothing, every participant is unseen' : 'unknown (the config did not train on vHRM)'))),
       failures.length ? h('tr', {}, h('th', {}, 'Failed'), h('td', { class: 'bad' }, failures.join(', '))) : null,
       h('tr', {}, h('th', {}, 'Files'), h('td', {}, ...Object.entries(detail.files).map(([name, path]) => h('a', { href: fileUrl(path), target: '_blank', style: 'margin-right:12px' }, name)))))),
     h('div', { class: 'cards' }, ...[['HR MAE', summary.hr?.mae, 2, ' bpm'], ['HR within ±5 bpm', summary.hr?.within_pct, 0, ' %'],

@@ -87,3 +87,8 @@ WANDB:
     camera).
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

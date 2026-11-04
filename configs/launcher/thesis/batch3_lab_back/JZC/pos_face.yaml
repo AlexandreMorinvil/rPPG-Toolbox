@@ -85,3 +85,8 @@ WANDB:
   NOTES: Batch 3 - POS on JZC, back-left and back-right cameras, face crop, every participant (batch 2 has the front camera).
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

@@ -1,7 +1,7 @@
 """The recordings of a report: the toolbox cache (model input, measured HR) and the ECG R-peaks.
 
-The report covers the experiments and views of the config's TEST data, for every participant and
-(by default) every segment label. The vHRM loader prepares them like any test split: recordings
+The report covers the experiments and views of the config's TEST data (UNSUPERVISED data for an
+unsupervised method), for every participant and (by default) every segment label. The vHRM loader prepares them like any test split: recordings
 already in the cache are reused, missing ones are decoded once and stay cached. Each recording is
 then read back as the exact clips the checkpoint was evaluated on, its measured HR per frame
 (HR_SOURCE) and the R-peaks of the ECG, on the same timeline as the frames.
@@ -21,11 +21,19 @@ SPLIT_ORDER = ("test", "validation", "training")
 FACE_MODES = vhrm.FACE_CROP_MODES
 
 
+def evaluated_data(config):
+    """The data a run evaluates: UNSUPERVISED.DATA for an unsupervised method, TEST.DATA otherwise."""
+    return config.UNSUPERVISED.DATA if config.TOOLBOX_MODE == "unsupervised_method" else config.TEST.DATA
+
+
 def report_data_config(config, labels=None, participants=None):
-    """TEST.DATA widened to every participant and every label (or the report's) of its experiments and views."""
-    if config.TEST.DATA.DATASET != "vHRM":
-        raise ValueError("The analysis report needs vHRM test data (TEST.DATA.DATASET: vHRM).")
-    data = config.TEST.DATA.clone()
+    """The evaluated data widened to every participant and every label (or the report's) of its experiments and
+    views."""
+    source = evaluated_data(config)
+    if source.DATASET != "vHRM":
+        prefix = "UNSUPERVISED" if config.TOOLBOX_MODE == "unsupervised_method" else "TEST"
+        raise ValueError(f"The analysis report needs vHRM data ({prefix}.DATA.DATASET: vHRM).")
+    data = source.clone()
     data.defrost()
     data.VHRM.PARTICIPANTS = list(config.REPORT.PARTICIPANTS if participants is None else participants)
     data.VHRM.EXCLUDE_PARTICIPANTS = []
@@ -35,7 +43,7 @@ def report_data_config(config, labels=None, participants=None):
     data.VHRM.INCREMENTAL_PREPROCESS = True
     data.BEGIN, data.END = 0.0, 1.0
     data.DO_PREPROCESS = True
-    data.FILE_LIST_PATH = os.path.join(os.path.dirname(config.TEST.DATA.FILE_LIST_PATH),
+    data.FILE_LIST_PATH = os.path.join(os.path.dirname(source.FILE_LIST_PATH),
                                        f"{data.EXP_DATA_NAME}_report{_vhrm_selection_suffix(data)}.csv")
     data.freeze()
     return data

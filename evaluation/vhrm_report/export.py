@@ -65,7 +65,8 @@ same moment, so you can subtract them, plot one against the other, etc.
 - The raw beat times are also there if you want them (beats_rppg.csv for the camera, rpeaks_ecg.csv for the ECG),
   but the camera and the ECG don't find the same number of beats, so their rows don't line up one to one.
 - split tells whether the model saw the participant: test participants were never seen; validation participants
-  chose the training epoch; training participants were learned from.
+  chose the training epoch; training participants were learned from. It is empty for an unsupervised method
+  (POS, ...), which learns nothing from the data.
 
 You can ignore: hr_rppg_untracked_bpm, bvp_raw, the valid column, and the per-participant folders (they hold the same
 tables, one recording each).
@@ -78,12 +79,13 @@ recordings.csv
     One row per recording: id (toolbox recording id), key, participant, split, label, repetition, view, video
     path, duration_s, fs, face_found_pct (face detections that succeeded), polarity_flips, beats_gt / beats_est
     (ECG R-peaks / rPPG beats in the video), ibi_rejected_pct (rPPG intervals rejected as artefacts), segment_*
-    (RMSSD / SDNN in ms over the whole segment; *_gt from the ECG), model_fingerprint (model weights and settings).
+    (RMSSD / SDNN in ms over the whole segment; *_gt from the ECG), model_fingerprint (model weights or
+    unsupervised method, and settings).
 
 <participant>/<label><repetition>/ holds one recording; all_recordings/ holds the same tables for every recording
 stacked, with the recording columns in front.
 
-pulse_signal.csv        rPPG pulse wave, one row per video frame. bvp_raw is the model output, bvp_filtered
+pulse_signal.csv        rPPG pulse wave, one row per video frame. bvp_raw is the model (or method) output, bvp_filtered
                         the band-pass filtered signal ({band} Hz) used for everything below.
 heart_rate.csv          HR in bpm over {hr_window} s windows every {hr_step} s (time_s = window centre).
                         hr_rppg_bpm is the tracked estimate; hr_rppg_untracked_bpm the raw spectral peak of each

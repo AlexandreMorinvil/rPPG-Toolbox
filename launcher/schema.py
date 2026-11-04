@@ -384,13 +384,14 @@ def _visualize_fields():
 
 def _report_fields():
     s = "Analysis report"
-    when = {"modes": NEURAL_MODES, "dataset": ["TEST.DATA", ["vHRM"]]}
+    when = {"modes": NEURAL_MODES + ["unsupervised_method"], "evaluated_dataset": ["vHRM"]}
     on = {**when, "equals": {"REPORT.ENABLED": [True]}}
     _add("REPORT.ENABLED", "bool", False, "Generate the analysis report", s,
          "After the test, analyse the tested checkpoint (the best or last epoch, or the evaluated checkpoint) on "
          "every participant of the test data's experiments and views: HR, beat-to-beat RR intervals and HRV against "
          "the chest sensors, per movement and per split, with figures. Written to <experiment>/report/<checkpoint>. "
-         "Results → Checkpoints → Report… does the same for any checkpoint.", when=when)
+         "Results → Checkpoints → Report… does the same for any checkpoint. An unsupervised run reports each of its "
+         "methods (report/<method>), on whole recordings and without splits.", when=when)
     _add("REPORT.LABELS", "list", [], "Segment labels", s,
          "Labels to analyse, e.g. Curl, Resting. Empty analyses every label.", when=on)
     _add("REPORT.PARTICIPANTS", "list", [], "Participants", s,
@@ -512,6 +513,10 @@ def is_active(field, values):
     if "dataset" in when:
         prefix, datasets = when["dataset"]
         if values.get(prefix + ".DATASET") not in datasets:
+            return False
+    if "evaluated_dataset" in when:  # the data the run scores: UNSUPERVISED.DATA for an unsupervised method
+        prefix = "UNSUPERVISED.DATA" if mode == "unsupervised_method" else "TEST.DATA"
+        if values.get(prefix + ".DATASET") not in when["evaluated_dataset"]:
             return False
     if when.get("wandb") and not values.get("WANDB.ENABLED"):
         return False

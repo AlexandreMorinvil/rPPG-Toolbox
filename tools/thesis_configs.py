@@ -18,6 +18,7 @@ whole body; POS runs on every participant, the neural models train on the traini
 
 Batch 3 starts from the batch 2 checkpoints: run batch 2, then run this script again. It reads the epoch each batch 2
 run tested (its saved_test_outputs) and writes that checkpoint into MODEL.INIT_WEIGHTS / INFERENCE.MODEL_PATH.
+The runs of batches 2 and 3 write the analysis report after their test (REPORT): of the tested checkpoint, or of POS.
 Generated files start with a header line; files with that header that are no longer generated are removed.
 """
 
@@ -210,6 +211,8 @@ def neural_config(setup, batch, name, description, tags, model_key, blocks, mode
     if model_path:
         extra["INFERENCE"]["MODEL_PATH"] = model_path
     config.update(extra)
+    if blocks["test"]["DATASET"] == "vHRM":
+        config["REPORT"] = report_block()
     return config
 
 
@@ -221,7 +224,14 @@ def pos_config(setup, batch, name, description, tags, block):
               "UNSUPERVISED": {"METHOD": ["POS"], "METRICS": ["MAE", "RMSE", "MAPE", "Pearson", "SNR"],
                                "DATA": block}}
     config.update(common_blocks(setup, batch, name, description, tags))
+    if block["DATASET"] == "vHRM":
+        config["REPORT"] = report_block()
     return config
+
+
+def report_block():
+    """Analysis report (evaluation/vhrm_report) of the tested checkpoint or of POS, after the run; it needs vHRM data."""
+    return {"ENABLED": True, "LABELS": [], "PARTICIPANTS": [], "EXPORT_CSV": True}
 
 
 def batch_folder(batch):

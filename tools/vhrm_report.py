@@ -3,11 +3,14 @@
     python tools/vhrm_report.py --config <run config> --checkpoint <run>/<cache>/PreTrainedModels/<name>_Epoch16.pth
     python tools/vhrm_report.py --config <run config>                  # the checkpoint the run tested
     python tools/vhrm_report.py --config <run config> --labels Curl --participants jzc16 jzc17
+    python tools/vhrm_report.py --config <unsupervised config>         # each UNSUPERVISED.METHOD (POS, ...)
+    python tools/vhrm_report.py --config <unsupervised config> --methods POS
 
 The config is the run's own (for a launcher job: launcher_data/jobs/<job>/config.yaml). It gives the model, the
 preprocessing of the input, the data and the participant splits. The report goes to
-<experiment folder>/report/<checkpoint>/ unless --output is given. Setting REPORT.ENABLED in a config generates
-the same report at the end of main.py. Method and outputs: evaluation/vhrm_report/METHOD.md.
+<experiment folder>/report/<checkpoint>/ (report/<method>/ for an unsupervised method) unless --output is given.
+Setting REPORT.ENABLED in a config generates the same report at the end of main.py. Method and outputs:
+evaluation/vhrm_report/METHOD.md.
 """
 
 import argparse
@@ -42,7 +45,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", required=True, help="the run's YAML config")
     parser.add_argument("--checkpoint", help="the .pth to analyse (default: the checkpoint the run tested)")
-    parser.add_argument("--output", help="report folder (default: <experiment folder>/report/<checkpoint>)")
+    parser.add_argument("--methods", nargs="+",
+                        help="unsupervised config: the methods to analyse (default: UNSUPERVISED.METHOD)")
+    parser.add_argument("--output", help="report folder (default: <experiment folder>/report/<checkpoint or method>; "
+                                         "a single method only)")
     parser.add_argument("--labels", nargs="*", help="segment labels to analyse (default: REPORT.LABELS, empty = all)")
     parser.add_argument("--participants", nargs="*",
                         help="participants to analyse (default: REPORT.PARTICIPANTS, empty = all)")
@@ -53,10 +59,19 @@ def main():
              if getattr(args, name)}
     os.chdir(ROOT)  # as main.py runs: relative paths in the config are relative to the toolbox
     config = get_config(argparse.Namespace(config_file=paths["config"]))
+    export_csv = False if args.no_csv else None
+    if config.TOOLBOX_MODE == "unsupervised_method":
+        if args.checkpoint:
+            raise SystemExit("An unsupervised config has no checkpoint: use --methods.")
+        from evaluation.vhrm_report import generate_method_reports
+        generate_method_reports(config, methods=args.methods, output=paths.get("output"), labels=args.labels,
+                                participants=args.participants, export_csv=export_csv)
+        return
+    if args.methods:
+        raise SystemExit("--methods is for unsupervised configs (TOOLBOX_MODE: unsupervised_method).")
     from evaluation.vhrm_report import generate_report
     generate_report(config, paths.get("checkpoint") or tested_checkpoint(config), output=paths.get("output"),
-                    labels=args.labels, participants=args.participants,
-                    export_csv=False if args.no_csv else None)
+                    labels=args.labels, participants=args.participants, export_csv=export_csv)
 
 
 if __name__ == "__main__":

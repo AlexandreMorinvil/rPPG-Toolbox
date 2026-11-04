@@ -8,6 +8,9 @@ Clips start every `stride` frames and are merged with a phase-aligned Hann overl
 (exploration/deep_learning_test/HR_ESTIMATION_METHODOLOGY.md): each new clip is sign-flipped if it
 anti-correlates with what is already reconstructed in the shared overlap, then Hann-weighted so clip
 edges count less.
+
+An unsupervised method (POS, CHROM, ...) has no clips: it runs once over the whole recording, as in the
+toolbox's unsupervised run (method_predictor).
 """
 
 import importlib
@@ -181,3 +184,34 @@ def predict_bvp(network, video, clip_length, stride, batch_size, zscore=True, wi
             summed[span] += clip * window
             weight[span] += window
     return summed / weight, flips
+
+
+def clip_predictor(network, clip_length, stride, batch_size, inference):
+    """predict(video) -> (pulse signal, sign flips): the network over overlapping clips (predict_bvp)."""
+    return lambda video: predict_bvp(network, video, clip_length, stride, batch_size, inference["zscore_clips"],
+                                     inference["overlap_window_floor"])
+
+
+# Unsupervised methods whose output falls when the blood volume rises: negated, so that their peaks are pulse peaks
+# as in the PPG labels (VHRMLoader.pos_pseudo_ppg flips POS for the same reason).
+FALLING_METHODS = {"POS"}
+
+
+def method_sign(method):
+    return -1.0 if method in FALLING_METHODS else 1.0
+
+
+def method_predictor(method, fs, masked):
+    """predict(video) -> (pulse signal, 0): an unsupervised method on the whole recording's first 3 channels.
+
+    masked: average only the skin pixels of each frame (UV maps), as unsupervised_predict does.
+    """
+    from unsupervised_methods.unsupervised_predictor import METHODS, unsupervised_bvp
+    if method not in METHODS:
+        raise ValueError(f"Unknown unsupervised method {method!r} (one of {', '.join(METHODS)}).")
+    sign = method_sign(method)
+
+    def predict(video):
+        frames = video.clip(0, len(video))[..., :3]
+        return sign * np.asarray(unsupervised_bvp(method, frames, fs, masked), dtype=np.float64).reshape(-1), 0
+    return predict

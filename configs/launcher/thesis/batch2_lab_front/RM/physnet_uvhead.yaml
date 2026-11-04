@@ -212,3 +212,8 @@ WANDB:
   NOTES: Batch 2 - Physnet on RM, front camera, UV map of the head only.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

@@ -87,3 +87,8 @@ WANDB:
   NOTES: Batch 2 - POS on JZC, front camera, UV map of the whole body, every participant. First 120 s of each recording.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

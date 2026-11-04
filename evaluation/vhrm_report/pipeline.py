@@ -1,4 +1,5 @@
-"""Analysis of one recording: cached clips -> model -> pulse signal -> HR, RR, HRV vs ground truth."""
+"""Analysis of one recording: cached input -> model or unsupervised method -> pulse signal -> HR, RR, HRV vs
+ground truth."""
 
 import hashlib
 import json
@@ -7,7 +8,6 @@ from pathlib import Path
 import numpy as np
 
 from . import data, signals
-from .inference import predict_bvp
 
 # Recording fields kept in data/<key>.npz besides the time series.
 INFO_FIELDS = ("id", "key", "experiment", "participant", "segment_index", "label", "repetition", "view",
@@ -23,28 +23,32 @@ def model_fingerprint(checkpoint, model_name, inference):
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
+def method_fingerprint(method, settings):
+    """What the saved output of an unsupervised method depends on, besides the recording's cached input."""
+    return hashlib.sha256(json.dumps({"method": method, **settings}, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
 def _output_key(model_key, recording):
     return f"{model_key}-{recording['video_fingerprint'][:16]}-{len(recording['inputs'])}"
 
 
-def predicted_bvp(recording, video, network, run, data_dir):
-    """Model output of a recording; reused from data/<key>.npz when the checkpoint and the input are unchanged."""
+def predicted_bvp(recording, video, run, data_dir):
+    """Pulse signal of a recording (run["predict"]); reused from data/<key>.npz when the checkpoint or method and
+    the input are unchanged."""
     key = _output_key(run["model_key"], recording)
     saved = Path(data_dir) / f"{recording['key']}.npz"
     if saved.is_file():
         with np.load(saved) as previous:
             if str(previous["model_fingerprint"]) == key:
                 return previous["bvp_raw"], int(previous["polarity_flips"]), key
-    inference = run["settings"]["inference"]
-    bvp, flips = predict_bvp(network, video, run["clip_length"], run["stride"], run["batch_size"],
-                             inference["zscore_clips"], inference["overlap_window_floor"])
+    bvp, flips = run["predict"](video)
     return bvp, flips, key
 
 
-def analyse_recording(recording, network, run, data_dir):
+def analyse_recording(recording, run, data_dir):
     settings = run["settings"]
     video = data.ChunkedVideo(recording["inputs"])
-    bvp, flips, key = predicted_bvp(recording, video, network, run, data_dir)
+    bvp, flips, key = predicted_bvp(recording, video, run, data_dir)
     fs = recording["fs"]
     duration = len(bvp) / fs
     band = settings["signal"]["bandpass_hz"]

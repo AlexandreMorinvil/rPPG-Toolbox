@@ -216,3 +216,8 @@ WANDB:
   NOTES: Batch 2 - FactorizePhys on RM, front camera, face crop.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

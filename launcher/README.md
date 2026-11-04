@@ -187,6 +187,9 @@ recovery, …), per repetition and per split, with figures, tables and CSV files
   After the test, main.py analyses the tested checkpoint (the best validation epoch, or the last epoch). A failed report
   is logged and shown as a warning; it never fails the training. For a cross-validation, every fold writes its own
   report. Docker users must rebuild the toolbox image first.
+- **For an unsupervised run (POS, …):** the same `REPORT.ENABLED` on a vHRM unsupervised config. After the run, each
+  method of `UNSUPERVISED.METHOD` is analysed on whole recordings, in `<experiment>/report/<method>/`, without splits
+  (the method learns nothing). From a terminal: `python tools/vhrm_report.py --config <config> [--methods POS]`.
 - **Reading it:** the experiment gets a **Report** tab: headline numbers, the MAE matrix movement × split (only the
   *Test* column measures unseen participants), pooled results per group, the summary figures, the recordings table
   (click a row for that participant's HR, HRV, RR and pulse figures) and the mosaics of every participant per recording.

@@ -3,13 +3,15 @@
 The report measures how well a checkpoint estimates **heart rate (HR)**, **beat-to-beat R-R intervals (RR)** and
 **heart-rate variability (HRV)** from video, against the chest sensors of the vHRM dataset. It is the method of
 `jzc_rppg_analysis` (the JZC curl study), built into the toolbox and extended to every vHRM experiment, movement
-and camera view.
+and camera view. An unsupervised method (POS, CHROM, …) is reported the same way: only how the pulse signal is
+obtained differs (section 4, step 1).
 
 ## 1. Recordings
 
-- **Scope.** The experiments and views of the config's test data, **every participant** and **every segment
-  label** (resting, curl, recovery, …), unless `REPORT.LABELS` / `REPORT.PARTICIPANTS` narrow it. One recording is
-  one labelled segment seen by one camera, as everywhere in the toolbox.
+- **Scope.** The experiments and views of the config's test data (its unsupervised data for an unsupervised
+  method), **every participant** and **every segment label** (resting, curl, recovery, …), unless `REPORT.LABELS` /
+  `REPORT.PARTICIPANTS` narrow it. One recording is one labelled segment seen by one camera, as everywhere in the
+  toolbox.
 - **Repetitions.** A label that occurs several times for a participant is numbered in segment order: `curl 1`,
   `curl 2`. File names follow: `jzc17_curl1`, `mosaics/hr_curl1.png`.
 - **Splits.** For a checkpoint trained on vHRM, every participant is tagged with its split of the run, read from the
@@ -20,7 +22,8 @@ and camera view.
   - **unused**: in the experiments but in none of the run's selections.
 
   For a cross-validation fold, these are the fold's participants. When the config did not train on vHRM, the
-  training participants are unknown and no split is shown.
+  training participants are unknown and no split is shown. An unsupervised method learns nothing from the data:
+  no split is shown and every participant is unseen.
 - **Timing.** Frame *i* is at `signal_anchor_datetime_utc + start_sec + i / FS`, shifted by the run's sync
   correction (`PPG_DELAY_SEC`, lag table), exactly as for the training labels (`VHRM_DATASET.md`).
 
@@ -30,7 +33,8 @@ The report reads the **toolbox's preprocessed cache**: the exact clips this chec
 (same crop, size, input transform and layout). Recordings missing from the cache are preprocessed first, like any
 test split, and stay cached. The clips of a recording are contiguous slices of one recording-wide transform, so
 they are read back as one continuous video. The last incomplete clip of a recording is not cached, so up to one clip
-length (5.3 s at 160 frames) is missing at the end of each segment.
+length (5.3 s at 160 frames) is missing at the end of each segment. Unsupervised runs usually cache whole recordings
+(`DO_CHUNK: false`), which then lose nothing.
 
 The original JZC study decoded the videos itself (smoothed square face box). On the RhythmFormer fold-2 test
 participants, switching between the two crops changed the HR MAE from 11.2 to 10.9 bpm.
@@ -61,6 +65,11 @@ cached clips ─► network (clips of the training length, 75 % overlap) ─► 
    overlap; the last clip is anchored to the end). Each predicted clip is z-scored, sign-flipped if it
    anti-correlates with the signal already reconstructed where they overlap, then Hann-weighted (floor 10⁻³) and
    added. Models trained on DiffNormalized labels output a derivative, which is integrated.
+   An **unsupervised method** runs once over the whole recording (the cached clips joined), with the toolbox's own
+   implementation, as in its unsupervised run: on UV maps only the skin pixels of each frame are averaged. No clips
+   or overlap-add are involved. POS follows the reflected light, which falls when the blood volume rises:
+   its output is negated so that its peaks are pulse peaks, as in the PPG labels (the loader's POS pseudo-labels are
+   flipped the same way). Other methods are used with the sign of their implementation.
 2. **Pulse signal.** Linear detrend, then a zero-phase 4th-order Butterworth band-pass of 0.70–3.50 Hz (42–210 bpm).
 3. **Heart rate.** Dominant frequency of the pulse signal in **8 s windows every 1 s** (Welch PSD, ≤ 256-sample
    segments, 2048-point FFT). The peak is followed with the toolbox's **causal Viterbi tracker**
@@ -102,7 +111,7 @@ EC13).
 ## 6. Outputs
 
 ```
-report/<checkpoint>/
+report/<checkpoint>/         report/<method>/ for an unsupervised method (POS, …)
 ├─ REPORT.md                 the numbers of this report
 ├─ METHOD.md                 this file
 ├─ summary/
@@ -122,7 +131,7 @@ report/<checkpoint>/
 
 In the time-series figures, **black is the ground truth and blue is the rPPG estimate**. Times are seconds since
 the start of the segment. The model output of each recording is kept in `data/`: generating the report again with
-the same checkpoint and cache skips the network.
+the same checkpoint (or method) and cache skips the network.
 
 ## 7. Limitations
 

@@ -1,12 +1,15 @@
 """Analysis report of a checkpoint on vHRM: HR, beat-to-beat RR intervals and HRV against the chest sensors.
 
     generate_report(config, checkpoint)       tools/vhrm_report.py and the launcher's Report button
+    generate_method_reports(config)           tools/vhrm_report.py: the unsupervised methods of a config (POS, ...)
     report_after_training(config, trainer)    main.py, when REPORT.ENABLED
 
 Every recording of the test data's experiments and views is analysed (every participant, every segment label
 unless REPORT.LABELS narrows it), and each participant is tagged with its split of the run. A report goes to
 <experiment folder>/report/<checkpoint>/ (see report_folder); when the run has test participants,
-test_set/ repeats every output on them alone. The method is in METHOD.md, copied into every report.
+test_set/ repeats every output on them alone. An unsupervised method is analysed the same way on the
+unsupervised data, without splits (it learns nothing), in <experiment folder>/report/<method>/.
+The method is in METHOD.md, copied into every report.
 """
 
 import json
@@ -25,8 +28,8 @@ from . import data, plots
 from .evaluate import (conditions, global_table, label_order, label_split_table, recording_order, recording_row,
                        split_order)
 from .export import export
-from .inference import Network, build_trainer, load_weights
-from .pipeline import analyse_recording, load_result, model_fingerprint, save_result
+from .inference import Network, build_trainer, clip_predictor, load_weights, method_predictor, method_sign
+from .pipeline import analyse_recording, load_result, method_fingerprint, model_fingerprint, save_result
 from .report import write_report
 from .settings import analysis_settings
 
@@ -60,6 +63,11 @@ def report_folder(config, checkpoint):
     return experiment / REPORT_DIR / name
 
 
+def method_report_folder(config, method):
+    """<experiment folder>/report/<method> of an unsupervised run: the folder of its saved_outputs/."""
+    return Path(config.UNSUPERVISED.OUTPUT_SAVE_DIR).parent / REPORT_DIR / method
+
+
 def tested_checkpoint(config, trainer):
     """The checkpoint the toolbox's test used: INFERENCE.MODEL_PATH, the last epoch or the best validation epoch."""
     if config.TOOLBOX_MODE == "only_test":
@@ -68,12 +76,17 @@ def tested_checkpoint(config, trainer):
     return os.path.join(trainer.model_dir, f"{trainer.model_file_name}_Epoch{epoch}.pth")
 
 
-def report_after_training(config, trainer):
-    """main.py hook: the report of the tested checkpoint. A failed report is logged and never fails the run."""
+def report_after_training(config, trainer=None):
+    """main.py hook: the report of the tested checkpoint, or of each method of an unsupervised run.
+
+    A failed report is logged and never fails the run.
+    """
     if not config.REPORT.ENABLED:
         return None
     print("\n===Analysis report===", flush=True)
     try:
+        if config.TOOLBOX_MODE == "unsupervised_method":
+            return generate_method_reports(config, origin="after_run")
         return generate_report(config, tested_checkpoint(config, trainer), trainer=trainer, origin="after_training")
     except Exception as error:
         traceback.print_exc()
@@ -151,33 +164,85 @@ def generate_report(config, checkpoint, output=None, labels=None, participants=N
     print(f"[report] Output: {output}", flush=True)
     splits = data.participant_splits(config)
     recordings = data.load_recordings(config, data_config, config.DEVICE)
-    return run_report(config, data_config, checkpoint, recordings, splits, output,
-                      config.REPORT.EXPORT_CSV if export_csv is None else export_csv, trainer, origin)
+    run = checkpoint_run(config, data_config, checkpoint, trainer)
+    return run_report(config, data_config, run, recordings, splits, output,
+                      config.REPORT.EXPORT_CSV if export_csv is None else export_csv, origin)
 
 
-def run_report(config, data_config, checkpoint, recordings, splits, output, export_csv=True, trainer=None,
-               origin="manual"):
-    """The report of prepared recordings (data.load_recordings) with their participant splits."""
-    started = time.time()
-    output = Path(output)
+def generate_method_reports(config, methods=None, output=None, labels=None, participants=None, export_csv=None,
+                            origin="manual"):
+    """The report of each unsupervised method (UNSUPERVISED.METHOD by default) on the config's unsupervised data.
+
+    The recordings are prepared once for every method. output: the report folder, for a single method only.
+    Returns the report folders.
+    """
+    methods = list(config.UNSUPERVISED.METHOD if methods is None else methods)
+    if not methods:
+        raise ValueError("No unsupervised method to report (UNSUPERVISED.METHOD is empty).")
+    if output and len(methods) > 1:
+        raise ValueError("A report folder can only be given for a single method.")
+    data_config = data.report_data_config(config, labels, participants)
+    runs = [method_run(data_config, method) for method in methods]  # unknown methods fail before preprocessing
+    recordings = data.load_recordings(config, data_config, config.DEVICE)
+    folders = []
+    for run in runs:
+        folder = Path(output) if output else method_report_folder(config, run["method"])
+        print(f"[report] {run['method']} (unsupervised)", flush=True)
+        print(f"[report] Output: {folder}", flush=True)
+        folders.append(run_report(config, data_config, run, recordings, {}, folder,
+                                  config.REPORT.EXPORT_CSV if export_csv is None else export_csv, origin))
+    return folders
+
+
+def checkpoint_run(config, data_config, checkpoint, trainer=None):
+    """How a checkpoint turns a recording into a pulse signal (its network over overlapping clips), and its names."""
+    from evaluation.prediction_store import prediction_is_diff
     settings = analysis_settings()
     preprocess = data_config.PREPROCESS
-    for recording in recordings:
-        recording["split"] = splits.get(recording["participant"], "unused") if splits else ""
-
-    from evaluation.prediction_store import prediction_is_diff
     network = Network(load_weights(trainer or build_trainer(config), checkpoint), data_config.DATA_FORMAT)
     clip_length = preprocess.CHUNK_LENGTH
     stride = max(1, int(round(clip_length * (1 - settings["inference"]["clip_overlap"]))))
-    run = {
-        "settings": settings, "clip_length": clip_length, "stride": stride,
-        "batch_size": config.INFERENCE.BATCH_SIZE, "is_diff": prediction_is_diff(config),
-        "data_types": list(preprocess.DATA_TYPE),
+    return {
+        "settings": settings, "is_diff": prediction_is_diff(config), "data_types": list(preprocess.DATA_TYPE),
+        "predict": clip_predictor(network, clip_length, stride, config.INFERENCE.BATCH_SIZE, settings["inference"]),
         "model_key": model_fingerprint(checkpoint, config.MODEL.NAME,
                                        {**settings["inference"], "stride": stride,
                                         "format": data_config.DATA_FORMAT}),
+        "model": config.MODEL.NAME, "checkpoint": checkpoint, "method": None,
+        "title": f"{config.MODEL.NAME} · {Path(checkpoint).stem}",
+        "input": f"{preprocess.RESIZE.W}x{preprocess.RESIZE.H} {'+'.join(preprocess.DATA_TYPE)}, "
+                 f"{clip_length}-frame clips every {stride} frames, {data_config.DATA_FORMAT}",
+        "clip_length": clip_length, "stride": stride,
     }
-    print(f"[report] {len(recordings)} recordings, {clip_length}-frame clips every {stride} frames", flush=True)
+
+
+def method_run(data_config, method):
+    """How an unsupervised method turns a recording into a pulse signal (once over all of it), and its names."""
+    preprocess = data_config.PREPROCESS
+    masked = bool(data_config.UV.ENABLED)
+    return {
+        "settings": analysis_settings(), "is_diff": False, "data_types": list(preprocess.DATA_TYPE),
+        "predict": method_predictor(method, data_config.FS, masked),
+        "model_key": method_fingerprint(method, {"fs": data_config.FS, "masked": masked,
+                                                 "sign": method_sign(method)}),
+        "model": method, "checkpoint": None, "method": method, "title": f"{method} · unsupervised",
+        "input": f"{preprocess.RESIZE.W}x{preprocess.RESIZE.H} {'+'.join(preprocess.DATA_TYPE)}, whole recordings"
+                 f"{', skin pixels of the UV map' if masked else ''}, {data_config.DATA_FORMAT}",
+        "clip_length": None, "stride": None,
+    }
+
+
+def run_report(config, data_config, run, recordings, splits, output, export_csv=True, origin="manual"):
+    """The report of prepared recordings (data.load_recordings) with their participant splits.
+
+    run: how a recording becomes a pulse signal, and how the report names it (checkpoint_run, method_run).
+    """
+    started = time.time()
+    output = Path(output)
+    settings = run["settings"]
+    for recording in recordings:
+        recording["split"] = splits.get(recording["participant"], "unused") if splits else ""
+    print(f"[report] {len(recordings)} recordings, {run['input']}", flush=True)
 
     output.mkdir(parents=True, exist_ok=True)
     results, failures = [], {}
@@ -186,7 +251,7 @@ def run_report(config, data_config, checkpoint, recordings, splits, output, expo
     for recording in progress:
         begun = time.time()
         try:
-            result = analyse_recording(recording, network, run, output / "data")
+            result = analyse_recording(recording, run, output / "data")
         except Exception as error:  # keep going: one broken recording must not stop the report
             failures[recording["key"]] = repr(error)
             tqdm.write(f"[report] {recording['key']} FAILED: {error}")
@@ -210,20 +275,18 @@ def run_report(config, data_config, checkpoint, recordings, splits, output, expo
                      for split in data.SPLIT_ORDER if split in splits.values()}
     tested = sorted({r["participant"] for r in results if r["split"] == "test"})
     info = {
-        "title": f"{config.MODEL.NAME} · {Path(checkpoint).stem}", "model": config.MODEL.NAME,
-        "checkpoint": checkpoint, "data_path": data_config.DATA_PATH,
+        "title": run["title"], "model": run["model"], "checkpoint": run["checkpoint"], "method": run["method"],
+        "data_path": data_config.DATA_PATH,
         "experiments": list(vhrm.EXPERIMENTS), "views": list(vhrm.VIEWS), "cache": data_config.EXP_DATA_NAME,
-        "input": f"{preprocess.RESIZE.W}x{preprocess.RESIZE.H} {'+'.join(preprocess.DATA_TYPE)}, "
-                 f"{clip_length}-frame clips every {stride} frames, {data_config.DATA_FORMAT}",
-        "splits": bool(splits), "split_members": split_members, "test_participants": tested,
+        "input": run["input"], "splits": bool(splits), "split_members": split_members, "test_participants": tested,
     }
     run_info = {
-        "checkpoint": checkpoint, "model": config.MODEL.NAME, "config_mode": config.TOOLBOX_MODE, "origin": origin,
-        "input": info["input"],
+        "checkpoint": run["checkpoint"], "method": run["method"], "model": run["model"],
+        "config_mode": config.TOOLBOX_MODE, "origin": origin, "input": info["input"],
         "cache": data_config.CACHED_PATH, "data_path": data_config.DATA_PATH, "hr_source": vhrm.HR_SOURCE,
         "selection": {"experiments": list(vhrm.EXPERIMENTS), "views": list(vhrm.VIEWS),
                       "labels": list(vhrm.LABELS), "participants": list(vhrm.PARTICIPANTS)},
-        "splits": split_members, "clip_length": clip_length, "stride": stride, "settings": settings,
+        "splits": split_members, "clip_length": run["clip_length"], "stride": run["stride"], "settings": settings,
         "versions": _versions(), "seconds": round(time.time() - started),
     }
     print("[report] Writing figures ...", flush=True)

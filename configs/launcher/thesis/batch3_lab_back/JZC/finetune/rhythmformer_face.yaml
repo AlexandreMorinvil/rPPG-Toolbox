@@ -205,3 +205,8 @@ WANDB:
     videos of the training people, best epoch on the validation people, tested on the three views of the test people (by_view.csv).'
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
+REPORT:
+  ENABLED: true
+  LABELS: []
+  PARTICIPANTS: []
+  EXPORT_CSV: true

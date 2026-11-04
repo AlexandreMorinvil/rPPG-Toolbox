@@ -33,6 +33,10 @@ def _scope_note(info, recordings, scope):
         return ["", f"Only the recordings of the test participants ({', '.join(info['test_participants'])}): the "
                     "checkpoint never saw them, neither in training nor to choose the epoch (validation). The same "
                     "analysis on every recording: [../REPORT.md](../REPORT.md)."]
+    if info.get("method"):
+        return ["", f"{info['method']} is an unsupervised method: it learns nothing from the data, so no participant "
+                    "was seen and every recording is measured the same way. To compare it with a trained model, "
+                    "read its rows of the model's test participants."]
     if not info["splits"]:
         return ["", "The training participants of this checkpoint are not known (the config did not train on vHRM), "
                     "so the recordings are not split into seen and unseen participants."]
@@ -100,7 +104,7 @@ def write_report(path, info, global_metrics, matrix, recordings, failures, withi
         "",
         _table(["Setting", "Value"], [
             ["Model", info["model"]],
-            ["Checkpoint", f"`{info['checkpoint']}`"],
+            ["Checkpoint", f"`{info['checkpoint']}`" if info["checkpoint"] else "none (unsupervised method)"],
             ["Data", f"`{info['data_path']}` · experiments {', '.join(info['experiments']) or 'all'} · "
                      f"views {', '.join(info['views']) or 'all'}"],
             ["Input", f"`{info['cache']}` ({info['input']})"],
@@ -139,7 +143,7 @@ def write_report(path, info, global_metrics, matrix, recordings, failures, withi
         "tables above, all columns",
         "- `mosaics/{hr,hrv,rr}_<label><repetition>.png` – every participant on one page, per metric and recording",
         "- `participants/<id>/{hr,hrv,rr,pulse}.png` and `metrics.csv` – one participant",
-        "- `data/<recording>.npz` – every time series behind the figures (and the raw model output)"
+        "- `data/<recording>.npz` – every time series behind the figures (and the raw model or method output)"
         + (", copies of the test recordings of `../data/`" if test_only else "")
         + (", copied from the test set of each fold's report" if scope == "cv" else ""),
         "- `data_csv/` – the same data as CSV files, with a README",

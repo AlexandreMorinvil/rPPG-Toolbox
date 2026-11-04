@@ -375,7 +375,9 @@ class GeneratorTests(unittest.TestCase):
                 for prefix, data in blocks:
                     self.assertEqual(Path(validation.derived_locations(values, prefix)["file_list"]).name,
                                      Path(data.FILE_LIST_PATH).name)
-                if config.TOOLBOX_MODE != "unsupervised_method" and config.TEST.DATA.DATASET == "vHRM":
+                evaluated = blocks[0][1]
+                self.assertEqual(config.REPORT.ENABLED, evaluated.DATASET == "vHRM")    # the report needs vHRM data
+                if config.TOOLBOX_MODE != "unsupervised_method" and evaluated.DATASET == "vHRM":
                     # One experiment per config, and only its participant folders.
                     experiment = path.relative_to(output).parts[1]
                     for _, data in blocks:

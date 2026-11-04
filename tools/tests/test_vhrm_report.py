@@ -2,7 +2,8 @@
 
 The synthetic dataset has two participants with a resting and a curl segment each: small flat-colour videos whose
 green channel dips on every heartbeat, with the ECG R-peaks, Zephyr HR and PPG files of the vHRM layout. The
-network is replaced by the (negated) mean green value, so the report must recover the known HR and beats.
+network is replaced by the (negated) mean green value, so the report must recover the known HR and beats. POS
+runs as it is (UnsupervisedReportTests).
 """
 
 import argparse
@@ -253,6 +254,61 @@ class SyntheticReportTests(unittest.TestCase):
         self.assertNotIn("MAE by movement and split", text)
         self.assertTrue((merged / "participants" / "p01" / "hr.png").is_file())
         self.assertIn("fold", pd.read_csv(merged / "data_csv" / "all_recordings" / "heart_rate.csv").columns)
+
+
+class UnsupervisedReportTests(unittest.TestCase):
+    """POS on the synthetic dataset, whole recordings (DO_CHUNK off), reported by main.py's hook."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.TemporaryDirectory()
+        root = Path(cls.directory.name)
+        write_dataset(root / "data")
+        block = data_block(root / "data", root / "cache", [], [])
+        block["DATA_FORMAT"] = "NDHWC"
+        block["PREPROCESS"].update({"LABEL_TYPE": "Raw", "DO_CHUNK": False})
+        tree = {"BASE": [""], "TOOLBOX_MODE": "unsupervised_method", "DEVICE": "cpu", "LOG": {"PATH": str(root / "runs")},
+                "UNSUPERVISED": {"METHOD": ["POS"], "DATA": block}, "REPORT": {"ENABLED": True}}
+        config_path = root / "pos.yaml"
+        config_path.write_text(yaml.safe_dump(tree), encoding="utf-8")
+        cls.config = get_config(argparse.Namespace(config_file=str(config_path)))
+        cls.folders = vhrm_report.report_after_training(cls.config) or []
+        cls.output = cls.folders[0] if cls.folders else None
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def setUp(self):
+        self.assertEqual(len(self.folders), 1, "the report failed: see its traceback above")
+        self.table = pd.read_csv(self.output / "summary" / "per_recording_metrics.csv")
+
+    def test_report_goes_to_the_experiment_folder(self):
+        self.assertEqual(self.output, Path(self.config.UNSUPERVISED.OUTPUT_SAVE_DIR).parent / "report" / "POS")
+
+    def test_whole_recordings_of_everyone_without_splits(self):
+        self.assertEqual(sorted(zip(self.table.participant, self.table.label)),
+                         [("p01", "curl"), ("p01", "resting"), ("p02", "curl"), ("p02", "resting")])
+        self.assertTrue(self.table.split.isna().all())
+        self.assertTrue((self.table.duration_s == SECONDS).all(), "one uncut clip per recording: nothing is lost")
+        self.assertFalse((self.output / "test_set").exists())
+
+    def test_hr_and_beats_are_recovered(self):
+        self.assertTrue((self.table.hr_mae_bpm < 2.0).all(), self.table.hr_mae_bpm.tolist())
+        self.assertTrue((self.table.ibi_mae_ms < 25).all(), self.table.ibi_mae_ms.tolist())
+
+    def test_outputs_name_the_method(self):
+        run = json.loads((self.output / "run_config.json").read_text(encoding="utf-8"))
+        self.assertEqual((run["method"], run["checkpoint"], run["config_mode"]), ("POS", None, "unsupervised_method"))
+        text = (self.output / "REPORT.md").read_text(encoding="utf-8")
+        self.assertIn("none (unsupervised method)", text)
+        self.assertIn("POS is an unsupervised method", text)
+        for name in ("METHOD.md", "summary/overview.png", "participants/p01/pulse.png", "data_csv/README.txt"):
+            self.assertTrue((self.output / name).is_file(), name)
+
+    def test_unknown_methods_fail_before_preprocessing(self):
+        with self.assertRaises(ValueError):
+            vhrm_report.generate_method_reports(self.config, methods=["XYZ"])
 
 
 if __name__ == "__main__":

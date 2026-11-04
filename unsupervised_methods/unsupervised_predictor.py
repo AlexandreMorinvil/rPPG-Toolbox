@@ -16,8 +16,11 @@ from unsupervised_methods.utils import masked_spatial_mean
 from evaluation.metrics import window_row
 
 
-def _unsupervised_bvp(method_name, frames, fs, masked=False):
-    """Run one unsupervised method on RGB frames (T, H, W, 3).
+METHODS = ("POS", "CHROM", "ICA", "GREEN", "LGI", "PBV", "OMIT")
+
+
+def unsupervised_bvp(method_name, frames, fs, masked=False):
+    """Run one unsupervised method on RGB frames (T, H, W, 3); also used by the analysis report.
 
     masked: average only the non-zero pixels of each frame (UV input mode)."""
     if masked:
@@ -61,13 +64,13 @@ def unsupervised_predict(config, data_loader, method_name):
             data_input, labels_input = test_batch[0][idx].cpu().numpy(), test_batch[1][idx].cpu().numpy()
             if is_vhrm:
                 # vHRM is scored against the measured HR per recording (see below).
-                bvp = _unsupervised_bvp(method_name, data_input[..., :3], config.UNSUPERVISED.DATA.FS, masked)
+                bvp = unsupervised_bvp(method_name, data_input[..., :3], config.UNSUPERVISED.DATA.FS, masked)
                 recording_id, chunk_id = test_batch[2][idx], int(test_batch[3][idx])
                 vhrm_predictions.setdefault(recording_id, {})[chunk_id] = np.asarray(bvp).reshape(-1)
                 vhrm_labels.setdefault(recording_id, {})[chunk_id] = labels_input.reshape(-1)
                 continue
             data_input = data_input[..., :3]
-            BVP = _unsupervised_bvp(method_name, data_input, config.UNSUPERVISED.DATA.FS, masked)
+            BVP = unsupervised_bvp(method_name, data_input, config.UNSUPERVISED.DATA.FS, masked)
 
             video_frame_size = test_batch[0].shape[1]
             if config.INFERENCE.EVALUATION_WINDOW.USE_SMALLER_WINDOW:

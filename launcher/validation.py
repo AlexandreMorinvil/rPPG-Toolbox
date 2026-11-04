@@ -659,15 +659,21 @@ def _check_split_consistency(values, report, splits):
 
 def _check_report(values, backend, report):
     key = "REPORT.ENABLED"
-    if values.get("MODEL.NAME") == "BigSmall":
-        report.error("The analysis report does not support BigSmall.", key)
-    if not values.get("TEST.DATA.PREPROCESS.DO_CHUNK", True):
-        report.error("The analysis report needs fixed-length clips (test data: chunking on).", key)
-    report.note("After the test, the tested checkpoint is analysed on every participant of the test data's "
-                "experiments and views" + (" (labels: " + ", ".join(values["REPORT.LABELS"]) + ")"
-                                           if values.get("REPORT.LABELS") else ", every segment label")
-                + ". Recordings missing from the cache are preprocessed first. A failed report does not fail the run.",
-                key)
+    scope = (" (labels: " + ", ".join(values["REPORT.LABELS"]) + ")" if values.get("REPORT.LABELS")
+             else ", every segment label")
+    if values.get("TOOLBOX_MODE") == "unsupervised_method":
+        report.note("After the run, each unsupervised method (" + ", ".join(values.get("UNSUPERVISED.METHOD") or [])
+                    + ") is analysed on whole recordings of every participant of the data's experiments and views"
+                    + scope + ", in report/<method>. It learns nothing, so the report has no splits. Recordings "
+                    "missing from the cache are preprocessed first. A failed report does not fail the run.", key)
+    else:
+        if values.get("MODEL.NAME") == "BigSmall":
+            report.error("The analysis report does not support BigSmall.", key)
+        if not values.get("TEST.DATA.PREPROCESS.DO_CHUNK", True):
+            report.error("The analysis report needs fixed-length clips (test data: chunking on).", key)
+        report.note("After the test, the tested checkpoint is analysed on every participant of the test data's "
+                    "experiments and views" + scope + ". Recordings missing from the cache are preprocessed first. "
+                    "A failed report does not fail the run.", key)
     if values.get("TOOLBOX_MODE") == "only_test":
         report.note("An evaluation config does not say which participants trained the checkpoint, so the report "
                     "shows no splits. For a vHRM training, use Results → Checkpoints → Report… on its run instead.", key)
