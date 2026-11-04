@@ -12,10 +12,10 @@ MODELS = [
 ]
 TRAIN_DATASETS = [
     "UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "BP4DPlusBigSmall",
-    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS", "vHRM",
+    "UBFC-PHYS", "iBVP", "PhysDrive", "LADH", "SUMS", "COHFACE", "vHRM",
 ]
 TEST_DATASETS = list(TRAIN_DATASETS)
-UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP", "vHRM"]
+UNSUPERVISED_DATASETS = ["UBFC-rPPG", "PURE", "SCAMPS", "MMPD", "BP4DPlus", "UBFC-PHYS", "iBVP", "COHFACE", "vHRM"]
 DATA_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 LABEL_TYPES = ["DiffNormalized", "Standardized", "Raw"]
 DATA_FORMATS = ["NDCHW", "NCDHW", "NDHWC"]
@@ -79,6 +79,8 @@ def _experiment_fields():
          "cuda:N or cpu. In Docker the selected GPU always appears as cuda:0.", pattern=r"^(cpu|cuda:\d+)$")
     _add("NUM_OF_GPU_TRAIN", "int", 1, "Number of GPUs", s, "The toolbox effectively uses one GPU.",
          min=0, max=16, when={"modes": NEURAL_MODES}, advanced=True)
+    _add("DESCRIPTION", "text", "", "Description", s,
+         "What this run is about (what changed, why). Shown in Jobs and Results; editable there after launch.")
 
 
 def _training_fields():
@@ -116,6 +118,35 @@ def _training_fields():
          min=0.0, max=1.0, when=when, advanced=True)
 
 
+CV_SCHEME_LABELS = {"kfold": "K balanced groups", "loso": "Leave one participant out", "groups": "Custom test groups"}
+
+
+def _cross_validation_fields():
+    s = "Cross-validation"
+    when = {"modes": ["train_and_test"], "dataset": ["TRAIN.DATA", ["vHRM"]]}
+    on = {**when, "equals": {"CROSS_VALIDATION.ENABLED": [True]}}
+    _add("CROSS_VALIDATION.ENABLED", "bool", False, "Run as a cross-validation", s,
+         "One training per fold, so every participant of the training selection is tested once. In each fold the "
+         "participant lists of the training, validation and test data are replaced; their other settings (labels, "
+         "views, preprocessing) apply as set below.", when=when)
+    _add("CROSS_VALIDATION.SCHEME", "enum", "kfold", "Folds", s,
+         "K balanced groups: participants are dealt round-robin in sorted order. Leave one out: one fold per "
+         "participant. Custom: the test groups listed below.",
+         options=list(CV_SCHEME_LABELS), option_labels=CV_SCHEME_LABELS, when=on)
+    _add("CROSS_VALIDATION.K", "int", 5, "Number of folds (K)", s, "Fold sizes differ by at most one participant.",
+         min=2, max=100, when={**when, "equals": {"CROSS_VALIDATION.ENABLED": [True],
+                                                  "CROSS_VALIDATION.SCHEME": ["kfold"]}})
+    _add("CROSS_VALIDATION.GROUPS", "yamllist", [], "Test groups", s,
+         "YAML list of participant lists, e.g. [[jzc01, jzc02], [jzc03, jzc04]]. Participants not listed stay in "
+         "training.", when={**when, "equals": {"CROSS_VALIDATION.ENABLED": [True],
+                                              "CROSS_VALIDATION.SCHEME": ["groups"]}})
+    _add("CROSS_VALIDATION.VALID_COUNT", "int", 2, "Validation participants per fold", s,
+         "Taken from the next fold. 0 = no validation: each fold tests its last epoch.", min=0, max=100, when=on)
+    _add("CROSS_VALIDATION.GROUP_SESSIONS", "bool", True, "Keep the sessions of a person together", s,
+         "jzc02 and jzc02_baseline go to the same fold (a folder joins the shorter folder name it extends), and "
+         "counts above are persons.", when=on)
+
+
 def _split_fields(prefix, spec):
     s = spec["section"]
     when = {"modes": spec["modes"]}
@@ -143,6 +174,9 @@ def _split_fields(prefix, spec):
         min=1, max=1000, required=True)
     add("BEGIN", "float", 0.0, "Split begin", "Fraction of the subjects where this split starts.", min=0.0, max=1.0)
     add("END", "float", 1.0, "Split end", "Fraction of the subjects where this split ends.", min=0.0, max=1.0)
+    add("SUBJECTS", "list", [], "Subjects",
+        "Subjects of this split, e.g. subject38 or 38 (UBFC-rPPG), 07 (PURE), 3 (COHFACE). Empty = BEGIN/END. "
+        "vHRM uses its participant lists.", when_extra={"dataset": [prefix, ["UBFC-rPPG", "PURE", "COHFACE"]]})
     add("DATA_FORMAT", "enum", "NDCHW", "Tensor layout", "Must match the model.", options=DATA_FORMATS,
         group="Preprocessing")
     add("PREPROCESS.DATA_TYPE", "multi", [""], "Input transforms",
@@ -194,6 +228,9 @@ def _split_fields(prefix, spec):
     vhrm = {"dataset": [prefix, ["vHRM"]]}
     add("VHRM.EXPERIMENTS", "list", [], "Experiments",
         "Sub-folders of the data folder to use, e.g. JZC, baseline. Empty = all.", group="vHRM", when_extra=vhrm)
+    add("VHRM.EXPERIMENT_PATHS", "list", [], "Experiments stored elsewhere",
+        "experiment=folder, e.g. RM=F:/Datasets_vhrm/RM: the experiment folder itself, outside the data folder.",
+        group="vHRM", when_extra=vhrm)
     add("VHRM.PARTICIPANTS", "list", [], "Participants",
         "Participant folders to include, e.g. jzc01, jzc02_baseline. Empty = all.", group="vHRM",
         when_extra=vhrm)
@@ -205,7 +242,22 @@ def _split_fields(prefix, spec):
     add("VHRM.VIEWS", "list", ["front"], "Camera views", "front, back-left, back-right. Empty = all three.",
         group="vHRM", when_extra=vhrm)
     add("VHRM.CROP_MODE_BY_VIEW", "yamllist", ["front=face", "back-left=face_or_full", "back-right=face_or_full"],
-        "Image region per view", "view=face | face_or_full | full | roi:x,y,w,h (pixels, or fractions <= 1).",
+        "Image region per view", "view=face | face_or_full | person_face | full | roi:x,y,w,h (pixels, or fractions "
+        "<= 1). person_face: the face is searched inside the largest person of the frame only.",
+        group="vHRM", when_extra=vhrm)
+    add("VHRM.MIN_FACE_FRACTION", "float", 0.0, "Minimum face fraction",
+        "Face crop: clips and windows need a face in at least this fraction of their frames. Training and "
+        "validation drop the other clips; test windows without it count as no reading (coverage). 0 = off.",
+        min=0.0, max=1.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.FACE_SEARCH_WIDTH", "float", 1.0, "Face search width",
+        "Face crop: faces are searched in the central part of the frame only, this fraction of its width. A frame "
+        "whose only faces are outside it has no face. 1 = the whole frame.",
+        min=0.05, max=1.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.MAX_DURATION_SEC", "float", 0.0, "Max duration per video (s)",
+        "Preprocess only the first N seconds of each recording; the rest of the video is ignored. 0 = whole video.",
+        min=0.0, max=86400.0, group="vHRM", when_extra=vhrm)
+    add("VHRM.MAX_DURATION_SEC_BY_LABEL", "list", [], "Max duration per label (s)",
+        "label=seconds, e.g. resting=120. Replaces the value above for that label; 0 = whole video.",
         group="vHRM", when_extra=vhrm)
     add("VHRM.PPG_SOURCE", "enum", "synthetic", "Training waveform",
         "synthetic: the synthetic PPG CSV; rpeak_*: a waveform rebuilt from the ECG R-peaks; "
@@ -330,6 +382,24 @@ def _visualize_fields():
          advanced=True)
 
 
+def _report_fields():
+    s = "Analysis report"
+    when = {"modes": NEURAL_MODES, "dataset": ["TEST.DATA", ["vHRM"]]}
+    on = {**when, "equals": {"REPORT.ENABLED": [True]}}
+    _add("REPORT.ENABLED", "bool", False, "Generate the analysis report", s,
+         "After the test, analyse the tested checkpoint (the best or last epoch, or the evaluated checkpoint) on "
+         "every participant of the test data's experiments and views: HR, beat-to-beat RR intervals and HRV against "
+         "the chest sensors, per movement and per split, with figures. Written to <experiment>/report/<checkpoint>. "
+         "Results → Checkpoints → Report… does the same for any checkpoint.", when=when)
+    _add("REPORT.LABELS", "list", [], "Segment labels", s,
+         "Labels to analyse, e.g. Curl, Resting. Empty analyses every label.", when=on)
+    _add("REPORT.PARTICIPANTS", "list", [], "Participants", s,
+         "Empty analyses every participant (test, validation and training, each shown with its split).", when=on,
+         advanced=True)
+    _add("REPORT.EXPORT_CSV", "bool", True, "Also export CSV files", s,
+         "Every time series as CSV files (data_csv/), with a README for readers who do not use Python.", when=on)
+
+
 def _model_fields():
     s = "Model"
     neural = {"modes": NEURAL_MODES}
@@ -409,10 +479,12 @@ def _wandb_fields():
 
 _experiment_fields()
 _training_fields()
+_cross_validation_fields()
 for _prefix, _spec in SPLITS.items():
     _split_fields(_prefix, _spec)
 _evaluation_fields()
 _visualize_fields()
+_report_fields()
 _model_fields()
 _wandb_fields()
 
@@ -443,7 +515,14 @@ def is_active(field, values):
             return False
     if when.get("wandb") and not values.get("WANDB.ENABLED"):
         return False
+    if any(values.get(key) not in allowed for key, allowed in (when.get("equals") or {}).items()):
+        return False
     return True
+
+
+def cross_validation_enabled(values):
+    """True when a config runs as a cross-validation (one training per fold) instead of a single run."""
+    return is_active(FIELD_MAP["CROSS_VALIDATION.ENABLED"], values) and bool(values.get("CROSS_VALIDATION.ENABLED"))
 
 
 def active_splits(values):

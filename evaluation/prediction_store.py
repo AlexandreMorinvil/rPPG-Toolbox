@@ -37,6 +37,28 @@ def parse_recording_id(recording_id):
     return {"experiment": "", "participant": str(recording_id), "segment_index": "", "movement": "", "view": ""}
 
 
+def subject_of_recording(dataset, recording_id):
+    """Subject of a recording of the generic loaders: UBFC-rPPG subject38, PURE 701 (07-01) -> 07, COHFACE 03-2 -> 03."""
+    recording_id = str(recording_id)
+    if dataset == "PURE" and recording_id.isdigit():
+        return f"{int(recording_id) // 100:02d}"
+    if dataset == "COHFACE":
+        return recording_id.split("-")[0]
+    return recording_id
+
+
+def write_window_results(rows, output_dir):
+    """window_results.csv of the generic datasets: one row per evaluation window (same key columns as vHRM)."""
+    import pandas as pd
+
+    if not rows or not output_dir:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, "window_results.csv")
+    pd.DataFrame(rows).to_csv(path, index=False)
+    print("Saved per-window results to:", path)
+
+
 def ground_truth_files(file_list_path):
     """{(recording_id, chunk): gt .npy path} from a vHRM file list."""
     import pandas as pd
@@ -45,6 +67,16 @@ def ground_truth_files(file_list_path):
     if "gt_files" not in file_list:
         raise ValueError(f"{file_list_path} has no gt_files column; re-run vHRM preprocessing.")
     return {(row.recording_id, int(row.chunk)): row.gt_files for row in file_list.itertuples()}
+
+
+def face_trace_files(file_list_path):
+    """{recording_id: face trace .npy path} from a vHRM file list (face crop modes only; empty otherwise)."""
+    import pandas as pd
+
+    file_list = pd.read_csv(file_list_path, keep_default_na=False)
+    if "face_files" not in file_list:
+        return {}
+    return {row.recording_id: row.face_files for row in file_list.itertuples() if row.face_files}
 
 
 def load_vhrm_ground_truth(file_list_path, predictions):

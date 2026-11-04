@@ -37,6 +37,7 @@ Jobs run in a detached runner process, so they keep running when the launcher is
   - *Save config* writes a standalone YAML; *Launch* runs the pre-launch checks.
 - **Pre-launch checks** — environment (local Python/PyTorch/CUDA or Docker/Compose/image), configuration, and questions that need your decision: overwrite or use a new output sub-folder, reuse or rebuild an existing cache, Weights & Biases login (use an existing key, enter one for this run — verified with W&B and kept in memory only — switch to offline, or disable), building a missing Docker image, which GPU to use, and whether to queue or run in parallel when the GPU is busy.
 - **Jobs** — queued/running/paused/finished runs with phase, epoch, current progress bar and ETA, loss per epoch, parsed test metrics, errors with hints, the live console output, and actions to pause, stop, resume, view the config, reopen it in the editor, or open the results.
+- **Run descriptions** — `DESCRIPTION` (Experiment section, or a top-level key in YAML) holds free-form notes about the run. The pre-launch dialog shows it next to the job name for a last edit. In **Jobs**, *Edit* on the Description card changes it at any time, including for running or finished jobs. The job list shows its first line, the Results overview shows it next to the launcher job, and the Results filter searches it. Edits are stored with the job (`job.json`); the config snapshot keeps the description the job was launched with, while *Open in editor* and *Resume* use the edited one. An empty description is left out of the YAML; Docker users must rebuild the toolbox image before launching with a non-empty one.
 - **Preprocessed data** — browse caches (`DataFileLists/*.csv`), play clips per 3-channel group, inspect array statistics and labels (pulse waveform with spectrum and heart rate, or vHRM HR/HRV/respiration channels). File lists written in Docker or another location are remapped when possible.
 - **Results** — experiment folders found under the results folders: summaries, CSV reports, plots, checkpoints (with *Evaluate…* to prefill an evaluation run), and prediction analysis from `*_outputs.pickle` (or vHRM `window_results.csv`). See *Prediction viewer* below.
 
@@ -60,6 +61,92 @@ Runs save compact per-frame signals; every plot is drawn on demand, so nothing i
 
 What runs save is set in the run editor under **Visualization outputs** (`VISUALIZE.*`): the highlight PNGs, the best-epoch validation set, and the probe interval and selection. Docker users must rebuild the toolbox image before using configs that contain these keys.
 - **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, and extra results/preprocessed-data folders to browse.
+
+## Cross-validation (vHRM)
+
+A training config on vHRM data can run as a participant-wise cross-validation: one training per fold, so every
+participant is tested once. Turn on **Cross-validation → Run as a cross-validation** in the editor.
+
+- **Folds:** *K balanced groups* (default, K = 5: participants are dealt round-robin in sorted order, so fold sizes
+  differ by at most one), *Leave one participant out*, or *Custom test groups* (a YAML list such as
+  `[[jzc01, jzc02], [jzc03]]`; unlisted participants stay in training).
+- **Participants:** the pool is what the training data selects (experiments, participants, labels, views). Clear
+  *Excluded participants* of the training data, or they are left out of every fold. In each fold the participant lists
+  of the training, validation and test data are replaced; everything else in those sections (labels, views,
+  preprocessing) applies as set. For example, test labels `[Curl]` test every fold on its Curl segments only.
+- **Validation:** *Validation participants per fold* (default 2) are taken from the next fold. Keep *Test the last
+  epoch* off and set up the validation data. With 0, turn *Test the last epoch* on.
+- **Sessions:** *Keep the sessions of a person together* (default on) puts `jzc02` and `jzc02_baseline` in the same
+  fold: a folder joins the shorter folder name it extends with `_` or `-`. Counts then refer to persons.
+- **Preview folds…** (in the section) lists the participants of every fold. Listing reads the dataset folders with the
+  local Python of **Settings**, which needs the toolbox environment. This also applies to Docker runs.
+
+**Launch cross-validation…** runs the usual pre-launch checks once for the whole group and shows the folds. It then
+queues one ordinary job per fold, named `<name> · fold <N>`.
+
+- **Order:** the folds run one after another, in fold order, and preprocessing is shared after the first one.
+- **Failures and pauses:** a failed fold does not stop the others. A paused fold holds the remaining folds until you
+  resume it. Removing the paused fold releases them.
+- **Fold jobs:** each fold has the usual job features: progress, pause/resume, stop, retry and results. Its config
+  snapshot is a plain single run without the `CROSS_VALIDATION` block.
+
+**Outputs:** `LOG.PATH` is the cross-validation folder.
+
+- **Per fold:** each fold writes to `LOG.PATH/fold_<name>`, and the participants of every fold are recorded in
+  `cv_plan.json`.
+- **Merged summary:** after each finished fold, the launcher merges the evaluation windows of all folds into
+  `LOG.PATH/cv_summary` (`overall_summary.csv`, `by_fold.csv`, `by_participant.csv`, `by_movement.csv`,
+  `all_windows.csv`). It uses `tools/vhrm_cross_validation.py --aggregate-only` with the local Python; *Merge results
+  now* repeats it.
+- **Relaunching:** if the folder already has fold results, the pre-launch checks offer a new timestamped sub-folder,
+  because the merge reads every `fold_*` folder.
+
+**Jobs:**
+
+- **Group row:** a cross-validation is one row with its folds nested below. The row shows the folds done and an
+  estimate of the time left, based on the finished folds.
+- **Detail:** the detail shows the fold table (participants, status, epoch, test MAE), the merged results, and the
+  actions *Stop remaining folds*, *Merge results now*, *Open in editor* (the cross-validation config) and *Remove*
+  (keeps the outputs).
+
+**Results:**
+
+- **Cross-validation folder:** listed as *cross-validation*. Its overview shows the merged tables and the folds.
+- **Predictions:** *Predictions → cv_summary/all_windows.csv* plots every window of every fold, for example the
+  participant × movement MAE heatmap.
+- **Folds:** each fold's folder remains a result of its own.
+
+The command line runs the same folds:
+`python tools/vhrm_cross_validation.py --config <config> --output-root <folder>` uses the `CROSS_VALIDATION` block of
+the config unless options override it.
+
+## Analysis report (vHRM)
+
+A report analyses one checkpoint on every participant of its test data's experiments and views: heart rate,
+beat-to-beat RR intervals and HRV against the chest sensors (Zephyr HR, ECG R-peaks), per movement (resting, curl,
+recovery, …), per repetition and per split, with figures, tables and CSV files. It is the JZC curl analysis
+(`jzc_rppg_analysis`) built into the toolbox; the method is in `evaluation/vhrm_report/METHOD.md`, copied into each report.
+
+- **For any checkpoint:** Results → an experiment → *Checkpoints* → **Report…**. Choose the run config (the launcher job
+  that trained the checkpoint is preselected: it gives the model, the input preprocessing and which participants were
+  training, validation and test), the backend, and optionally the segment labels (the labels found in the cache are
+  shown) and participants. The report runs as a job in **Jobs**. The checkpoint the run tested is marked *tested*.
+- **At the end of a training:** in the editor, **Analysis report → Generate the analysis report** (`REPORT.ENABLED`).
+  After the test, main.py analyses the tested checkpoint (the best validation epoch, or the last epoch). A failed report
+  is logged and shown as a warning; it never fails the training. For a cross-validation, every fold writes its own
+  report. Docker users must rebuild the toolbox image first.
+- **Reading it:** the experiment gets a **Report** tab: headline numbers, the MAE matrix movement × split (only the
+  *Test* column measures unseen participants), pooled results per group, the summary figures, the recordings table
+  (click a row for that participant's HR, HRV, RR and pulse figures) and the mosaics of every participant per recording.
+  *Test participants only* switches every table and figure to the test participants. With several reports (e.g. epochs)
+  a table compares them. `REPORT.md`, `METHOD.md` and `run_config.json` open from the tab.
+- **Where:** `<experiment>/report/<checkpoint>/`, for example `…/PreTrainedModels/name_Epoch16.pth` →
+  `…/report/Epoch16/`. Generating it again replaces it; the model output of unchanged recordings is reused.
+- **Input:** the toolbox's preprocessed cache, i.e. exactly what the checkpoint was trained and tested on. Recordings
+  missing from it (e.g. the resting segments of test participants tested on Curl only) are preprocessed first. The
+  dataset folder must be reachable: the report reads the ECG R-peaks and the segment timing from it.
+
+The command line does the same: `python tools/vhrm_report.py --config <run config> [--checkpoint <.pth>] [--labels …]`.
 
 ## Early stopping
 

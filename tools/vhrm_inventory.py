@@ -80,11 +80,18 @@ def print_inventory(frame):
             print(f"No {kind} signal: " + ", ".join(sorted(set(missing["participant"]))))
 
 
+def kept_seconds(recording):
+    """Duration preprocessed for a recording: its MAX_DURATION_SEC(_BY_LABEL) cap, or the whole segment."""
+    cap = recording.get("max_duration_sec") or 0
+    return min(recording["duration_sec"], cap) if cap > 0 else recording["duration_sec"]
+
+
 def split_selection(config, split):
     data = getattr(config, split).DATA
     if data.DATASET != "vHRM" or not data.DATA_PATH:
         return None
-    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data))
+    segments = discover_segments(data.DATA_PATH, data.VHRM.EXPERIMENTS, source_suffix(data),
+                                 data.VHRM.EXPERIMENT_PATHS)
     recordings = select_recordings(segments, data.VHRM, warn=lambda message: None)
     if not (data.BEGIN == 0 and data.END == 1):
         participants = sorted({recording["participant"] for recording in recordings})
@@ -109,9 +116,11 @@ def print_config_selection(config_path, show_recordings):
             continue
         selections[split] = recordings
         data = getattr(config, split).DATA
-        hours = sum(recording["duration_sec"] for recording in recordings) / 3600
+        hours = sum(kept_seconds(recording) for recording in recordings) / 3600
+        full_hours = sum(recording["duration_sec"] for recording in recordings) / 3600
+        capped = f" (max duration; {full_hours:.2f} h uncapped)" if hours < full_hours else ""
         source = f"UV maps ({data.UV.LAYOUT}, {data.PREPROCESS.RESIZE.W} px)" if data.UV.ENABLED else "video"
-        print(f"{split}: {len(recordings)} recordings, {hours:.2f} h of {source}, "
+        print(f"{split}: {len(recordings)} recordings, {hours:.2f} h of {source}{capped}, "
               f"PPG source {data.VHRM.PPG_SOURCE}, HR source {data.VHRM.HR_SOURCE}, "
               f"REQUIRE_PPG {data.VHRM.REQUIRE_PPG}")
         print("  participants: " + ", ".join(sorted({recording["participant"] for recording in recordings})))
@@ -128,7 +137,9 @@ def print_config_selection(config_path, show_recordings):
             print("  crop modes:   " + ", ".join(f"{view}={mode}" for view, mode in sorted(modes)))
         if show_recordings:
             for recording in recordings:
-                print(f"    {recording['index']}  ({recording['duration_sec']:.0f}s)")
+                kept = kept_seconds(recording)
+                note = f", first {kept:.0f}s kept" if kept < recording["duration_sec"] else ""
+                print(f"    {recording['index']}  ({recording['duration_sec']:.0f}s{note})")
         print()
 
     participants = {split: {recording["participant"] for recording in recordings}

@@ -11,9 +11,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import configs, logparse, paths, preflight, probes, settings
+from . import configs, crossval, logparse, paths, preflight, probes, reports, schema, settings
 
 ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
+RUNNING = ("starting", "running", "pausing", "stopping")
 FINISHED = ("succeeded", "failed", "cancelled", "interrupted", "paused")
 
 
@@ -21,11 +22,19 @@ def _now():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _clean_description(text):
+    if not isinstance(text, str):
+        raise ValueError("The description must be text.")
+    return text.replace("\r\n", "\n").strip()[:20000]
+
+
 class JobManager:
     def __init__(self):
         paths.JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        paths.CV_DIR.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.jobs = {}
+        self.groups = {}
         self.processes = {}
         self.parsers = {}
         self.offsets = {}
@@ -44,7 +53,25 @@ class JobManager:
         temporary.write_text(json.dumps(job, indent=2), encoding="utf-8")
         os.replace(temporary, target)
 
+    def _group_dir(self, group_id):
+        return paths.CV_DIR / group_id
+
+    def _save_group(self, group):
+        target = self._group_dir(group["id"]) / "group.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(group, indent=2), encoding="utf-8")
+        os.replace(temporary, target)
+
     def _load(self):
+        for group_file in sorted(paths.CV_DIR.glob("*/group.json")):
+            try:
+                group = json.loads(group_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            self.groups[group["id"]] = group
+            if group.get("merge", {}).get("status") == "running":
+                group["merge"].update({"status": "failed", "output": "The launcher stopped during the merge."})
+                self._save_group(group)
         for job_file in sorted(paths.JOBS_DIR.glob("*/job.json")):
             try:
                 job = json.loads(job_file.read_text(encoding="utf-8"))
@@ -102,26 +129,107 @@ class JobManager:
             return [self._public(job) for job in self.jobs.values()
                     if job["status"] in ACTIVE and job.get("gpu") == gpu]
 
-    def create(self, payload):
-        """Re-run preflight with the submitted answers and queue the job when everything is resolved."""
-        backend = payload.get("backend")
+    def checkpoint_folder_busy(self, model_dir_host):
+        with self.lock:
+            return bool(model_dir_host) and any(job["status"] in ACTIVE and job.get("outputs", {}).get(
+                "model_dir_host") == model_dir_host for job in self.jobs.values())
+
+    @staticmethod
+    def _launch_request(payload):
         values, type_errors, _ = configs.normalize(payload.get("values") or {})
-        extras = payload.get("extras") or {}
         if type_errors:
             raise ValueError("Fix the invalid fields before launching.")
+        if payload.get("description") is not None:
+            values["DESCRIPTION"] = _clean_description(payload["description"])
         answers = dict(payload.get("answers") or {})
         answers["_stamp"] = datetime.now().strftime("%Y%m%d-%H%M%S")
-        secrets = payload.get("secrets") or {}
-        result = preflight.run_checks(values, extras, backend, answers, secrets, self)
+        return values, payload.get("extras") or {}, answers, payload.get("secrets") or {}
+
+    @staticmethod
+    def _require_launchable(result):
         if not result["can_launch"]:
             blocking = [c["title"] + ": " + c["message"] for c in result["checks"] if c["status"] in ("error",
                                                                                                     "question")]
             raise ValueError("Launch blocked. " + " | ".join(blocking))
-        answers = result["answers"]
-        effective = result["effective_values"]
 
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        job_id = f"{stamp}-{pysecrets.token_hex(3)}"
+    @staticmethod
+    def _new_id():
+        return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{pysecrets.token_hex(3)}"
+
+    def create(self, payload):
+        """Re-run preflight with the submitted answers and queue the job when everything is resolved."""
+        backend = payload.get("backend")
+        values, extras, answers, secrets = self._launch_request(payload)
+        if schema.cross_validation_enabled(values):
+            raise ValueError("This config runs as a cross-validation; launch it from the editor (one job per fold).")
+        result = preflight.run_checks(values, extras, backend, answers, secrets, self)
+        self._require_launchable(result)
+        # A resumed fold stays part of its cross-validation.
+        original = self.jobs.get(payload.get("resume_from") or "")
+        group = dict(original["group"]) if original and original.get("group") else None
+        job = self._queue(result["effective_values"], extras, backend, result["answers"], secrets,
+                          result["validation"]["derived"].get("outputs", {}), payload.get("name"),
+                          payload.get("source"), payload.get("resume_from"), group)
+        return self._public(job)
+
+    def create_group(self, payload):
+        """Queue one job per fold of a cross-validation config; the folds run one after another."""
+        backend = payload.get("backend")
+        values, extras, answers, secrets = self._launch_request(payload)
+        if not schema.cross_validation_enabled(values):
+            raise ValueError("Cross-validation is not enabled for this config.")
+        group_id = self._new_id()
+        result = crossval.run_checks(values, extras, backend, answers, secrets, self, group_id)
+        self._require_launchable(result)
+        cv, runs, answers = result["cv"], result["fold_runs"], result["answers"]
+        name = (payload.get("name") or "").strip()[:100] or \
+            f"CV {values.get('MODEL.NAME')} · {len(runs)} folds ({schema.CV_SCHEME_LABELS.get(cv['scheme'], cv['scheme'])})"
+        group = {
+            "id": group_id, "name": name, "created": _now(), "backend": backend,
+            "description": values.get("DESCRIPTION", ""), "source_config": payload.get("source"),
+            "root": cv["root"], "root_host": cv["root_host"], "scheme": cv["scheme"],
+            "settings": {key: values.get("CROSS_VALIDATION." + key) for key in ("K", "VALID_COUNT", "GROUP_SESSIONS")},
+            "pool": cv["pool"], "warnings": cv.get("warnings", []),
+            "folds": [{key: run[key] for key in ("name", "test", "valid", "train")} for run in runs],
+            "merge": {"status": "none"},
+        }
+        self._group_dir(group_id).mkdir(parents=True)
+        # The editor reopens the config as written, before the launch answers (new sub-folder, W&B mode).
+        (self._group_dir(group_id) / "config.yaml").write_text(
+            configs.dump_yaml(configs.build_tree(values, extras)), encoding="utf-8")
+        with self.lock:
+            self.groups[group_id] = group
+            self._save_group(group)
+            queued = []
+            try:
+                for index, run in enumerate(runs):
+                    fold_answers = dict(answers)
+                    if index:
+                        fold_answers.pop("build", None)  # the first fold builds a missing Docker image
+                    queued.append(self._queue(
+                        run["values"], extras, backend, fold_answers, secrets, run["outputs"],
+                        f"{name} · fold {run['name']}", payload.get("source"), None,
+                        {"id": group_id, "name": name, "fold": run["name"], "index": index, "count": len(runs)}))
+            except Exception:
+                for job in queued:  # all folds or none
+                    self.jobs.pop(job["id"], None)
+                    self.secret_env.pop(job["id"], None)
+                    shutil.rmtree(self._dir(job["id"]), ignore_errors=True)
+                self.groups.pop(group_id, None)
+                shutil.rmtree(self._group_dir(group_id), ignore_errors=True)
+                raise
+        if cv["root_host"]:
+            try:
+                Path(cv["root_host"]).mkdir(parents=True, exist_ok=True)
+                (Path(cv["root_host"]) / "cv_plan.json").write_text(json.dumps(
+                    {key: group[key] for key in ("id", "name", "created", "scheme", "settings", "pool", "folds")},
+                    indent=2), encoding="utf-8")
+            except OSError:
+                pass  # informational copy next to the results
+        return self.group(group_id)
+
+    def _queue(self, effective, extras, backend, answers, secrets, outputs, name, source, resume_from, group=None):
+        job_id = self._new_id()
         job_dir = self._dir(job_id)
         job_dir.mkdir(parents=True)
         config_path = job_dir / "config.yaml"
@@ -139,15 +247,15 @@ class JobManager:
             self.secret_env[job_id] = {"WANDB_API_KEY": key}
 
         steps = self._steps(job_id, backend, config_path, answers)
-        outputs = result["validation"]["derived"].get("outputs", {})
         recovery = mode == "train_and_test" and effective.get("TRAIN.SAVE_RESUME", True)
         prefix = effective.get("TRAIN.MODEL_FILE_NAME", "") + "_resume.pt"
         checkpoint_host = str(Path(outputs["model_dir_host"]) / prefix) if recovery and outputs.get("model_dir_host") else None
         checkpoint = (outputs.get("model_dir", "").rstrip("/\\") + "/" + prefix) if recovery else None
-        name = (payload.get("name") or "").strip() or self._default_name(effective)
+        name = (name or "").strip() or self._default_name(effective)
         job = {
             "id": job_id,
             "name": name[:120],
+            "description": effective.get("DESCRIPTION", ""),
             "created": _now(),
             "started": None,
             "finished": None,
@@ -167,7 +275,7 @@ class JobManager:
             "env": env_additions,
             "needs_secret": needs_secret,
             "wandb": {"enabled": bool(effective.get("WANDB.ENABLED")), "mode": effective.get("WANDB.MODE")},
-            "source_config": payload.get("source"),
+            "source_config": source,
             "outputs": outputs,
             "steps": steps,
             "pid": None,
@@ -178,8 +286,10 @@ class JobManager:
             "training_recovery": recovery,
             "resume_checkpoint_host": checkpoint_host,
             "resume_checkpoint": checkpoint,
-            "resume_from": payload.get("resume_from"),
+            "resume_from": resume_from,
         }
+        if group:
+            job["group"] = group
         with self.lock:
             if mode == "train_and_test" and any(
                     j["status"] in ACTIVE and j.get("outputs", {}).get("model_dir_host") == outputs.get("model_dir_host")
@@ -188,6 +298,62 @@ class JobManager:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 raise ValueError("Another active training job writes to this checkpoint folder. "
                                  "Wait for it to finish or choose a different output folder.")
+            self.jobs[job_id] = job
+            self._save(job)
+        return job
+
+    def create_report(self, payload):
+        """Queue the analysis report of a checkpoint (tools/vhrm_report.py) as a job."""
+        request = reports.report_request(payload)
+        if any(job["status"] in ACTIVE and job.get("outputs", {}).get("report_dir_host") == request["output_host"]
+               for job in self.jobs.values()):
+            raise ValueError("A report of this checkpoint is already queued or running.")
+        values, backend = request["values"], request["backend"]
+        job_id = self._new_id()
+        job_dir = self._dir(job_id)
+        job_dir.mkdir(parents=True)
+        config_path = job_dir / "config.yaml"
+        config_path.write_text(configs.dump_yaml(request["config_tree"]), encoding="utf-8")
+        (job_dir / "output.log").touch()
+        options = ["--labels", *request["labels"]]
+        if request["participants"]:
+            options += ["--participants", *request["participants"]]
+        if not request["export_csv"]:
+            options.append("--no-csv")
+        root = str(paths.TOOLBOX_ROOT)
+        env_additions = {}
+        if backend == "local":
+            steps = [{"title": "Analysis report", "cwd": root, "argv": [
+                settings.load()["local_python"], "-u", "tools/vhrm_report.py", "--config", str(config_path),
+                "--checkpoint", request["checkpoint"], "--output", request["output"], *options]}]
+        else:
+            env_additions["GPU_DEVICE_ID"] = str(request["gpu"] if request["gpu"] is not None else 0)
+            container_config = f"{paths.JOB_CONFIG_MOUNT}/{job_id}.yaml"
+            steps = [{"title": "Analysis report in Docker", "cwd": root, "argv": [
+                "docker", "compose", "--project-directory", root, "-f", str(paths.TOOLBOX_ROOT / "compose.yaml"),
+                "run", "--rm", "-T", "--name", f"rppg-launcher-{job_id}",
+                "-v", f"{config_path.as_posix()}:{container_config}:ro", "--entrypoint", "python", "toolbox",
+                "-u", "tools/vhrm_report.py", "--config", container_config, "--checkpoint", request["checkpoint"],
+                "--output", request["output"], *options]}]
+        checkpoint = Path(request["checkpoint_host"])
+        job = {
+            "id": job_id,
+            "name": (payload.get("name") or "").strip()[:120] or f"Report · {checkpoint.stem}",
+            "description": "", "created": _now(), "started": None, "finished": None, "status": "queued",
+            "backend": backend, "mode": "report", "model": values.get("MODEL.NAME"),
+            "datasets": {"train": values.get("TRAIN.DATA.DATASET") if values.get("TOOLBOX_MODE") == "train_and_test"
+                         else None, "test": values.get("TEST.DATA.DATASET")},
+            "epochs_total": None, "gpu": request["gpu"], "policy": settings.load()["gpu_policy"],
+            "env": env_additions, "needs_secret": False, "wandb": {"enabled": False, "mode": None},
+            "source_config": configs.relative(request["config_path"]),
+            "outputs": {"report_dir": request["output"], "report_dir_host": request["output_host"]},
+            "report": {"checkpoint": request["checkpoint_host"], "labels": request["labels"],
+                       "participants": request["participants"], "replaces": request["exists"]},
+            "steps": steps, "pid": None, "container": f"rppg-launcher-{job_id}" if backend == "docker" else None,
+            "returncode": None, "error": None, "progress": {}, "training_recovery": False,
+            "resume_checkpoint_host": None, "resume_checkpoint": None, "resume_from": None,
+        }
+        with self.lock:
             self.jobs[job_id] = job
             self._save(job)
         return self._public(job)
@@ -293,6 +459,7 @@ class JobManager:
                 raise ValueError("Another active attempt is already using this checkpoint folder.")
             data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
             values = data["values"]
+            values["DESCRIPTION"] = job.get("description", values.get("DESCRIPTION", ""))
             values["MODEL.RESUME"] = job["resume_checkpoint"]
             values["TRAIN.SAVE_RESUME"] = True
             for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
@@ -300,6 +467,16 @@ class JobManager:
             data.update({"backend": job["backend"], "resume_from": job_id,
                          "name": job["name"] + " (resumed)", "answers": {"outputs": "overwrite", "policy": "queue"}})
             return data
+
+    def set_description(self, job_id, text):
+        """Edit the notes of any job; the config snapshot keeps the description it was launched with."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            job["description"] = _clean_description(text)
+            self._save(job)
+            return self._public(job)
 
     def _terminate(self, job):
         if job.get("container"):
@@ -315,6 +492,134 @@ class JobManager:
                 raise ValueError("Stop the job before removing it")
             self.jobs.pop(job_id)
         shutil.rmtree(self._dir(job_id), ignore_errors=True)
+
+    # -------------------------------------------------------- cross-validation
+    def _group_jobs(self, group_id):
+        return [job for job in self.jobs.values() if (job.get("group") or {}).get("id") == group_id]
+
+    def _group_public(self, group, full=False):
+        data = dict(group)
+        attempts = self._group_jobs(group["id"])
+        folds = []
+        for fold in group["folds"]:
+            tries = sorted((job for job in attempts if job["group"]["fold"] == fold["name"]), key=lambda j: j["created"])
+            latest = tries[-1] if tries else None
+            entry = {**fold, "job": None, "attempts": len(tries), "status": "removed"}
+            if latest:
+                progress = latest.get("progress") or {}
+                entry.update({
+                    "job": latest["id"], "status": latest["status"], "phase": progress.get("phase"),
+                    "epoch": progress.get("epoch"), "epochs_total": latest.get("epochs_total"),
+                    "started": latest.get("started"), "finished": latest.get("finished"),
+                    "summary": latest.get("summary"), "error": latest.get("error"),
+                })
+            folds.append(entry)
+        data["folds"] = folds
+        statuses = [fold["status"] for fold in folds]
+        if any(status in RUNNING for status in statuses):
+            data["status"] = "running"
+        elif "queued" in statuses:
+            data["status"] = "running" if any(s in FINISHED for s in statuses) else "queued"
+        elif "paused" in statuses:
+            data["status"] = "paused"
+        elif all(status == "succeeded" for status in statuses):
+            data["status"] = "succeeded"
+        elif any(status in ("failed", "interrupted") for status in statuses):
+            data["status"] = "failed"
+        else:
+            data["status"] = "cancelled"
+        data["active"] = any(status in ACTIVE for status in statuses)
+        data["summary"] = crossval.read_summary(group.get("root_host"), tables=full)
+        return data
+
+    def list_groups(self):
+        with self.lock:
+            return sorted((self._group_public(group) for group in self.groups.values()), key=lambda g: g["created"],
+                          reverse=True)
+
+    def group(self, group_id):
+        with self.lock:
+            group = self.groups.get(group_id)
+            if group is None:
+                raise KeyError(group_id)
+            return self._group_public(group, full=True)
+
+    def cancel_group(self, group_id):
+        """Cancel the queued folds and stop the running one."""
+        with self.lock:
+            if group_id not in self.groups:
+                raise KeyError(group_id)
+            for job in self._group_jobs(group_id):
+                if job["status"] in ("queued", "starting", "running", "pausing"):
+                    self.cancel(job["id"])
+            return self.group(group_id)
+
+    def remove_group(self, group_id):
+        """Forget a finished cross-validation and its fold jobs; outputs on disk are kept."""
+        with self.lock:
+            if group_id not in self.groups:
+                raise KeyError(group_id)
+            members = self._group_jobs(group_id)
+            if any(job["status"] in ACTIVE for job in members):
+                raise ValueError("Stop the cross-validation before removing it")
+            for job in members:
+                self.jobs.pop(job["id"])
+            self.groups.pop(group_id)
+        for job in members:
+            shutil.rmtree(self._dir(job["id"]), ignore_errors=True)
+        shutil.rmtree(self._group_dir(group_id), ignore_errors=True)
+
+    def request_merge(self, group_id):
+        """Merge the finished folds into <root>/cv_summary in the background (queued if a merge is running)."""
+        with self.lock:
+            group = self.groups.get(group_id)
+            if group is None:
+                raise KeyError(group_id)
+            merge = group.setdefault("merge", {})
+            if merge.get("status") == "running":
+                merge["pending"] = True
+            else:
+                merge.update({"status": "running", "started": _now(), "pending": False})
+                threading.Thread(target=self._merge, args=(group_id,), name=f"cv-merge-{group_id}",
+                                 daemon=True).start()
+            self._save_group(group)
+            return self._group_public(group)
+
+    def _merge(self, group_id):
+        while True:
+            with self.lock:
+                group = self.groups.get(group_id)
+                if group is None:
+                    return
+                root_host = group.get("root_host")
+            ok, output = crossval.merge(root_host)
+            with self.lock:
+                if group_id not in self.groups:
+                    return
+                merge = group["merge"]
+                again = merge.pop("pending", False)
+                merge.update({"status": "running" if again else ("succeeded" if ok else "failed"),
+                              "finished": _now(), "output": output[-4000:]})
+                self._save_group(group)
+            if not again:
+                return
+
+    def _group_waits(self, job):
+        """Folds of one cross-validation run one at a time, in fold order; an unresumed paused fold holds the rest."""
+        group = job.get("group")
+        if not group:
+            return False
+        position = (group.get("index", 0), job["created"])
+        for other in self._group_jobs(group["id"]):
+            if other is job:
+                continue
+            if other["status"] in RUNNING:
+                return True
+            if other["status"] == "paused" and not any(j.get("resume_from") == other["id"] for j in self.jobs.values()):
+                return True
+            if other["status"] == "queued" and (other["group"].get("index", 0), other["created"]) < position:
+                return True
+        return False
 
     # ------------------------------------------------------------ monitoring
     def _loop(self):
@@ -336,11 +641,14 @@ class JobManager:
     def _start_queued(self):
         prefs = settings.load()
         with self.lock:
-            queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"), key=lambda j: j["created"])
+            queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"),
+                            key=lambda j: (j["created"], (j.get("group") or {}).get("index", 0)))
             for job in queued:
                 running = [j for j in self.jobs.values() if j["status"] in ("starting", "running", "pausing", "stopping")]
                 if len(running) >= prefs["max_parallel_jobs"]:
                     return
+                if self._group_waits(job):
+                    continue
                 if job["policy"] != "parallel" and job.get("gpu") is not None:
                     earlier = [j for j in self.jobs.values() if j is not job and j.get("gpu") == job["gpu"] and (
                         j["status"] in ("starting", "running", "pausing", "stopping") or
@@ -383,7 +691,9 @@ class JobManager:
 
     @staticmethod
     def _summary(job):
-        """vHRM evaluations report metrics in summary.json instead of the console."""
+        """vHRM evaluations report metrics in summary.json instead of the console; reports in their tables."""
+        if job.get("mode") == "report":
+            return reports.job_summary(job["outputs"]["report_dir_host"])
         for folder in output_dirs_for(job):
             summary_file = Path(folder) / "summary.json"
             if summary_file.is_file():
@@ -464,10 +774,14 @@ class JobManager:
                 self.processes.pop(job["id"], None)
                 self.parsers.pop(job["id"], None)
                 self._save(job)
+                group_id = (job.get("group") or {}).get("id")
+                if job["status"] == "succeeded" and group_id in getattr(self, "groups", {}):
+                    self.request_merge(group_id)
             elif changed:
                 self._save(job)
 
 
 def output_dirs_for(job):
     outputs = job.get("outputs") or {}
-    return [outputs[k] for k in ("model_dir_host", "test_outputs_host", "outputs_host") if outputs.get(k)]
+    return [outputs[k] for k in ("model_dir_host", "test_outputs_host", "outputs_host", "report_dir_host")
+            if outputs.get(k)]

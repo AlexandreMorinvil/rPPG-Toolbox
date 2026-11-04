@@ -59,6 +59,21 @@ def uv_identity(data):
     return _uv_values(flatten_settings(data, 'DATA'), 'DATA')
 
 
+def subject_key(value):
+    """Canonical subject id of DATA.SUBJECTS entries and loader subjects: 'subject07', '07' and 7 -> '7'."""
+    text = str(value).strip().lower()
+    match = re.fullmatch(r'(?:subject|s)?0*(\d+)', text)
+    return str(int(match.group(1))) if match else text
+
+
+def subjects_suffix(subjects):
+    """File-list suffix of a DATA.SUBJECTS selection ('' when empty): splits of one cache keep separate lists."""
+    keys = sorted({subject_key(item) for item in subjects or [] if str(item).strip()})
+    if not keys:
+        return ''
+    return '_S' + hashlib.sha1(json.dumps(keys).encode('utf-8')).hexdigest()[:8]
+
+
 def preprocessing_identity(values, prefix):
     """All preprocessing settings, including dataset-specific transforms and true H."""
     start = prefix + '.PREPROCESS.'

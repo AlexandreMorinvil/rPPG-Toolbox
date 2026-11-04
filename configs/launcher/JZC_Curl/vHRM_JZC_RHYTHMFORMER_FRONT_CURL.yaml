@@ -1,0 +1,191 @@
+BASE: ['']
+TOOLBOX_MODE: train_and_test
+DESCRIPTION: |-
+  RhythmFormer on the JZC experiment (front view, face crop), all segment labels for training.
+  Split by participant: train = jzc01-12, jzc15; valid = jzc13, jzc14; test = jzc16, jzc17 (Curl segments only).
+MODEL:
+  NAME: RhythmFormer
+  DROP_RATE: 0.2
+  RESUME: ''
+  INIT_WEIGHTS: ''
+LOG:
+  PATH: C:\Run\vHRM_JZC_rhythmformer_front_curl
+DEVICE: cuda:0
+NUM_OF_GPU_TRAIN: 1
+TRAIN:
+  EPOCHS: 30
+  EARLY_STOPPING:
+    ENABLED: false
+    PATIENCE: 6
+    TOLERANCE: 0.0
+  BATCH_SIZE: 4
+  LR: 0.009
+  MODEL_FILE_NAME: vHRM_JZC_rhythmformer_front_curl
+  PLOT_LOSSES_AND_LR: true
+  DATA_LOADER_WORKERS: 4
+  SAVE_RESUME: true
+  DATA:
+    DATASET: vHRM
+    DATA_PATH: F:/Datasets preparation
+    CACHED_PATH: C:\Datasets_Preprocessed
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.0
+    END: 1.0
+    DATA_FORMAT: NDCHW
+    PREPROCESS:
+      DATA_TYPE: [Standardized]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 128
+        H: 128
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+    VHRM:
+      EXPERIMENTS: [JZC]
+      PARTICIPANTS: []
+      EXCLUDE_PARTICIPANTS: [jzc13, jzc14, jzc16, jzc17]
+      LABELS: []
+      EXCLUDE_LABELS: []
+      VIEWS: [front]
+      CROP_MODE_BY_VIEW: [front=face, back-left=face_or_full, back-right=face_or_full]
+      PPG_SOURCE: synthetic
+      PPG_DELAY_SEC: 0.0
+      LAG_TABLE_PATH: ''
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: true
+      VIDEO_DECODER: auto
+      INCREMENTAL_PREPROCESS: true
+      CACHE_DTYPE: float16
+      SHOW_VIDEO_PROGRESS: true
+VALID:
+  DATA:
+    DATASET: vHRM
+    DATA_PATH: F:/Datasets preparation
+    CACHED_PATH: C:\Datasets_Preprocessed
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.0
+    END: 1.0
+    DATA_FORMAT: NDCHW
+    PREPROCESS:
+      DATA_TYPE: [Standardized]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 128
+        H: 128
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+    VHRM:
+      EXPERIMENTS: [JZC]
+      PARTICIPANTS: [jzc13, jzc14]
+      EXCLUDE_PARTICIPANTS: []
+      LABELS: []
+      EXCLUDE_LABELS: []
+      VIEWS: [front]
+      CROP_MODE_BY_VIEW: [front=face, back-left=face_or_full, back-right=face_or_full]
+      PPG_SOURCE: synthetic
+      PPG_DELAY_SEC: 0.0
+      LAG_TABLE_PATH: ''
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: true
+      VIDEO_DECODER: auto
+      INCREMENTAL_PREPROCESS: true
+      CACHE_DTYPE: float16
+      SHOW_VIDEO_PROGRESS: true
+TEST:
+  DATA:
+    DATASET: vHRM
+    DATA_PATH: F:/Datasets preparation
+    CACHED_PATH: C:\Datasets_Preprocessed
+    DO_PREPROCESS: true
+    FS: 30
+    BEGIN: 0.0
+    END: 1.0
+    DATA_FORMAT: NDCHW
+    PREPROCESS:
+      DATA_TYPE: [Standardized]
+      LABEL_TYPE: Standardized
+      DATA_AUG: [None]
+      DO_CHUNK: true
+      CHUNK_LENGTH: 160
+      RESIZE:
+        W: 128
+        H: 128
+      NUM_WORKERS: 2
+      CROP_FACE:
+        DO_CROP_FACE: true
+        BACKEND: Y5F
+        USE_LARGE_FACE_BOX: true
+        LARGE_BOX_COEF: 1.5
+        DETECTION:
+          DO_DYNAMIC_DETECTION: true
+          DYNAMIC_DETECTION_FREQUENCY: 30
+          USE_MEDIAN_FACE_BOX: false
+    VHRM:
+      EXPERIMENTS: [JZC]
+      PARTICIPANTS: [jzc16, jzc17]
+      EXCLUDE_PARTICIPANTS: []
+      LABELS: [Curl]
+      EXCLUDE_LABELS: []
+      VIEWS: [front]
+      CROP_MODE_BY_VIEW: [front=face, back-left=face_or_full, back-right=face_or_full]
+      PPG_SOURCE: synthetic
+      PPG_DELAY_SEC: 0.0
+      LAG_TABLE_PATH: ''
+      HR_SOURCE: zephyr
+      REQUIRE_PPG: false
+      PREDICTION_IS_DIFF: false
+      VIDEO_DECODER: auto
+      INCREMENTAL_PREPROCESS: true
+      CACHE_DTYPE: float16
+      SHOW_VIDEO_PROGRESS: true
+  METRICS: [MAE, RMSE, MAPE, Pearson, SNR, MACC, BA, AU_METRICS]
+  USE_LAST_EPOCH: false
+INFERENCE:
+  BATCH_SIZE: 4
+  DATA_LOADER_WORKERS: 0
+  EVALUATION_METHOD: FFT
+  EVALUATION_WINDOW:
+    USE_SMALLER_WINDOW: true
+    WINDOW_SIZE: 30
+VISUALIZE:
+  HIGHLIGHTS: true
+  HIGHLIGHT_WORST: 3
+  VALID_BEST: true
+  PROBE_EVERY_N_EPOCHS: 5
+  PROBE_COUNT: 6
+WANDB:
+  ENABLED: true
+  MODE: online
+  PROJECT: rPPG-Toolbox
+  ENTITY: ''
+  RUN_NAME: ''
+  GROUP: ''
+  JOB_TYPE: ''
+  TAGS: [JZC, RhythmFormer, front, curl-test]
+  NOTES: RhythmFormer trained on JZC (all labels), tested on the Curl segments of 2 held-out participants
+  LOG_BATCH_LOSS: true
+  LOG_FREQ: 50

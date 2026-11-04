@@ -3,9 +3,16 @@
 import re
 
 TQDM = re.compile(
-    r"(?P<desc>[^\r\n|]*?):?\s*(?P<pct>\d{1,3})%\|[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)\s*"
+    r"(?P<desc>(?:[^\r\n|]| \| )*?):?\s*(?P<pct>\d{1,3})%\|[^|]*\|\s*(?P<n>\d+)/(?P<total>\d+)\s*"
     r"\[(?P<elapsed>[\d:]+)(?:<(?P<eta>[\d:?]+))?(?P<rest>[^\]]*)\]"
 )
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# A tqdm bar drawn at position p is followed by p cursor-up codes; preprocessing workers use p >= 1.
+CURSOR_UPS = re.compile(r"(?:\x1b\[A)*")
+VIDEO_DONE = re.compile(r"^(?:ERROR: )?\[([^\]]+)\] (?:Complete:|preprocessing failed)")
+VHRM_SUMMARY = re.compile(r"^vHRM \S+: \d+ recordings,")
+# Worker bars ("<recording> | <step>") not redrawn within this many worker bar updates are dropped.
+WORKER_STALE = 500
 LOSS_IN_BAR = re.compile(r"loss=([-+\d.eE]+|nan)")
 EPOCH = re.compile(r"^====Training Epoch: (\d+)====")
 BATCH_LOSS = re.compile(r"^\[(\d+),\s*(\d+)\] loss: ([-+\d.eE]+|nan)")
@@ -23,6 +30,9 @@ OUTPUT_PICKLE = re.compile(r"^Saving outputs to:\s*(.+)$")
 SAVED_MODEL = re.compile(r"^Saved Model Path:\s*(.+)$")
 RESUME_CHECKPOINT = re.compile(r"^\[training\] Resume checkpoint saved \(next epoch \d+\):\s*(.+)$")
 EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)|Killed)(?::\s*(.*))?$")
+# Analysis report (evaluation/vhrm_report): after the test of main.py, or a report job.
+REPORT_DONE = re.compile(r"^\[report\] Done in [^:]+:\s*(.+?)[\\/]REPORT\.md$")
+REPORT_FAILED = re.compile(r"^\[report\] FAILED:\s*(.*)$")
 
 HINTS = (
     ("CUDA out of memory", "GPU memory exhausted: lower the batch size, INFERENCE.FRAME_BATCH_SIZE or the input size."),
@@ -70,6 +80,8 @@ class LogParser:
         }
         self.mode = mode
         self._loss_sum = {}
+        self._workers = {}
+        self._worker_updates = 0
 
     def feed(self, text):
         data = self.partial + text
@@ -86,13 +98,19 @@ class LogParser:
     def snapshot(self):
         state = dict(self.state)
         state["train_loss"] = {k: v["sum"] / v["count"] for k, v in self.state["train_loss"].items() if v["count"]}
+        workers = self._workers.values() if state["phase"] == "preprocessing" else ()
+        state["workers"] = [{k: v for k, v in w.items() if k != "seen"}
+                            for w in sorted(workers, key=lambda w: (w["position"], w["name"]))]
         return state
 
     def _bar(self, segment):
+        """Record the tqdm bar in a segment; return the segment's other text without escape codes."""
         match = TQDM.search(segment)
         if not match:
-            return False
-        desc = match.group("desc").strip()
+            return ANSI.sub("", segment)
+        tail = segment[match.end():]
+        position = len(CURSOR_UPS.match(tail).group(0)) // 3
+        desc = ANSI.sub("", match.group("desc")).strip()
         bar = {
             "desc": desc,
             "n": int(match.group("n")),
@@ -100,6 +118,16 @@ class LogParser:
             "elapsed": match.group("elapsed"),
             "eta": match.group("eta"),
         }
+        name, separator, step = desc.partition(" | ")
+        if separator:
+            # One preprocessing worker's current video; the overall bar keeps driving the progress.
+            self.state["phase"] = "preprocessing"
+            self._worker_updates += 1
+            self._workers[(position, name)] = dict(bar, name=name, step=step, position=position,
+                                                   seen=self._worker_updates)
+            for key in [k for k, w in self._workers.items() if w["seen"] < self._worker_updates - WORKER_STALE]:
+                del self._workers[key]
+            return ANSI.sub("", tail)
         self.state["bar"] = bar
         lowered = desc.lower()
         if lowered.startswith("train epoch"):
@@ -112,7 +140,9 @@ class LogParser:
                 entry["count"] += 1
         elif lowered.startswith("validation"):
             self.state["phase"] = "validating"
-        return True
+        elif lowered.startswith("report"):
+            self.state["phase"] = "report"
+        return ANSI.sub("", tail)
 
     def _line(self, line):
         segments = [s for s in line.split("\r") if s.strip()]
@@ -120,10 +150,11 @@ class LogParser:
             return
         for segment in segments[:-1]:
             self._bar(segment)
-        text = segments[-1].rstrip()
-        if self._bar(text) and "%|" in text:
-            return
+        # tqdm.write() messages can land on the same line, right after a worker bar's cursor codes.
+        text = self._bar(segments[-1]).rstrip()
         stripped = text.strip()
+        if not stripped:
+            return
         self.state["last_line"] = stripped[:300]
 
         if self.in_traceback:
@@ -149,6 +180,12 @@ class LogParser:
             self.state["phase"] = "preprocessing"
         elif stripped.startswith("File list does not exist"):
             self.state["phase"] = "preprocessing"
+        if stripped.startswith("Preprocessing dataset") or VHRM_SUMMARY.match(stripped):
+            self._workers.clear()
+        match = VIDEO_DONE.match(stripped)
+        if match:
+            for key in [k for k in self._workers if k[1] == match.group(1)]:
+                del self._workers[key]
         match = EPOCH.match(stripped)
         if match:
             self.state["epoch"] = int(match.group(1))
@@ -159,6 +196,21 @@ class LogParser:
             return
         if stripped.startswith("===Testing==="):
             self.state["phase"] = "testing"
+            return
+        if stripped.startswith(("===Analysis report===", "[report] Writing figures")):
+            self.state["phase"] = "report"
+            self.state["bar"] = None
+            return
+        match = REPORT_DONE.match(stripped)
+        if match:
+            self.state["report_path"] = match.group(1).strip()
+            return
+        match = REPORT_FAILED.match(stripped)
+        if match:
+            self.state["report_error"] = match.group(1)[:500]
+            hint = "The analysis report failed (the training itself succeeded); see the console output."
+            if hint not in self.state["hints"]:
+                self.state["hints"].append(hint)
             return
         match = UNSUPERVISED.match(stripped)
         if match:

@@ -183,18 +183,28 @@ def _same(a, b):
 def build_tree(values, extras=None):
     """Standalone YAML tree: active fields plus non-default inactive ones."""
     flat = {"BASE": [""]}
+    cross_validation = schema.cross_validation_enabled(values)
     for field in schema.FIELDS:
         key = field["key"]
         if key not in values:
             continue
+        if key.startswith("CROSS_VALIDATION.") and not cross_validation:
+            # Single runs (and every fold) omit the block, so Docker images built before it existed accept them.
+            continue
+        if key.startswith("REPORT.") and not (values.get("REPORT.ENABLED") and
+                                              schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], values)):
+            continue  # likewise, the block is only written when the report is on
         value = values[key]
         active = schema.is_active(field, values)
         differs = not _same(value, field["default"])
         if field.get("advanced") or not active:
             if not differs:
                 continue
-        if key.endswith((".FILE_LIST_PATH", ".EXP_DATA_NAME")) and value == "":
+        if (key.endswith((".FILE_LIST_PATH", ".EXP_DATA_NAME")) or key == "DESCRIPTION") and value == "":
+            # An empty DESCRIPTION is omitted so Docker images built before the key existed still accept the YAML.
             continue
+        if ".VHRM.MAX_DURATION_SEC" in key and not differs:
+            continue  # likewise, the duration limits are only written when set
         if field["type"] == "float":
             value = float(value)
         if key == "INFERENCE.MODEL_PATH":
@@ -233,7 +243,7 @@ def resolve_config_file(rel_path):
     candidate = (paths.TOOLBOX_ROOT / rel_path).resolve(strict=False)
     if candidate.suffix.lower() not in (".yaml", ".yml"):
         raise ValueError("Config files must be .yaml or .yml")
-    if not paths.is_within(candidate, CONFIG_ROOTS + (paths.JOBS_DIR,)):
+    if not paths.is_within(candidate, CONFIG_ROOTS + (paths.JOBS_DIR, paths.CV_DIR)):
         raise ValueError("Configs can only be loaded from configs/, docker/configs/ or launcher jobs")
     if not candidate.is_file():
         raise ValueError(f"Config not found: {rel_path}")

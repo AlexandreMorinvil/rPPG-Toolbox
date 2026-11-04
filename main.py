@@ -63,6 +63,13 @@ def add_args(parser):
     return parser
 
 
+def analysis_report(config, model_trainer):
+    """Analysis report of the tested checkpoint (REPORT.ENABLED); a failed report does not fail the run."""
+    if config.REPORT.ENABLED:
+        from evaluation.vhrm_report import report_after_training
+        report_after_training(config, model_trainer)
+
+
 def train_and_test(config, data_loader_dict):
     """Trains the model."""
     if config.MODEL.NAME == "Physnet":
@@ -95,6 +102,7 @@ def train_and_test(config, data_loader_dict):
         raise ValueError('Your Model is Not Supported  Yet!')
     model_trainer.train(data_loader_dict)
     model_trainer.test(data_loader_dict)
+    analysis_report(config, model_trainer)
 
 
 def test(config, data_loader_dict):
@@ -128,6 +136,7 @@ def test(config, data_loader_dict):
     else:
         raise ValueError('Your Model is Not Supported  Yet!')
     model_trainer.test(data_loader_dict)
+    analysis_report(config, model_trainer)
 
 
 def unsupervised_method_inference(config, data_loader):
@@ -190,6 +199,8 @@ if __name__ == "__main__":
             train_loader = data_loader.LADHLoader.LADHLoader
         elif config.TRAIN.DATA.DATASET == "SUMS":
             train_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TRAIN.DATA.DATASET == "COHFACE":
+            train_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.TRAIN.DATA.DATASET == "vHRM":
             train_loader = data_loader.VHRMLoader.VHRMLoader
         else:
@@ -239,6 +250,8 @@ if __name__ == "__main__":
             valid_loader = data_loader.LADHLoader.LADHLoader
         elif config.VALID.DATA.DATASET == "SUMS":
             valid_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.VALID.DATA.DATASET == "COHFACE":
+            valid_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.VALID.DATA.DATASET == "vHRM":
             valid_loader = data_loader.VHRMLoader.VHRMLoader
         elif not config.VALID.DATA.DATASET:  # '' (the config default) or None
@@ -292,6 +305,8 @@ if __name__ == "__main__":
             test_loader = data_loader.LADHLoader.LADHLoader
         elif config.TEST.DATA.DATASET == "SUMS":
             test_loader = data_loader.SUMSLoader.SUMSLoader
+        elif config.TEST.DATA.DATASET == "COHFACE":
+            test_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.TEST.DATA.DATASET == "vHRM":
             test_loader = data_loader.VHRMLoader.VHRMLoader
         else:
@@ -336,6 +351,8 @@ if __name__ == "__main__":
             unsupervised_loader = data_loader.UBFCPHYSLoader.UBFCPHYSLoader
         elif config.UNSUPERVISED.DATA.DATASET == "iBVP":
             unsupervised_loader = data_loader.iBVPLoader.iBVPLoader
+        elif config.UNSUPERVISED.DATA.DATASET == "COHFACE":
+            unsupervised_loader = data_loader.COHFACELoader.COHFACELoader
         elif config.UNSUPERVISED.DATA.DATASET == "vHRM":
             unsupervised_loader = data_loader.VHRMLoader.VHRMLoader
         else:

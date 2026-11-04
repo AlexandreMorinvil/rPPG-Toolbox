@@ -8,7 +8,8 @@ import os
 import re
 from pathlib import Path
 
-from cache_naming import _uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity
+from cache_naming import (_uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity,
+                          subject_key, subjects_suffix)
 from . import configs, paths, schema
 
 RAW_LAYOUTS = {
@@ -19,6 +20,7 @@ RAW_LAYOUTS = {
     "iBVP": ("*_*", "recording folders"),
     "LADH": ("p_*", "participant folders"),
     "SUMS": ("0602*", "recording folders"),
+    "COHFACE": ("*/*/data.hdf5", "recordings (<subject>/<session>/)"),
     "vHRM": ("*/*/labelled_segments/*/meta.json", "labelled segments (<experiment>/<participant>/...)"),
 }
 MOTION_AUG_DATASETS = {"UBFC-rPPG", "PURE", "iBVP", "PhysDrive"}
@@ -57,6 +59,11 @@ def _vhrm_items(values, key):
     return sorted(str(item).strip().lower() for item in (values.get(key) or []))
 
 
+def _vhrm_duration_caps(values, prefix):
+    v = prefix + ".VHRM."
+    return [float(values[v + "MAX_DURATION_SEC"]), _vhrm_items(values, v + "MAX_DURATION_SEC_BY_LABEL")]
+
+
 def _short_hash(settings, length):
     return hashlib.sha1(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()[:length]
 
@@ -77,6 +84,8 @@ def vhrm_exp_data_name(values, prefix):
         "dtype": values[prefix + ".VHRM.CACHE_DTYPE"],
         "crop_modes": _vhrm_items(values, prefix + ".VHRM.CROP_MODE_BY_VIEW"),
     }
+    if float(values.get(prefix + ".VHRM.FACE_SEARCH_WIDTH", 1.0)) != 1.0:
+        settings["face_search_width"] = float(values[prefix + ".VHRM.FACE_SEARCH_WIDTH"])
     uv = _uv_values(values, prefix)
     if uv:
         settings = {key: settings[key] for key in ("fs", "data_type", "data_aug", "do_chunk", "chunk", "resize",
@@ -88,9 +97,9 @@ def vhrm_exp_data_name(values, prefix):
 
 
 def vhrm_selection_suffix(values, prefix):
-    """Replicates config.py's _vhrm_selection_suffix (file-list name of a vHRM split)."""
+    """Replicates config.py's _selection_suffix (file-list name of a vHRM split, or DATA.SUBJECTS)."""
     if values.get(prefix + ".DATASET") != "vHRM":
-        return ""
+        return subjects_suffix(values.get(prefix + ".SUBJECTS"))
     v = prefix + ".VHRM."
     selection = {key: _vhrm_items(values, v + key) for key in (
         "EXPERIMENTS", "PARTICIPANTS", "EXCLUDE_PARTICIPANTS", "LABELS", "EXCLUDE_LABELS", "LABEL_ALIASES",
@@ -101,6 +110,11 @@ def vhrm_selection_suffix(values, prefix):
         "lag_table": values[v + "LAG_TABLE_PATH"], "hr_source": values[v + "HR_SOURCE"],
         "require_ppg": values[v + "REQUIRE_PPG"],
     })
+    caps = _vhrm_duration_caps(values, prefix)
+    if caps[0] or caps[1]:
+        selection["max_duration"] = caps
+    if float(values.get(v + "MIN_FACE_FRACTION") or 0):
+        selection["min_face_fraction"] = float(values[v + "MIN_FACE_FRACTION"])
     return "_vHRM" + _short_hash(selection, 8)
 
 
@@ -173,6 +187,9 @@ def output_locations(values):
     log_path = values.get("LOG.PATH") or "runs/exp"
     mode = values.get("TOOLBOX_MODE")
     result = {"log_path": log_path}
+    if schema.cross_validation_enabled(values):
+        # Each fold writes below LOG.PATH/fold_<name>; see cross_validation_locations.
+        return result
     if mode == "train_and_test":
         result["model_dir"] = _join(log_path, exp_data_name(values, "TRAIN.DATA"), values["MODEL.MODEL_DIR"])
     if mode in ("train_and_test", "only_test"):
@@ -180,6 +197,79 @@ def output_locations(values):
     if mode == "unsupervised_method":
         result["outputs"] = _join(log_path, exp_data_name(values, "UNSUPERVISED.DATA"), "saved_outputs")
     return result
+
+
+def output_paths(values, backend, env=None):
+    """output_locations plus the host path of each location (<key>_host)."""
+    outputs = output_locations(values)
+    for key, value in list(outputs.items()):
+        host, _ = paths.config_host_path(value, backend, env)
+        outputs[key + "_host"] = str(host) if host else None
+    return outputs
+
+
+def cross_validation_locations(values, backend, env=None):
+    """Folders of a cross-validation: LOG.PATH holds fold_<name> folders and the merged cv_summary."""
+    root = values.get("LOG.PATH") or "runs/exp"
+    host, _ = paths.config_host_path(root, backend, env)
+    return {"root": root, "root_host": str(host) if host else None, "folds": _join(root, "fold_<name>"),
+            "summary": _join(root, "cv_summary")}
+
+
+def existing_cv_folds(root_host):
+    """Fold folders of an earlier cross-validation that already hold files."""
+    root = Path(root_host) if root_host else None
+    if root is None or not root.is_dir():
+        return []
+    return sorted(entry.name for entry in root.iterdir()
+                  if entry.is_dir() and entry.name.startswith("fold_") and any(entry.iterdir()))
+
+
+def _check_cross_validation(values, backend, report, env):
+    """Rules of a run split into participant folds (the folds themselves are planned before launch)."""
+    key = "CROSS_VALIDATION."
+    valid_count = values.get(key + "VALID_COUNT") or 0
+    if values.get("TEST.DATA.DATASET") != "vHRM":
+        report.error("Cross-validation tests the participants of the training data: the test data must be vHRM.",
+                     "TEST.DATA.DATASET")
+    elif values.get("TEST.DATA.DATA_PATH") != values.get("TRAIN.DATA.DATA_PATH"):
+        report.warn("Cross-validation: the test data reads another data folder than the training data, which "
+                    "selects the participants of every fold.", "TEST.DATA.DATA_PATH")
+    if valid_count and values.get("TEST.USE_LAST_EPOCH", True):
+        report.error("Cross-validation with validation participants: turn off 'Test the last epoch' and set up the "
+                     "validation data (its participants are chosen per fold), or set the validation participants "
+                     "to 0.", "TEST.USE_LAST_EPOCH")
+    elif valid_count and values.get("VALID.DATA.DATASET") != "vHRM":
+        report.error("Cross-validation with validation participants: the validation data must be vHRM.",
+                     "VALID.DATA.DATASET")
+    elif not valid_count and not values.get("TEST.USE_LAST_EPOCH", True):
+        report.error("Cross-validation without validation participants tests the last epoch of each fold: turn on "
+                     "'Test the last epoch'.", key + "VALID_COUNT")
+    if values.get(key + "SCHEME") == "groups":
+        groups = values.get(key + "GROUPS") or []
+        if not groups:
+            report.error("Custom test groups: list at least one group, e.g. [[jzc01, jzc02], [jzc03]].",
+                         key + "GROUPS")
+        elif not all(isinstance(group, (list, str)) for group in groups):
+            report.error("Test groups must be a list of participant lists, e.g. [[jzc01, jzc02], [jzc03]].",
+                         key + "GROUPS")
+    if values.get("MODEL.RESUME"):
+        report.error("A cross-validation cannot resume from one checkpoint; resume a fold from its job in Jobs.",
+                     "MODEL.RESUME")
+    excluded = values.get("TRAIN.DATA.VHRM.EXCLUDE_PARTICIPANTS") or []
+    if excluded:
+        report.warn("Cross-validation: excluded participants of the training data are left out of every fold "
+                    f"({', '.join(excluded)}). Clear the list to test them too.",
+                    "TRAIN.DATA.VHRM.EXCLUDE_PARTICIPANTS")
+    report.note("Cross-validation: the participants of every fold come from the training data selection "
+                "(experiments, participants, labels, views). Validation and test participant lists are replaced "
+                "per fold; use 'Preview folds' to see them.", key + "ENABLED")
+    locations = cross_validation_locations(values, backend, env)
+    report.derived["cross_validation"] = locations
+    existing = existing_cv_folds(locations["root_host"])
+    if existing:
+        report.warn(f"The output folder already contains fold results ({', '.join(existing[:5])}"
+                    f"{'…' if len(existing) > 5 else ''}); you can write to a new sub-folder at launch.", "LOG.PATH")
 
 
 def _check_field(field, value, report):
@@ -313,6 +403,7 @@ def _check_split(values, prefix, backend, report, env, active_fields):
         if prefix == "TEST.DATA" and values[prefix + ".VHRM.PPG_SOURCE"] == "pos_pseudo":
             report.warn(f"{section}: label-based metrics will compare against POS, not a pulse sensor; "
                         "metrics against the measured HR are unaffected.", prefix + ".VHRM.PPG_SOURCE")
+        _check_vhrm_duration_caps(values, prefix, section, report)
     if prefix == "UNSUPERVISED.DATA" and values[p + ".USE_PSUEDO_PPG_LABEL"]:
         report.error("Pseudo PPG labels are not supported for unsupervised methods.", p + ".USE_PSUEDO_PPG_LABEL")
 
@@ -343,9 +434,21 @@ def _check_split(values, prefix, backend, report, env, active_fields):
             pattern, noun = RAW_LAYOUTS[dataset]
             count = sum(1 for _ in raw_host.glob(pattern))
             report.paths[prefix + ".DATA_PATH"]["found"] = f"{count} {noun}"
-            if count == 0:
+            elsewhere = dataset == "vHRM" and values.get(prefix + ".VHRM.EXPERIMENT_PATHS")
+            if count == 0 and not elsewhere:
                 report.error(f"{section}: no {noun} matching '{pattern}' in {raw_host}. "
                              f"Is this the {dataset} root?", prefix + ".DATA_PATH")
+        if dataset == "vHRM":
+            for item in values.get(prefix + ".VHRM.EXPERIMENT_PATHS") or []:
+                name, separator, folder = str(item).partition("=")
+                if not separator or not name.strip() or not folder.strip():
+                    report.error(f"{section}: experiment folders must look like experiment=folder: {item!r}",
+                                 prefix + ".VHRM.EXPERIMENT_PATHS")
+                    continue
+                host, problem = paths.config_host_path(folder.strip(), backend, env)
+                if problem or host is None or not host.is_dir():
+                    report.error(f"{section}: folder of experiment {name.strip()} not found: {host or folder.strip()}",
+                                 prefix + ".VHRM.EXPERIMENT_PATHS")
         if locations["file_list_exists"]:
             if dataset == "vHRM" and values.get(prefix + ".VHRM.INCREMENTAL_PREPROCESS"):
                 report.note(f"{section}: existing vHRM cache found; only new or changed recordings are processed.",
@@ -458,6 +561,25 @@ def _check_model(values, report, splits):
                 break
 
 
+def _check_vhrm_duration_caps(values, prefix, section, report):
+    key = prefix + ".VHRM.MAX_DURATION_SEC_BY_LABEL"
+    for item in values.get(key) or []:
+        label, separator, seconds = str(item).partition("=")
+        try:
+            valid = bool(separator and label.strip()) and math.isfinite(float(seconds)) and float(seconds) >= 0
+        except ValueError:
+            valid = False
+        if not valid:
+            report.error(f"{section}: max duration entries must look like label=seconds with seconds >= 0 "
+                         f"(e.g. resting=120): {item!r}.", key)
+    every, by_label = _vhrm_duration_caps(values, prefix)
+    if every or by_label:
+        limits = ([f"every video={every:g}"] if every else []) + by_label
+        report.note(f"{section}: only the first seconds of each recording are preprocessed ({', '.join(limits)} s). "
+                    "Recordings longer than their limit are decoded again once; the others keep their cached clips.",
+                    prefix + ".VHRM.MAX_DURATION_SEC")
+
+
 def _check_split_consistency(values, report, splits):
     if values["TOOLBOX_MODE"] != "train_and_test":
         return
@@ -477,12 +599,29 @@ def _check_split_consistency(values, report, splits):
                 (report.error if severity == "error" else report.warn)(message, f"{other}.{suffix}")
         same_source = values[f"{train}.DATASET"] == values[f"{other}.DATASET"] and \
             values[f"{train}.DATA_PATH"] == values[f"{other}.DATA_PATH"]
-        if same_source and values[f"{train}.DATASET"] == "vHRM":
+        if same_source and values[f"{train}.DATASET"] == "vHRM" and \
+                _vhrm_duration_caps(values, train) != _vhrm_duration_caps(values, other):
+            report.warn(f"{section}: max duration differs from training data. The splits share one cache, so a "
+                        "recording used with both settings (another cross-validation fold, the report) is decoded "
+                        "again each time it changes split.", f"{other}.VHRM.MAX_DURATION_SEC")
+        if same_source and values[f"{train}.DATASET"] == "vHRM" and schema.cross_validation_enabled(values):
+            pass  # Each fold sets disjoint participant lists.
+        elif same_source and values[f"{train}.DATASET"] == "vHRM":
             # vHRM splits are chosen by participant lists rather than BEGIN/END fractions.
             shared = _vhrm_shared_participants(values, train, other)
             if shared:
                 report.warn(f"{section} shares participants with the training data (data leakage): "
                             f"{', '.join(sorted(shared))}.", f"{other}.VHRM.PARTICIPANTS")
+        elif same_source and (values.get(f"{train}.SUBJECTS") or values.get(f"{other}.SUBJECTS")):
+            # Splits chosen by DATA.SUBJECTS lists (BEGIN/END then apply within each list).
+            first, second = ({subject_key(item) for item in values.get(f"{split}.SUBJECTS") or [] if str(item).strip()}
+                             for split in (train, other))
+            if not (first and second):
+                report.warn(f"{section}: only one of this split and the training data lists its subjects; the "
+                            f"other uses BEGIN/END and may overlap it.", f"{other}.SUBJECTS")
+            elif first & second:
+                report.warn(f"{section} shares subjects with the training data (data leakage): "
+                            f"{', '.join(sorted(first & second, key=lambda key: (len(key), key)))}.", f"{other}.SUBJECTS")
         elif same_source:
             if max(values[f"{train}.BEGIN"], values[f"{other}.BEGIN"]) < min(values[f"{train}.END"],
                                                                            values[f"{other}.END"]):
@@ -491,11 +630,31 @@ def _check_split_consistency(values, report, splits):
     if values.get("TEST.DATA.DATASET") == "vHRM":
         report.note("vHRM: test HR is derived from the training label transform "
                     f"({values['TRAIN.DATA.PREPROCESS.LABEL_TYPE']}) and scored against the measured HR.")
-        if "VALID.DATA" in splits and values.get("VALID.DATA.DATASET") == "vHRM":
+        if "VALID.DATA" in splits and values.get("VALID.DATA.DATASET") == "vHRM" and \
+                not schema.cross_validation_enabled(values):
             shared = _vhrm_shared_participants(values, "VALID.DATA", "TEST.DATA")
             if shared:
                 report.warn(f"Test data shares participants with the validation data: {', '.join(sorted(shared))}.",
                             "TEST.DATA.VHRM.PARTICIPANTS")
+
+
+def _check_report(values, backend, report):
+    key = "REPORT.ENABLED"
+    if values.get("MODEL.NAME") == "BigSmall":
+        report.error("The analysis report does not support BigSmall.", key)
+    if not values.get("TEST.DATA.PREPROCESS.DO_CHUNK", True):
+        report.error("The analysis report needs fixed-length clips (test data: chunking on).", key)
+    report.note("After the test, the tested checkpoint is analysed on every participant of the test data's "
+                "experiments and views" + (" (labels: " + ", ".join(values["REPORT.LABELS"]) + ")"
+                                           if values.get("REPORT.LABELS") else ", every segment label")
+                + ". Recordings missing from the cache are preprocessed first. A failed report does not fail the run.",
+                key)
+    if values.get("TOOLBOX_MODE") == "only_test":
+        report.note("An evaluation config does not say which participants trained the checkpoint, so the report "
+                    "shows no splits. For a vHRM training, use Results → Checkpoints → Report… on its run instead.", key)
+    if backend == "docker":
+        report.note("Rebuild the toolbox Docker image before the first run with a report (new code and REPORT keys).",
+                    key)
 
 
 def validate(values, extras=None, backend="docker", type_errors=None, platform=None):
@@ -553,6 +712,11 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
                 report.error("Improvement tolerance must be finite.", "TRAIN.EARLY_STOPPING.TOLERANCE")
             report.note("Epochs is an upper limit. Early stopping preserves the lowest-loss checkpoint "
                         "and its patience state across pause/resume.", "TRAIN.EARLY_STOPPING.ENABLED")
+        if values.get("MODEL.INIT_WEIGHTS") and not values.get("MODEL.RESUME"):
+            host = _check_path(schema.FIELD_MAP["MODEL.INIT_WEIGHTS"], values["MODEL.INIT_WEIGHTS"], backend, report,
+                               env)
+            if host is not None and not host.is_file():
+                report.error(f"Initial weights not found: {host}", "MODEL.INIT_WEIGHTS")
         if values.get("MODEL.RESUME"):
             host = _check_path(schema.FIELD_MAP["MODEL.RESUME"], values["MODEL.RESUME"], backend, report, env)
             if host is not None and not host.is_file():
@@ -572,6 +736,8 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
         if host is not None and not host.is_file():
             report.error(f"Checkpoint not found: {host}", "INFERENCE.MODEL_PATH")
         report.note("Make sure preprocessing (size, transforms, clip length) matches how the checkpoint was trained.")
+    if values.get("REPORT.ENABLED") and schema.is_active(schema.FIELD_MAP["REPORT.ENABLED"], values):
+        _check_report(values, backend, report)
     if mode == "unsupervised_method":
         types = values["UNSUPERVISED.DATA.PREPROCESS.DATA_TYPE"]
         if not types:
@@ -598,10 +764,9 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
 
     log_field = schema.FIELD_MAP["LOG.PATH"]
     _check_path(log_field, values.get("LOG.PATH"), backend, report, env)
-    outputs = output_locations(values)
-    for key, value in list(outputs.items()):
-        host, _ = paths.config_host_path(value, backend, env)
-        outputs[key + "_host"] = str(host) if host else None
+    if schema.cross_validation_enabled(values):
+        _check_cross_validation(values, backend, report, env)
+    outputs = output_paths(values, backend, env)
     report.derived["outputs"] = outputs
     existing = [outputs.get(k + "_host") for k in ("model_dir", "test_outputs", "outputs")]
     existing = [p for p in existing if p and Path(p).is_dir() and any(Path(p).iterdir())]

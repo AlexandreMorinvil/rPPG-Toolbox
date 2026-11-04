@@ -187,13 +187,27 @@ main { flex: 1; min-height: 0; }
 .item.active { background: var(--accent-soft) !important; border-color: #c9d6fb; }
 .item-title { font-weight: 600; display: flex; align-items: center; gap: 6px; word-break: break-all; }
 .item-sub { font-size: 12px; color: var(--muted); word-break: break-all; }
+.item-desc { font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.description { white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
 .item-list.compact .item { padding: 5px 8px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; flex: none; }
 .job.running .dot, .job.starting .dot { background: var(--accent); animation: pulse 1.2s infinite; }
 .job.queued .dot { background: #f5a524; }
 .job.succeeded .dot { background: var(--ok); }
 .job.failed .dot, .job.interrupted .dot { background: var(--err); }
+.job.paused .dot { background: var(--warn); }
 @keyframes pulse { 50% { opacity: .35; } }
+/* Cross-validation: a group row with its fold jobs nested below. */
+.job-group { display: flex; flex-direction: column; gap: 2px; }
+.item.group { border-color: var(--line); }
+.group-toggle { width: 14px; color: var(--muted); cursor: pointer; flex: none; }
+.group-folds { display: flex; flex-direction: column; gap: 2px; margin-left: 14px; padding-left: 8px; border-left: 1px solid var(--line); }
+.item.fold { padding: 5px 8px; }
+.item.fold .item-title { font-weight: 500; }
+.fold-table td { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-folds { margin: 8px 0; }
+.check-folds > summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
+.msg.pre { white-space: pre-wrap; }
 .progress { height: 5px; background: var(--grid); border-radius: 3px; overflow: hidden; margin-top: 6px; position: relative; }
 .progress > div { height: 100%; background: var(--accent); transition: width .5s; }
 .progress.big { height: 18px; margin: 0 0 10px; }
@@ -254,6 +268,8 @@ main { flex: 1; min-height: 0; }
 .gallery figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .gallery img { width: 100%; display: block; }
 .gallery figcaption { font-size: 12px; color: var(--muted); margin-top: 4px; word-break: break-all; }
+.gallery.large { grid-template-columns: repeat(auto-fill, minmax(min(560px, 100%), 1fr)); }
+.grid-table tr.active th, .grid-table tr.active td { background: var(--accent-soft); }
 
 /* ---------- preprocessed viewer ---------- */
 .viewer-grid { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; }
@@ -305,6 +321,7 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); padding: 10px; bo
 #preflightBody .row { margin: 8px 0 0 26px; }
 #preflightBody .row input { flex: 1; }
 .job-name { display: grid; gap: 4px; margin-top: 12px; }
+.job-name textarea, #jdDescription textarea { width: 100%; resize: vertical; margin-top: 6px; }
 
 .toast { position: fixed; bottom: 18px; right: 18px; max-width: 520px; padding: 10px 14px; border-radius: 8px; background: #111827; color: #fff; z-index: 60; box-shadow: 0 8px 24px rgba(0, 0, 0, .2); }
 .toast.ok { background: var(--ok); }

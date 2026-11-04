@@ -13,7 +13,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import configs, jobs, paths, preflight, preprocessed, probes, results, schema, settings, validation
+from . import (configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results, schema, settings,
+               validation)
 
 MAX_BODY = 4 * 1024 * 1024
 
@@ -166,13 +167,16 @@ class Handler(BaseHTTPRequestHandler):
         if not path.is_file():
             raise ApiError("File not found", 404)
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix.lower() == ".md":
+            content_type = "text/plain"  # analysis reports: REPORT.md, METHOD.md
         headers = {}
         if download or content_type not in ("image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf",
                                              "text/plain", "text/csv", "application/json"):
             headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
         if path.suffix.lower() == ".svg":
             headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
-        self._send(path.read_bytes(), content_type, headers=headers)
+        charset = "; charset=utf-8" if content_type.startswith("text/") else ""
+        self._send(path.read_bytes(), content_type + charset, headers=headers)
 
     def _dispatch(self, method):
         parsed = urllib.parse.urlparse(self.path)
@@ -278,8 +282,40 @@ class Handler(BaseHTTPRequestHandler):
                                           body.get("answers") or {}, body.get("secrets") or {}, manager)
             result.pop("effective_values", None)
             self._json(result)
+        elif method == "POST" and route == "/api/cv/plan":
+            values, errors, _ = configs.normalize(body.get("values") or {})
+            if errors:
+                raise ApiError("Fix invalid fields first.")
+            self._json({"plan": crossval.plan(values, body.get("extras") or {}, body.get("backend", "docker"),
+                                              refresh=bool(body.get("refresh")))})
+        elif method == "POST" and route == "/api/cv/preflight":
+            values, errors, _ = configs.normalize(body.get("values") or {})
+            if errors:
+                raise ApiError("Fix invalid fields first.")
+            result = crossval.run_checks(values, body.get("extras") or {}, body.get("backend", "docker"),
+                                         body.get("answers") or {}, body.get("secrets") or {}, manager)
+            for key in ("effective_values", "fold_runs"):
+                result.pop(key, None)
+            self._json(result)
+        elif method == "POST" and route == "/api/cv/groups":
+            self._json({"group": manager.create_group(body)})
+        elif route.startswith("/api/cv/groups/"):
+            parts = route.split("/")
+            group_id = parts[4] if len(parts) > 4 else ""
+            action = parts[5] if len(parts) > 5 else ""
+            if method == "GET" and not action:
+                self._json({"group": manager.group(group_id)})
+            elif method == "POST" and action == "cancel":
+                self._json({"group": manager.cancel_group(group_id)})
+            elif method == "POST" and action == "merge":
+                self._json({"group": manager.request_merge(group_id)})
+            elif method == "POST" and action == "remove":
+                manager.remove_group(group_id)
+                self._json({"ok": True})
+            else:
+                raise ApiError("Not found", 404)
         elif method == "GET" and route == "/api/jobs":
-            self._json({"jobs": manager.list(), "gpus": probes.gpus()})
+            self._json({"jobs": manager.list(), "groups": manager.list_groups(), "gpus": probes.gpus()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
         elif route.startswith("/api/jobs/"):
@@ -297,6 +333,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"job": manager.cancel(job_id)})
             elif method == "POST" and action == "pause":
                 self._json({"job": manager.pause(job_id)})
+            elif method == "POST" and action == "description":
+                self._json({"job": manager.set_description(job_id, body.get("description", ""))})
             elif method == "POST" and action == "resume":
                 self._json(manager.resume_config(job_id))
             elif method == "POST" and action == "remove":
@@ -371,6 +409,12 @@ class Handler(BaseHTTPRequestHandler):
                                        *self._analysis_options(q), track=q("track") == "1"))
         elif method == "GET" and route == "/api/results/history":
             self._json(results.history(q("path", ""), q("id", ""), *self._analysis_options(q)))
+        elif method == "GET" and route == "/api/results/report":
+            self._json(reports.detail(q("path", "")))
+        elif method == "POST" and route == "/api/reports/preview":
+            self._json(reports.preview(body))
+        elif method == "POST" and route == "/api/reports":
+            self._json({"job": manager.create_report(body)})
         elif method == "GET" and route == "/api/cache":
             self._json({"sets": preprocessed.scan(), "roots": [str(r) for r in settings.cache_roots()]})
         elif method == "GET" and route == "/api/cache/samples":

@@ -8,7 +8,8 @@ Expected layout (produced by the vHRM video research tool):
             meta.json, cam<N>_Camera_<View>.mp4, zephyr_1.csv, synthetic_ppg/*.csv
 
 One recording is one (segment, camera view). Videos are resampled to DATA.FS and cached
-as clips shared by every split. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
+as clips shared by every split; VHRM.MAX_DURATION_SEC(_BY_LABEL) keeps only the first seconds
+of each recording and ignores the rest of the video. In the UV input mode (DATA.UV.ENABLED) DATA_PATH is the same tree
 converted by vHRM Studio: each camera is read from `cam<N>_Camera_<View>_skin_uv.h5` (the compact
 body UV map, pooled to RESIZE and resampled to DATA.FS) instead of the video. Labels are a PPG
 waveform sampled on the absolute time of each frame, or a POS pseudo-PPG computed from the cached
@@ -39,11 +40,14 @@ from tqdm import tqdm
 
 from dataset.data_loader.BaseLoader import BaseLoader
 from dataset.data_loader import uv_source
+from dataset.data_loader.face_detector import person_detector
 from unsupervised_methods.utils import masked_spatial_mean
 
 CACHE_VERSION = 2
 KNOWN_VIEWS = ("front", "back-left", "back-right")
-CROP_MODES = ("face", "face_or_full", "full", "roi")
+CROP_MODES = ("face", "face_or_full", "person_face", "full", "roi")
+# Modes that run the face detector. person_face searches the face inside the largest person of the frame only.
+FACE_CROP_MODES = ("face", "face_or_full", "person_face")
 PPG_SOURCES = ("synthetic", "rpeak_sine", "rpeak_gaussian", "pos_pseudo")
 HR_SOURCES = ("zephyr", "polar", "synthetic_hr")
 GT_COLUMNS = ("heart_rate_bpm", "HRV", "respiration_rate_bpm", "ppg_valid")
@@ -112,6 +116,38 @@ def parse_crop_modes(items):
     return modes
 
 
+def parse_duration_caps(items, label_aliases=None):
+    """Parse ['resting=120', 'curl=0'] into {label: seconds} (labels after LABEL_ALIASES; 0 = no cap)."""
+    label_aliases = label_aliases or {}
+    caps = {}
+    for item in items:
+        if not str(item).strip():
+            continue
+        label, separator, seconds = str(item).partition("=")
+        try:
+            value = float(seconds) if separator and label.strip() else math.nan
+        except ValueError:
+            value = math.nan
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"vHRM MAX_DURATION_SEC_BY_LABEL entries must look like 'label=seconds' "
+                             f"with seconds >= 0: {item!r}")
+        caps[label_aliases.get(slug(label), slug(label))] = value
+    return caps
+
+
+def cached_frames_fit(entry, max_frames):
+    """Whether a cached decode equals a decode of the first max_frames frames (None = the whole video).
+
+    A cap only changes the recordings it truncates: a decode that reached the end of its video
+    is reused under any cap it fits in, so a new cap decodes only the longer videos again."""
+    cached_cap = entry.get("max_frames")
+    if cached_cap == max_frames:
+        return True
+    frame_count = entry.get("frame_count", 0)
+    complete = cached_cap is None or frame_count < cached_cap
+    return complete and (max_frames is None or frame_count <= max_frames)
+
+
 def _parse_utc(value):
     if value in (None, ""):
         return None
@@ -138,20 +174,44 @@ def source_suffix(data):
     return (uv.H5_SUFFIX or uv_source.H5_SUFFIX) if uv is not None and uv.ENABLED else None
 
 
-def discover_segments(data_path, experiments=(), suffix=None):
-    """List every labelled segment under DATA_PATH, without filtering views or labels.
+def parse_experiment_paths(items):
+    """Parse ['RM=F:/Datasets_vhrm/RM'] into {experiment: (name, folder)}: experiments stored outside DATA_PATH."""
+    paths = {}
+    for item in items:
+        if not str(item).strip():
+            continue
+        name, separator, folder = str(item).partition("=")
+        if not separator or not name.strip() or not folder.strip():
+            raise ValueError(f"vHRM EXPERIMENT_PATHS entries must look like 'experiment=folder': {item!r}")
+        paths[slug(name)] = (name.strip(), folder.strip())
+    return paths
+
+
+def experiment_folders(data_path, experiment_paths=()):
+    """{experiment: (folder name, folder)}: the sub-folders of DATA_PATH, replaced or completed by EXPERIMENT_PATHS."""
+    folders = {}
+    if data_path or not experiment_paths:
+        if not os.path.isdir(data_path):
+            raise ValueError(f"vHRM data path does not exist: {data_path}")
+        for entry in os.scandir(data_path):
+            if entry.is_dir():
+                folders[slug(entry.name)] = (entry.name, entry.path)
+    folders.update(parse_experiment_paths(experiment_paths))
+    return folders
+
+
+def discover_segments(data_path, experiments=(), suffix=None, experiment_paths=()):
+    """List every labelled segment under DATA_PATH (and EXPERIMENT_PATHS), without filtering views or labels.
 
     suffix: read each camera from `<video stem><suffix>` (UV mode) instead of the video file."""
-    if not os.path.isdir(data_path):
-        raise ValueError(f"vHRM data path does not exist: {data_path}")
     experiments = {slug(experiment) for experiment in experiments}
     segments = []
-    for experiment_entry in sorted(os.scandir(data_path), key=lambda entry: entry.name):
-        if not experiment_entry.is_dir():
+    for experiment, (experiment_name, experiment_path) in sorted(experiment_folders(data_path, experiment_paths).items()):
+        if experiments and experiment not in experiments:
             continue
-        if experiments and slug(experiment_entry.name) not in experiments:
-            continue
-        for participant_entry in sorted(os.scandir(experiment_entry.path), key=lambda entry: entry.name):
+        if not os.path.isdir(experiment_path):
+            raise ValueError(f"vHRM folder of experiment {experiment_name} does not exist: {experiment_path}")
+        for participant_entry in sorted(os.scandir(experiment_path), key=lambda entry: entry.name):
             segments_path = os.path.join(participant_entry.path, "labelled_segments")
             if not participant_entry.is_dir() or not os.path.isdir(segments_path):
                 continue
@@ -182,8 +242,8 @@ def discover_segments(data_path, experiments=(), suffix=None):
                         "dimensions": camera.get("dimensions"),
                     })
                 segments.append({
-                    "experiment": slug(experiment_entry.name),
-                    "experiment_folder": experiment_entry.name,
+                    "experiment": experiment,
+                    "experiment_folder": experiment_name,
                     "participant": slug(participant_entry.name),
                     "participant_folder": participant_entry.name,
                     "participant_dir": participant_entry.path,
@@ -255,6 +315,10 @@ def select_recordings(segments, vhrm, warn=print):
     excluded_labels = {canonical_label(item) for item in vhrm.EXCLUDE_LABELS if str(item).strip()}
     views = {canonical_view(item) for item in vhrm.VIEWS if str(item).strip()}
     crop_modes = parse_crop_modes(vhrm.CROP_MODE_BY_VIEW)
+    default_cap = float(vhrm.MAX_DURATION_SEC or 0)
+    if not math.isfinite(default_cap) or default_cap < 0:
+        raise ValueError(f"vHRM MAX_DURATION_SEC must be >= 0 (0 = the whole video): {vhrm.MAX_DURATION_SEC!r}")
+    duration_caps = parse_duration_caps(vhrm.MAX_DURATION_SEC_BY_LABEL, label_aliases)
 
     recordings = []
     for segment in segments:
@@ -292,6 +356,8 @@ def select_recordings(segments, vhrm, warn=print):
                 "path": camera["path"],
                 "camera_fps": camera["fps"],
                 "crop_mode": crop_modes.get(view, crop_modes.get("*", ("face", None))),
+                # Seconds kept from the start of the video; 0 = the whole video.
+                "max_duration_sec": duration_caps.get(label, default_cap),
             })
     return recordings
 
@@ -560,15 +626,27 @@ class VHRMLoader(BaseLoader):
             raise ValueError("VHRM.CACHE_DTYPE must be 'float16' or 'float32'")
         self.cache_dtype = np.dtype(self.cache_dtype_name)
         parse_crop_modes(vhrm.CROP_MODE_BY_VIEW)  # fail early on a malformed entry
+        parse_duration_caps(vhrm.MAX_DURATION_SEC_BY_LABEL)
+        parse_experiment_paths(vhrm.EXPERIMENT_PATHS)
+        if not 0.0 <= float(vhrm.MIN_FACE_FRACTION) <= 1.0:
+            raise ValueError("VHRM.MIN_FACE_FRACTION must be within [0, 1]")
+        if not 0.0 < float(vhrm.FACE_SEARCH_WIDTH) <= 1.0:
+            raise ValueError("VHRM.FACE_SEARCH_WIDTH must be within (0, 1]")
         self.gt_files = []
         self._video_codec_cache = {}
         self._nvdec_decoders = None
+        self._person_detector = None
+        crop_modes = {mode for mode, _ in parse_crop_modes(vhrm.CROP_MODE_BY_VIEW).values()}
+        if ("person_face" in crop_modes and config_data.DO_PREPROCESS and config_data.PREPROCESS.CROP_FACE.DO_CROP_FACE
+                and not config_data.UV.ENABLED):
+            person_detector.download_weights()  # once here, not in every preprocessing worker
         super().__init__(name, data_path, config_data, device)
 
     # ------------------------------------------------------------------ selection
 
     def get_raw_data(self, data_path):
-        segments = discover_segments(data_path, self.vhrm.EXPERIMENTS, source_suffix(self.config_data))
+        segments = discover_segments(data_path, self.vhrm.EXPERIMENTS, source_suffix(self.config_data),
+                                     self.vhrm.EXPERIMENT_PATHS)
         recordings = select_recordings(segments, self.vhrm)
         if not recordings:
             raise ValueError(f"{self.dataset_name}: no vHRM recordings match the VHRM selection "
@@ -595,6 +673,13 @@ class VHRMLoader(BaseLoader):
     def _rgb_trace_path(self, recording):
         """Mean RGB of each decoded frame, the input of the pos_pseudo labels."""
         return os.path.join(self._recording_dir(recording), f"{recording['index']}_rgb.npy")
+
+    def _face_trace_path(self, recording):
+        """Whether the face detector found a face for each decoded frame (face crop modes; MIN_FACE_FRACTION)."""
+        return os.path.join(self._recording_dir(recording), f"{recording['index']}_face.npy")
+
+    def _has_face_trace(self, recording, config_preprocess):
+        return not self.uv_enabled and self._crop_mode(recording, config_preprocess)[0] in FACE_CROP_MODES
 
     def _label_dir(self, recording, label_key):
         return os.path.join(self._recording_dir(recording), f"labels_{label_key}")
@@ -630,7 +715,7 @@ class VHRMLoader(BaseLoader):
         if self.uv_enabled:
             settings.update({"input": "uv", "uv": uv_source.uv_settings(self.config_data.UV),
                              "crop_mode": None, "roi": None})
-        elif mode in ("face", "face_or_full"):
+        elif mode in FACE_CROP_MODES:
             settings.update({
                 "crop_backend": crop.BACKEND,
                 "large_box": crop.USE_LARGE_FACE_BOX,
@@ -638,7 +723,19 @@ class VHRMLoader(BaseLoader):
                 "dynamic_detection": detection.DO_DYNAMIC_DETECTION,
                 "detection_frequency": detection.DYNAMIC_DETECTION_FREQUENCY,
             })
+            if mode == "person_face":
+                settings["person_detector"] = [person_detector.MODEL_NAME, person_detector.MIN_SCORE]
+            elif float(self.vhrm.FACE_SEARCH_WIDTH) != 1.0:  # absent for the whole frame: existing caches stay valid
+                settings["face_search_width"] = float(self.vhrm.FACE_SEARCH_WIDTH)
         return _fingerprint(settings)
+
+    def _max_frames(self, recording):
+        """Frames kept from the start of the recording (MAX_DURATION_SEC*), or None for the whole video.
+
+        Not part of the video fingerprint: the manifest records the cap of each decode, and
+        cached_frames_fit decides whether it still holds, so a cap re-decodes only the videos it cuts."""
+        seconds = recording.get("max_duration_sec") or 0
+        return max(1, int(round(seconds * self.config_data.FS))) if seconds > 0 else None
 
     def _sync_delay(self, recording):
         return float(self.vhrm.PPG_DELAY_SEC) + lookup_lag(self.lag_table, recording)
@@ -711,6 +808,7 @@ class VHRMLoader(BaseLoader):
                 entries[recording["index"]] = {
                     "source": _file_signature(recording["path"]),
                     "video_fingerprint": self._video_fingerprint(recording, config_preprocess),
+                    "max_frames": self._max_frames(recording),
                     "frame_count": result["frame_count"],
                     "chunk_count": result["chunk_count"],
                     "crop": result["crop"],
@@ -720,7 +818,13 @@ class VHRMLoader(BaseLoader):
 
         rows = []
         dropped_chunks = 0
+        faceless_chunks = 0
         relabelled = 0
+        # Training and validation only learn from clips with a face; test sets keep every clip and the
+        # evaluation scores the windows without a face as "no reading".
+        min_face = float(self.vhrm.MIN_FACE_FRACTION or 0.0)
+        drop_faceless = min_face > 0 and self.dataset_name in ("train", "valid")
+        chunk_length = config_preprocess.CHUNK_LENGTH if config_preprocess.DO_CHUNK else None
         for recording in recordings:
             entry = entries.get(recording["index"])
             if entry is None:
@@ -732,15 +836,24 @@ class VHRMLoader(BaseLoader):
                 variant = self._write_labels(recording, entry, config_preprocess, label_key)
                 entry["labels"][label_key] = variant
                 relabelled += 1
+            face_path = self._face_trace_path(recording)
+            has_face_trace = self._has_face_trace(recording, config_preprocess) and os.path.isfile(face_path)
+            face_trace = np.load(face_path) if has_face_trace and drop_faceless else None
             for chunk in range(entry["chunk_count"]):
                 if self.require_ppg and not variant["ppg_valid"][chunk]:
                     dropped_chunks += 1
                     continue
+                if face_trace is not None:
+                    length = chunk_length or len(face_trace)
+                    if np.mean(face_trace[chunk * length:(chunk + 1) * length]) < min_face:
+                        faceless_chunks += 1
+                        continue
                 label_path, gt_path = self._label_paths(recording, label_key, chunk)
                 rows.append({
                     "input_files": self._input_path(recording, chunk),
                     "label_files": label_path,
                     "gt_files": gt_path,
+                    "face_files": face_path if has_face_trace else "",
                     "recording_id": recording["index"],
                     "chunk": chunk,
                 })
@@ -749,9 +862,11 @@ class VHRMLoader(BaseLoader):
 
         if failed:
             print(f"WARNING: {len(failed)} vHRM recordings failed to preprocess and are excluded: {failed}")
+        faceless = (f", {faceless_chunks} clips dropped (face in < {min_face:g} of the frames)"
+                    if drop_faceless else "")
         print(f"vHRM {self.dataset_name}: {len(recordings) - len(failed)} recordings, "
               f"{len(pending) - len(failed)} decoded, {relabelled} (re)labelled, {len(rows)} clips kept, "
-              f"{dropped_chunks} clips dropped (no valid PPG).", end="\n\n")
+              f"{dropped_chunks} clips dropped (no valid PPG){faceless}.", end="\n\n")
         if not rows:
             raise ValueError(f"{self.dataset_name}: no vHRM clips available for this split.")
         self._write_file_list(rows)
@@ -766,7 +881,10 @@ class VHRMLoader(BaseLoader):
         recording_id = recording["index"]
         started_at = time.perf_counter()
         progress_position = 1 + index % max(1, config_preprocess.NUM_WORKERS)
+        max_frames = self._max_frames(recording)
         expected_frames = round(recording["duration_sec"] * self.config_data.FS)
+        if max_frames is not None:
+            expected_frames = min(expected_frames or max_frames, max_frames)
         decode_progress = tqdm(
             total=expected_frames or None,
             desc=f"{recording_id} | decode",
@@ -776,22 +894,28 @@ class VHRMLoader(BaseLoader):
             dynamic_ncols=True,
             disable=not self.show_video_progress,
         )
+        kept = f", first {recording['max_duration_sec']:g}s kept" if max_frames is not None else ""
         self._progress_message(
-            f"[{recording_id}] Starting: {recording['duration_sec']:.1f}s, "
+            f"[{recording_id}] Starting: {recording['duration_sec']:.1f}s{kept}, "
             f"target {self.config_data.FS} FPS ({expected_frames} frames).")
         try:
             crop_mode = self._crop_mode(recording, config_preprocess)
             crop_stats = {"mode": crop_mode[0], "attempts": 0, "failures": 0}
+            face_trace = []
             try:
                 if self.uv_enabled:
-                    frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats)
+                    frames = self._read_uv(recording, config_preprocess, decode_progress, crop_stats, max_frames)
                 else:
                     frames = self.read_video(recording["path"], self.config_data.FS, config_preprocess,
-                                             decode_progress, crop_mode, crop_stats)
+                                             decode_progress, crop_mode, crop_stats, label=recording_id,
+                                             max_frames=max_frames, face_trace=face_trace)
             finally:
                 decode_progress.close()
             decoded_seconds = len(frames) / self.config_data.FS
-            if recording["duration_sec"] and abs(decoded_seconds - recording["duration_sec"]) > 1.0:
+            expected_seconds = recording["duration_sec"]
+            if expected_seconds and max_frames is not None:
+                expected_seconds = min(expected_seconds, max_frames / self.config_data.FS)
+            if expected_seconds and abs(decoded_seconds - expected_seconds) > 1.0:
                 print(f"WARNING: [{recording_id}] decoded {decoded_seconds:.2f}s but meta.json says "
                       f"{recording['duration_sec']:.2f}s; labels assume the video starts at the segment start.")
             if crop_stats["attempts"] and crop_stats["failures"] > crop_stats["attempts"] / 2:
@@ -799,6 +923,10 @@ class VHRMLoader(BaseLoader):
                       f"detections (crop mode {crop_mode[0]}).")
             chunk_count = self.transform_and_save(frames, config_preprocess, recording, progress_position)
             np.save(self._rgb_trace_path(recording), self._rgb_trace(frames))
+            if self._has_face_trace(recording, config_preprocess):
+                np.save(self._face_trace_path(recording), np.asarray(face_trace[:len(frames)], dtype=bool))
+            elif os.path.isfile(self._face_trace_path(recording)):
+                os.remove(self._face_trace_path(recording))
             file_list_dict[index] = {
                 "frame_count": int(len(frames)),
                 "chunk_count": int(chunk_count),
@@ -815,11 +943,11 @@ class VHRMLoader(BaseLoader):
             return masked_spatial_mean(frames).reshape(len(frames), 3)
         return np.mean(frames, axis=(1, 2), dtype=np.float64)
 
-    def _read_uv(self, recording, config_preprocess, progress, crop_stats):
+    def _read_uv(self, recording, config_preprocess, progress, crop_stats, max_frames=None):
         """Body UV frames of the recording's HDF5 file, resampled to DATA.FS (same timing as the video path)."""
         frames, info = uv_source.load_uv_video(
             recording["path"], self.config_data.UV, config_preprocess.RESIZE.W,
-            target_fps=self.config_data.FS, progress=progress)
+            target_fps=self.config_data.FS, progress=progress, max_frames=max_frames)
         crop_stats.update({"mode": "uv", "mean_valid_fraction": round(info["mean_valid_fraction"], 4),
                            "empty_frames": info["empty_frames"], "bad_rows": info["bad_rows"]})
         if info["mean_valid_fraction"] < 0.01 or info["empty_frames"] > len(frames) / 2:
@@ -837,8 +965,14 @@ class VHRMLoader(BaseLoader):
             return False
         if entry.get("source") != _file_signature(recording["path"]):
             return False
+        if not cached_frames_fit(entry, self._max_frames(recording)):
+            return False
         # Caches decoded before the RGB trace was saved are decoded again for pos_pseudo.
         if self.vhrm.PPG_SOURCE == "pos_pseudo" and not os.path.isfile(self._rgb_trace_path(recording)):
+            return False
+        # Likewise for the face trace that MIN_FACE_FRACTION needs.
+        if (self.vhrm.MIN_FACE_FRACTION and self._has_face_trace(recording, config_preprocess)
+                and not os.path.isfile(self._face_trace_path(recording))):
             return False
         chunk_count = entry.get("chunk_count", 0)
         paths = [self._input_path(recording, chunk) for chunk in range(chunk_count)]
@@ -969,11 +1103,31 @@ class VHRMLoader(BaseLoader):
                 return [int(roi[0] * width), int(roi[1] * height), int(roi[2] * width), int(roi[3] * height)]
             return [int(value) for value in roi]
         stats["attempts"] += 1
-        box = self._detect_face(frame, config_preprocess.CROP_FACE)
+        if mode == "person_face":
+            # Only the face of the largest person: other people and faces elsewhere in the frame are ignored.
+            person = self._largest_person(frame)
+            left, top, right, bottom = person or (0, 0, 0, 0)
+        else:
+            # Only the central band of the frame is searched (FACE_SEARCH_WIDTH): a face outside it is not found.
+            left = int(round(frame.shape[1] * (1.0 - float(self.vhrm.FACE_SEARCH_WIDTH)) / 2.0))
+            top, right, bottom = 0, frame.shape[1] - left, frame.shape[0]
+        box = None
+        if right > left and bottom > top:
+            box = self._detect_face(frame[top:bottom, left:right], config_preprocess.CROP_FACE)
+        if box is not None:
+            box[0] += left
+            box[1] += top
+        stats["face_found"] = box is not None  # the face trace of the frames until the next detection
         if box is None:
             stats["failures"] += 1
-            return previous_box if mode == "face" else None
+            return previous_box if mode in ("face", "person_face") else None
         return box
+
+    def _largest_person(self, frame):
+        """Box [x1, y1, x2, y2] of the largest person (person_face mode), or None."""
+        if getattr(self, "_person_detector", None) is None:  # created in the preprocessing worker, as the face detector
+            self._person_detector = person_detector.PersonDetector(self._face_det_device)
+        return self._person_detector.largest_person(frame)
 
     # ------------------------------------------------------------------ decoding
 
@@ -1013,14 +1167,22 @@ class VHRMLoader(BaseLoader):
         return [left, top, width, height]
 
     def read_video(self, video_path, target_fps, config_preprocess, progress=None,
-                   crop_mode=("face", None), crop_stats=None):
+                   crop_mode=("face", None), crop_stats=None, label=None, max_frames=None, face_trace=None):
+        """Frames resampled to target_fps; only the first max_frames of them when it is set.
+
+        face_trace: a list that receives, for each frame, whether its last face detection found a face."""
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
+        # Recordings share video file names, so the progress bar names the recording when known.
+        label = label or os.path.basename(video_path)
         if self._can_use_nvdec(video_path, config_preprocess):
             try:
                 if progress is not None:
-                    progress.set_description(f"{os.path.basename(video_path)} | NVDEC", refresh=True)
+                    progress.set_description(f"{label} | decode (NVDEC)", refresh=True)
                 frames = self._read_video_nvdec(
-                    video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
+                    video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats, max_frames)
+                if face_trace is not None:
+                    # NVDEC crops every frame with the box found on the first one.
+                    face_trace[:] = [bool(crop_stats.get("face_found", False))] * len(frames)
                 self._progress_message(f"Using FFmpeg/NVDEC: {video_path}")
                 return frames
             except (OSError, RuntimeError, ValueError) as error:
@@ -1030,9 +1192,9 @@ class VHRMLoader(BaseLoader):
                 if progress is not None:
                     progress.reset()
         if progress is not None:
-            progress.set_description(f"{os.path.basename(video_path)} | OpenCV", refresh=True)
+            progress.set_description(f"{label} | decode (OpenCV)", refresh=True)
         return self._read_video_opencv(
-            video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats)
+            video_path, target_fps, config_preprocess, progress, crop_mode, crop_stats, max_frames, face_trace)
 
     def _can_use_nvdec(self, video_path, config_preprocess):
         if self.video_decoder == "opencv":
@@ -1066,7 +1228,7 @@ class VHRMLoader(BaseLoader):
             return False
 
     def _read_video_nvdec(self, video_path, target_fps, config_preprocess, progress=None,
-                          crop_mode=("face", None), crop_stats=None):
+                          crop_mode=("face", None), crop_stats=None, max_frames=None):
         capture, rotation = self._open_capture(video_path)
         source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -1104,8 +1266,11 @@ class VHRMLoader(BaseLoader):
             "-resize", f"{decoded_width}x{decoded_height}",
             "-i", video_path,
             "-vf", f"fps={target_fps},hwdownload,format=nv12,format=rgb24",
-            "-an", "-sn", "-dn", "-f", "rawvideo", "pipe:1",
         ])
+        if max_frames is not None:
+            # FFmpeg stops decoding once it has written max_frames resampled frames.
+            command.extend(["-frames:v", str(max_frames)])
+        command.extend(["-an", "-sn", "-dn", "-f", "rawvideo", "pipe:1"])
 
         frame_size = decoded_width * decoded_height * 3
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1169,7 +1334,7 @@ class VHRMLoader(BaseLoader):
         return left, top, right, bottom
 
     def _read_video_opencv(self, video_path, target_fps, config_preprocess, progress=None,
-                           crop_mode=("face", None), crop_stats=None):
+                           crop_mode=("face", None), crop_stats=None, max_frames=None, face_trace=None):
         crop_stats = crop_stats if crop_stats is not None else {"attempts": 0, "failures": 0}
         capture, rotation = self._open_capture(video_path)
         source_fps = capture.get(cv2.CAP_PROP_FPS)
@@ -1187,12 +1352,12 @@ class VHRMLoader(BaseLoader):
             capture.release()
             raise ValueError("vHRM streaming preprocessing does not support USE_MEDIAN_FACE_BOX")
         success, frame = capture.read()
-        while success:
+        while success and (max_frames is None or sampled_index < max_frames):
             frame_time = source_index / source_fps
             if frame_time + (0.5 / source_fps) >= next_sample_time:
                 frame = self._rotate_frame(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), rotation)
                 resolve_now = sampled_index == 0 or (
-                    crop_mode[0] in ("face", "face_or_full")
+                    crop_mode[0] in FACE_CROP_MODES
                     and detection.DO_DYNAMIC_DETECTION
                     and sampled_index % detection.DYNAMIC_DETECTION_FREQUENCY == 0
                 )
@@ -1208,6 +1373,8 @@ class VHRMLoader(BaseLoader):
                     interpolation=cv2.INTER_AREA,
                 )
                 frames.append(frame)
+                if face_trace is not None:
+                    face_trace.append(bool(crop_stats.get("face_found", False)))
                 next_sample_time += 1.0 / target_fps
                 sampled_index += 1
                 if progress is not None:

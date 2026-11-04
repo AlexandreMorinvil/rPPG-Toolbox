@@ -16,6 +16,7 @@ import pandas as pd
 import scipy.signal
 
 from evaluation.post_process import _calculate_SNR, _calculate_fft_hr, _calculate_peak_hr, _detrend
+from evaluation.prediction_store import face_trace_files as _face_trace_files
 from evaluation.prediction_store import ground_truth_files as _ground_truth_files
 from evaluation.prediction_store import parse_recording_id as _parse_recording_id
 
@@ -68,10 +69,18 @@ def _correlation(frame, first, second):
 
 def _summary(frame, group_columns):
     def summarize(group):
+        # Metrics use the windows with a reading; coverage is their share (MIN_FACE_FRACTION, face crop).
+        all_windows = len(group)
+        all_error = (group["predicted_hr_bpm"] - group["ground_truth_hr_bpm"]).abs().mean()
+        if "has_reading" in group:  # absent from the window_results.csv of older runs
+            group = group[group["has_reading"].astype(bool)]
         error = group["predicted_hr_bpm"] - group["ground_truth_hr_bpm"]
         denominator = group["ground_truth_hr_bpm"].replace(0, np.nan)
         label_error = group["predicted_hr_bpm"] - group["label_hr_bpm"]
         return pd.Series({
+            "all_windows": all_windows,
+            "coverage": len(group) / all_windows if all_windows else np.nan,
+            "mae_all_windows_bpm": all_error,
             "windows": len(group),
             "hr_windows": int(group["ground_truth_hr_bpm"].notna().sum()),
             "mae_bpm": error.abs().mean(),
@@ -155,6 +164,9 @@ def calculate_vhrm_metrics(predictions, labels, config, data_config=None, output
     use_windows = config.INFERENCE.EVALUATION_WINDOW.USE_SMALLER_WINDOW
     configured_window = int(config.INFERENCE.EVALUATION_WINDOW.WINDOW_SIZE * fs)
     ground_truth_files = _ground_truth_files(data_config.FILE_LIST_PATH)
+    face_files = _face_trace_files(data_config.FILE_LIST_PATH)
+    min_face = float(data_config.VHRM.MIN_FACE_FRACTION or 0.0)
+    chunk_length = data_config.PREPROCESS.CHUNK_LENGTH if data_config.PREPROCESS.DO_CHUNK else None
     rows = []
 
     for recording_id in sorted(predictions):
@@ -171,6 +183,11 @@ def calculate_vhrm_metrics(predictions, labels, config, data_config=None, output
         length = min(len(prediction), len(ground_truth), len(label) if label is not None else len(prediction))
         prediction, ground_truth = prediction[:length], ground_truth[:length]
         label = label[:length] if label is not None else None
+        face = None
+        if recording_id in face_files and os.path.isfile(face_files[recording_id]):
+            trace = np.load(face_files[recording_id]).astype(np.float64)
+            size = chunk_length or len(trace)
+            face = np.concatenate([trace[int(chunk_id) * size:(int(chunk_id) + 1) * size] for chunk_id in chunk_ids])
 
         recording = _parse_recording_id(recording_id)
         window_size = configured_window if use_windows else length
@@ -178,6 +195,9 @@ def calculate_vhrm_metrics(predictions, labels, config, data_config=None, output
             end = min(start + window_size, length)
             if end - start < max(9, fs * 2):
                 continue
+            face_fraction = _nanmean(face[start:end]) if face is not None else np.nan
+            # A face crop window without enough face frames has no reading; UV and other crops always read.
+            has_reading = not (min_face > 0 and np.isfinite(face_fraction) and face_fraction < min_face)
             predicted_hr, waveform = _estimate_hr(prediction[start:end], fs, method, prediction_is_diff)
             window_truth = ground_truth[start:end]
             measured_hr = _nanmean(window_truth[:, GT_HR])
@@ -191,6 +211,10 @@ def calculate_vhrm_metrics(predictions, labels, config, data_config=None, output
                 "window_index": window_index,
                 "start_seconds": start / fs,
                 "end_seconds": end / fs,
+                "start_frame": start,
+                "end_frame": end,
+                "face_fraction": face_fraction,
+                "has_reading": has_reading,
                 "ground_truth_hr_bpm": measured_hr,
                 "predicted_hr_bpm": predicted_hr,
                 "error_bpm": predicted_hr - measured_hr,
@@ -222,13 +246,15 @@ def calculate_vhrm_metrics(predictions, labels, config, data_config=None, output
     for name, report in reports.items():
         report.to_csv(os.path.join(output_dir, f"{name}.csv"), index=False)
     overall.to_csv(os.path.join(output_dir, "overall_summary.csv"), index=False)
-    _save_plots(windows, {key: value for key, value in reports.items() if key.startswith("by_")}, output_dir)
+    _save_plots(windows[windows["has_reading"]], {key: value for key, value in reports.items()
+                                                  if key.startswith("by_")}, output_dir)
 
     summary = overall.iloc[0].replace({np.nan: None}).to_dict()
     with open(os.path.join(output_dir, "summary.json"), "w", encoding="utf-8") as summary_file:
         json.dump(summary, summary_file, indent=2)
     print("vHRM results (ground truth = measured HR; 'vs label' = HR of the PPG label):")
-    for key in ("windows", "mae_bpm", "rmse_bpm", "mape_percent", "pearson", "mae_vs_label_bpm", "pearson_vs_label"):
+    for key in ("windows", "coverage", "mae_bpm", "rmse_bpm", "mape_percent", "pearson", "mae_vs_label_bpm",
+                "pearson_vs_label"):
         print(f"  {key}: {summary.get(key)}")
     print(f"Saved vHRM CSV, JSON, and plot reports to: {output_dir}")
     return {f"{prefix}/{key}": value for key, value in summary.items() if value is not None}

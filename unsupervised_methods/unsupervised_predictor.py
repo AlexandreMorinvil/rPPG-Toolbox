@@ -13,6 +13,7 @@ from unsupervised_methods.methods.OMIT import *
 from tqdm import tqdm
 from evaluation.BlandAltmanPy import BlandAltman
 from unsupervised_methods.utils import masked_spatial_mean
+from evaluation.metrics import window_row
 
 
 def _unsupervised_bvp(method_name, frames, fs, masked=False):
@@ -52,6 +53,7 @@ def unsupervised_predict(config, data_loader, method_name):
     is_vhrm = config.UNSUPERVISED.DATA.DATASET == "vHRM"
     masked = bool(config.UNSUPERVISED.DATA.UV.ENABLED)
     vhrm_predictions, vhrm_labels = {}, {}
+    window_rows = []
     sbar = tqdm(data_loader["unsupervised"], ncols=80)
     for _, test_batch in enumerate(sbar):
         batch_size = test_batch[0].shape[0]
@@ -75,6 +77,8 @@ def unsupervised_predict(config, data_loader, method_name):
             else:
                 window_frame_size = video_frame_size
 
+            # Frame offset of this clip in its recording (clips of one recording follow each other).
+            offset = int(test_batch[3][idx]) * video_frame_size
             for i in range(0, len(BVP), window_frame_size):
                 BVP_window = BVP[i:i+window_frame_size]
                 label_window = labels_input[i:i+window_frame_size]
@@ -90,6 +94,8 @@ def unsupervised_predict(config, data_loader, method_name):
                     predict_hr_peak_all.append(pre_hr)
                     SNR_all.append(SNR)
                     MACC_all.append(macc)
+                    window_rows.append(window_row(config.UNSUPERVISED.DATA, test_batch[2][idx], offset + i,
+                                                  len(BVP_window), gt_hr, pre_hr, SNR, macc))
                 elif config.INFERENCE.EVALUATION_METHOD == "FFT":
                     gt_fft_hr, pre_fft_hr, SNR, macc = calculate_metric_per_video(BVP_window, label_window, diff_flag=False,
                                                                     fs=config.UNSUPERVISED.DATA.FS, hr_method='FFT')
@@ -97,9 +103,15 @@ def unsupervised_predict(config, data_loader, method_name):
                     predict_hr_fft_all.append(pre_fft_hr)
                     SNR_all.append(SNR)
                     MACC_all.append(macc)
+                    window_rows.append(window_row(config.UNSUPERVISED.DATA, test_batch[2][idx], offset + i,
+                                                  len(BVP_window), gt_fft_hr, pre_fft_hr, SNR, macc))
                 else:
                     raise ValueError("Inference evaluation method name wrong!")
     print("Used Unsupervised Method: " + method_name)
+    if not is_vhrm:
+        from evaluation import prediction_store
+        prediction_store.write_window_results(
+            window_rows, os.path.join(config.UNSUPERVISED.OUTPUT_SAVE_DIR, method_name))
 
     if is_vhrm:
         from evaluation import prediction_store

@@ -5,11 +5,13 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 
 import numpy as np
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -148,6 +150,32 @@ class SelectionTests(unittest.TestCase):
         participants = {r["participant"] for r in V.select_recordings(self.segments, node)}
         self.assertEqual(participants, {"jzc02", "jzc01-baseline"})
 
+    def test_duration_caps_by_label(self):
+        node = _vhrm_node()
+        node.MAX_DURATION_SEC = 30.0
+        node.MAX_DURATION_SEC_BY_LABEL = ["Resting=120", "recover=0"]  # the alias applies: recover -> recovery
+        caps = {r["label"]: r["max_duration_sec"] for r in V.select_recordings(self.segments, node)}
+        self.assertEqual(caps, {"resting": 120.0, "recovery": 0.0, "baseline-part1": 30.0})
+        for entry in ("resting", "resting=-1", "resting=2 min", "=120"):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                V.parse_duration_caps([entry])
+
+    def test_a_new_cap_reuses_the_decodes_it_does_not_change(self):
+        fits = V.cached_frames_fit
+        whole = {"max_frames": None, "frame_count": 1800}     # a 60 s video decoded whole
+        self.assertTrue(fits(whole, 3600))                    # a 120 s cap does not cut it
+        self.assertTrue(fits(whole, 1800))
+        self.assertFalse(fits(whole, 900))
+        cut = {"max_frames": 3600, "frame_count": 3600}       # a 10 min video cut at 120 s
+        self.assertTrue(fits(cut, 3600))
+        self.assertFalse(fits(cut, None))
+        self.assertFalse(fits(cut, 5400))
+        self.assertFalse(fits(cut, 1800))
+        short = {"max_frames": 3600, "frame_count": 1800}     # a 60 s video under a 120 s cap
+        self.assertTrue(fits(short, None))
+        self.assertFalse(fits(short, 900))
+        self.assertTrue(fits({"frame_count": 1800}, None))    # manifests written before the cap existed
+
     def test_labels_are_rebuilt_when_the_segment_timing_changes(self):
         # Applying a video/signal offset in the preprocessing tool moves the anchor in meta.json.
         loader = V.VHRMLoader.__new__(V.VHRMLoader)
@@ -179,6 +207,112 @@ class NamingAgreementTests(unittest.TestCase):
                     locations = validation.derived_locations(values, prefix)
                     self.assertEqual(locations["exp_data_name"], split.EXP_DATA_NAME)
                     self.assertEqual(Path(locations["file_list"]).name, Path(split.FILE_LIST_PATH).name)
+
+
+class DurationCapPreprocessingTests(unittest.TestCase):
+    """MAX_DURATION_SEC(_BY_LABEL) on real decodes: only the first seconds are cached, and a new limit
+    decodes again only the videos whose kept part changes."""
+
+    FS = 30
+    CHUNK = 60
+
+    @classmethod
+    def setUpClass(cls):
+        import cv2
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.directory.name)
+        for index, (label, seconds) in enumerate((("Resting", 20.0), ("Curl", 6.0))):
+            segment = cls.root / "data" / "toy" / "p01" / "labelled_segments" / f"{index:04d}_{label}"
+            segment.mkdir(parents=True)
+            writer = cv2.VideoWriter(str(segment / "cam2_Camera_Front.avi"), cv2.VideoWriter_fourcc(*"MJPG"),
+                                     cls.FS, (16, 16))
+            for frame in range(int(seconds * cls.FS)):
+                writer.write(np.full((16, 16, 3), frame // 3, dtype=np.uint8))  # brightness = time
+            writer.release()
+            meta = {"index": index, "label": label, "start_sec": 30.0 * index, "duration_sec": seconds,
+                    "signal_anchor_datetime_utc": "2026-05-27T13:00:00+00:00",
+                    "cameras": [{"label": "Camera_Front", "video_file": "cam2_Camera_Front.avi", "fps": cls.FS}]}
+            (segment / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.directory.cleanup()
+
+    def preprocess(self, every=0.0, by_label=()):
+        """Preprocess the toy recordings; return the loader and, per label, the manifest entry and clip-0 mtime."""
+        data = {"DATASET": "vHRM", "DATA_PATH": str(self.root / "data"), "CACHED_PATH": str(self.root / "cache"),
+                "DO_PREPROCESS": True, "FS": self.FS,
+                "PREPROCESS": {"DATA_TYPE": ["Raw"], "LABEL_TYPE": "Standardized", "DO_CHUNK": True,
+                               "CHUNK_LENGTH": self.CHUNK, "RESIZE": {"W": 8, "H": 8}, "NUM_WORKERS": 1},
+                "VHRM": {"CROP_MODE_BY_VIEW": ["front=full"], "VIDEO_DECODER": "opencv", "SHOW_VIDEO_PROGRESS": False,
+                         "REQUIRE_PPG": False, "MAX_DURATION_SEC": float(every),
+                         "MAX_DURATION_SEC_BY_LABEL": list(by_label)}}
+        path = self.root / "config.yaml"
+        path.write_text(yaml.safe_dump({"TOOLBOX_MODE": "only_test", "TEST": {"DATA": data}}), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            config = get_config(argparse.Namespace(config_file=str(path)))
+            loader = V.VHRMLoader("test", config.TEST.DATA.DATA_PATH, config.TEST.DATA)
+        cache = Path(config.TEST.DATA.CACHED_PATH)
+        manifest = json.loads((cache / "preprocessing_manifest.json").read_text(encoding="utf-8"))
+        entries = {}
+        for recording_id, entry in manifest["recordings"].items():
+            stamp = os.stat(cache / "toy" / "p01" / f"{recording_id}_input0.npy").st_mtime_ns
+            entries[recording_id.split("--")[3]] = (entry, stamp)
+        return loader, entries
+
+    def test_only_the_first_seconds_are_decoded_and_limits_redecode_only_what_they_change(self):
+        loader, first = self.preprocess(by_label=["resting=10"])
+        resting, curl = first["resting"][0], first["curl"][0]
+        self.assertEqual((resting["frame_count"], resting["max_frames"], resting["chunk_count"]), (300, 300, 5))
+        self.assertEqual((curl["frame_count"], curl["max_frames"], curl["chunk_count"]), (180, None, 3))
+        self.assertEqual(len(loader.inputs), 8)
+        clips = sorted(path for path in loader.inputs if "--resting--" in path)
+        self.assertAlmostEqual(float(np.load(clips[0])[0].mean()), 0, delta=2)      # starts at the video start
+        self.assertAlmostEqual(float(np.load(clips[-1])[-1].mean()), 99, delta=2)   # frame 299 = 10 s
+        for gt in loader.gt_files:
+            self.assertEqual(len(np.load(gt)), self.CHUNK)
+
+        # A limit above the video lengths: the cut resting video is decoded whole, curl keeps its clips.
+        _, second = self.preprocess(every=60.0)
+        self.assertNotEqual(second["resting"][1], first["resting"][1])
+        self.assertEqual(second["resting"][0]["frame_count"], 600)
+        self.assertEqual(second["curl"][1], first["curl"][1])
+
+        # Every video cut at 5 s except curl (curl=0): only resting is decoded again.
+        loader, third = self.preprocess(every=5.0, by_label=["curl=0"])
+        self.assertEqual(third["resting"][0]["frame_count"], 150)
+        self.assertEqual(third["curl"][1], first["curl"][1])
+        self.assertEqual(len(loader.inputs), 2 + 3)
+
+
+class DurationCapLauncherTests(unittest.TestCase):
+    def test_file_list_names_agree_and_settings_are_checked(self):
+        source = next(path for path in EXAMPLE_CONFIGS if path.parent.name == "launcher")
+        tree = yaml.safe_load(source.read_text(encoding="utf-8"))
+        for split in ("TRAIN", "VALID", "TEST"):
+            tree[split]["DATA"]["VHRM"]["MAX_DURATION_SEC_BY_LABEL"] = ["resting=120"]
+        tree["TRAIN"]["DATA"]["VHRM"]["MAX_DURATION_SEC"] = 300.0
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / source.name
+            path.write_text(yaml.safe_dump(tree), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                config = get_config(argparse.Namespace(config_file=str(path)))
+            values, errors, _ = configs.normalize(configs.flatten(configs.read_yaml_tree(path)))
+        original, _, _ = configs.normalize(configs.flatten(configs.read_yaml_tree(source)))
+        self.assertFalse(errors)
+        for prefix, split in (("TRAIN.DATA", config.TRAIN.DATA), ("TEST.DATA", config.TEST.DATA)):
+            file_list = Path(validation.derived_locations(values, prefix)["file_list"]).name
+            self.assertEqual(file_list, Path(split.FILE_LIST_PATH).name)
+            self.assertNotEqual(file_list, Path(validation.derived_locations(original, prefix)["file_list"]).name)
+            self.assertEqual(validation.derived_locations(values, prefix)["exp_data_name"],
+                             validation.derived_locations(original, prefix)["exp_data_name"])  # same cache
+
+        report = validation.validate(values, backend="local")
+        self.assertIn("TEST.DATA.VHRM.MAX_DURATION_SEC", {entry["key"] for entry in report["warnings"]})
+        self.assertNotIn("TEST.DATA.VHRM.MAX_DURATION_SEC_BY_LABEL", {entry["key"] for entry in report["errors"]})
+        values["TEST.DATA.VHRM.MAX_DURATION_SEC_BY_LABEL"] = ["resting"]
+        errors = {entry["key"] for entry in validation.validate(values, backend="local")["errors"]}
+        self.assertIn("TEST.DATA.VHRM.MAX_DURATION_SEC_BY_LABEL", errors)
 
 
 class LauncherPseudoLabelTests(unittest.TestCase):

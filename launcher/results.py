@@ -16,6 +16,9 @@ import numpy as np
 from . import paths, settings, signals
 
 MARKERS = {"PreTrainedModels", "saved_test_outputs", "saved_outputs", "saved_valid_outputs", "plots"}
+# A cross-validation root (LOG.PATH of the base config): its fold_* folders are experiments of their own.
+CV_MARKER = "cv_summary"
+REPORT_DIR = "report"  # <experiment>/report/<checkpoint>/: analysis reports (launcher/reports.py)
 SKIP_DIRS = {"wandb", ".git", "__pycache__", "node_modules"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
 TABLE_LIMIT = 300_000
@@ -63,14 +66,16 @@ def scan(job_outputs=None, max_depth=6):
             except OSError:
                 continue
             names = {e.name for e in entries}
-            markers = names & MARKERS
+            markers = names & (MARKERS | {CV_MARKER})
             if markers:
                 path = Path(current).resolve()
                 found[str(path)] = _summarize(path, root, markers)
             if depth >= max_depth:
                 continue
+            # An experiment's analysis reports belong to it (Report tab), they are not experiments.
+            skip = SKIP_DIRS | MARKERS | {CV_MARKER} | ({REPORT_DIR} if markers else set())
             for entry in entries:
-                if entry.name not in SKIP_DIRS and entry.name not in MARKERS and not entry.name.startswith("."):
+                if entry.name not in skip and not entry.name.startswith("."):
                     stack.append((entry.path, depth + 1))
     experiments = sorted(found.values(), key=lambda item: item["modified"], reverse=True)
     for experiment in experiments:
@@ -97,10 +102,19 @@ def _summarize(path, root, markers):
                 summary = None
         if (path / folder).is_dir():
             modified = max([modified] + [p.stat().st_mtime for p in (path / folder).iterdir()])
+    overall = path / CV_MARKER / "overall_summary.csv"
+    if overall.is_file():
+        try:
+            table = _read_table(overall, 2)
+            summary = {key: _float_or_text(value) for key, value in zip(table["header"], table["rows"][0])}
+            modified = max(modified, overall.stat().st_mtime)
+        except (OSError, IndexError, csv.Error):
+            pass
     try:
         relative = path.relative_to(root).as_posix()
     except ValueError:
         relative = path.name
+    report_names = sorted(p.parent.name for p in (path / REPORT_DIR).glob("*/run_config.json"))
     return {
         "path": str(path),
         "root": str(root),
@@ -108,9 +122,17 @@ def _summarize(path, root, markers):
         "markers": sorted(markers),
         "checkpoints": len(checkpoints),
         "last_checkpoint": checkpoints[-1] if checkpoints else None,
+        "reports": report_names,
         "modified": modified,
         "summary": summary,
     }
+
+
+def _float_or_text(value):
+    try:
+        return float(value)
+    except ValueError:
+        return value
 
 
 def _read_table(path, limit_rows=500):
@@ -129,9 +151,15 @@ def detail(path):
     if not path.is_dir():
         raise ValueError("Experiment folder not found")
     files = []
+    cross_validation = (path / CV_MARKER).is_dir()
     for file in sorted(path.rglob("*")):
-        if not file.is_file() or any(part in SKIP_DIRS for part in file.relative_to(path).parts):
+        parts = file.relative_to(path).parts
+        if not file.is_file() or any(part in SKIP_DIRS for part in parts):
             continue
+        if parts[0] == REPORT_DIR:
+            continue  # analysis reports have their own tab (reports.list_reports)
+        if cross_validation and parts[0] not in (CV_MARKER, "cv_plan.json"):
+            continue  # fold folders are listed as experiments of their own
         entry = {"path": str(file), "name": file.relative_to(path).as_posix(), "size": file.stat().st_size,
                  "modified": file.stat().st_mtime, "kind": _kind(file)}
         if entry["kind"] in ("csv", "json") and entry["size"] <= TABLE_LIMIT:
@@ -143,7 +171,9 @@ def detail(path):
         files.append(entry)
         if len(files) >= 2000:
             break
-    return {"path": str(path), "files": files}
+    from .reports import list_reports  # reports imports this module
+    return {"path": str(path), "files": files, "cross_validation": cross_validation,
+            "reports": list_reports(path)}
 
 
 def _to_array(value):
