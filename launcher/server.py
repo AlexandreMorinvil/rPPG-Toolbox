@@ -13,8 +13,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import (configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results, schema, settings,
-               validation)
+from . import (batch, configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results, schema,
+               settings, validation)
 
 MAX_BODY = 4 * 1024 * 1024
 
@@ -314,8 +314,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             else:
                 raise ApiError("Not found", 404)
+        elif method == "POST" and route == "/api/batches/preflight":
+            self._json(batch.public(batch.run_checks(body.get("configs") or [], body.get("backend", "local"),
+                                                     body.get("answers") or {}, body.get("secrets") or {}, manager,
+                                                     exclude=body.get("exclude") or [])))
+        elif method == "POST" and route == "/api/batches":
+            self._json({"batch": manager.create_batch(body)})
+        elif route.startswith("/api/batches/"):
+            parts = route.split("/")
+            batch_id = parts[3] if len(parts) > 3 else ""
+            action = parts[4] if len(parts) > 4 else ""
+            if method == "GET" and not action:
+                self._json({"batch": manager.get_batch(batch_id)})
+            elif method == "POST" and action == "cancel":
+                self._json({"batch": manager.cancel_batch(batch_id)})
+            elif method == "POST" and action == "remove":
+                manager.remove_batch(batch_id)
+                self._json({"ok": True})
+            else:
+                raise ApiError("Not found", 404)
         elif method == "GET" and route == "/api/jobs":
-            self._json({"jobs": manager.list(), "groups": manager.list_groups(), "gpus": probes.gpus()})
+            self._json({"jobs": manager.list(), "groups": manager.list_groups(), "batches": manager.list_batches(),
+                        "gpus": probes.gpus()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
         elif route.startswith("/api/jobs/"):

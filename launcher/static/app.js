@@ -18,9 +18,12 @@ const S = {
   preflight: null,
   jobs: [],
   groups: [],
+  batches: [],
   gpus: [],
   selectedJob: null,
   selectedGroup: null,
+  selectedBatch: null,
+  batch: null,
   log: null,
   cache: { sets: [], samples: [], sample: null, frames: null, meta: null, frame: 0, timer: null, label: null },
   results: { experiments: [], selected: null, detail: null, analysis: null, recording: null, sort: 'mae', compare: [] },
@@ -122,6 +125,7 @@ function openModal(title, body, buttons = [], wide = false) {
 function closeModal() {
   $('modal').classList.add('hidden');
   S.preflight = null;
+  S.batch = null;
 }
 
 function showTab(name) {
@@ -218,13 +222,40 @@ function selectConfig(path) {
   renderConfigTree();
 }
 
+// Configs matching a search, as one folder tree per root (configs/, docker/configs/). Every folder lists the paths of
+// all the configs below it, so a folder can be selected as a whole.
+function configTrees(query) {
+  const roots = { docker: ['Docker configs', 'docker/configs'], local: ['Local configs', 'configs'] };
+  const trees = [];
+  for (const [group, [label, rootPath]] of Object.entries(roots)) {
+    const root = { folders: new Map(), files: [], paths: [] };
+    for (const item of S.boot.configs.filter(c => c.group === group)) {
+      const searchable = [item.path, label, item.mode, S.boot.schema.mode_labels[item.mode], item.model, item.train, item.test].join(' ').toLowerCase();
+      if (query && !query.split(/\s+/).every(term => searchable.includes(term))) continue;
+      let folder = root;
+      folder.paths.push(item.path);
+      for (const part of item.path.slice(rootPath.length + 1).split('/').slice(0, -1)) {
+        if (!folder.folders.has(part)) folder.folders.set(part, { folders: new Map(), files: [], paths: [] });
+        folder = folder.folders.get(part);
+        folder.paths.push(item.path);
+      }
+      folder.files.push(item);
+    }
+    if (root.paths.length) trees.push({ label, rootPath, root });
+  }
+  return trees;
+}
+
+const sortedFolders = folder => [...folder.folders].sort(([a], [b]) => a.localeCompare(b));
+const sortedFiles = folder => [...folder.files].sort((a, b) => a.path.localeCompare(b.path));
+const configDetail = item => item.error ? 'Unreadable config' : [S.boot.schema.mode_labels[item.mode] || item.mode,
+  item.model, item.train, item.test !== item.train ? item.test : ''].filter(Boolean).join(' · ');
+
 function renderConfigTree() {
   const tree = $('configTree');
   const expanded = new Set([...tree.querySelectorAll('details[open]')].map(el => el.dataset.path));
   const query = $('configSearch').value.trim().toLowerCase();
   const selected = $('configSelect').value;
-  const groups = { docker: ['Docker configs', 'docker/configs'], local: ['Local configs', 'configs'] };
-  let count = 0;
   tree.replaceChildren();
 
   const renderFolder = (folder, name, path, root = false) => {
@@ -234,14 +265,13 @@ function renderConfigTree() {
     });
     details.append(h('summary', {}, h('span', { class: 'config-folder-name' }, name),
       root ? h('span', { class: 'config-root-path' }, path + '/') : null,
-      h('span', { class: 'config-folder-count' }, folder.count)));
+      h('span', { class: 'config-folder-count' }, folder.paths.length)));
     const children = h('div', { class: 'config-folder-children' });
-    for (const [childName, child] of [...folder.folders].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [childName, child] of sortedFolders(folder)) {
       children.append(renderFolder(child, childName, path + '/' + childName));
     }
-    for (const item of folder.files.sort((a, b) => a.path.localeCompare(b.path))) {
-      const detail = item.error ? 'Unreadable config' : [S.boot.schema.mode_labels[item.mode] || item.mode,
-        item.model, item.train, item.test !== item.train ? item.test : ''].filter(Boolean).join(' · ');
+    for (const item of sortedFiles(folder)) {
+      const detail = configDetail(item);
       children.append(h('button', {
         type: 'button', class: 'config-file' + (item.path === selected ? ' selected' : ''),
         'aria-pressed': String(item.path === selected), title: item.path + (item.error ? '\n' + item.error : ''),
@@ -257,23 +287,10 @@ function renderConfigTree() {
     return details;
   };
 
-  for (const [group, [label, rootPath]] of Object.entries(groups)) {
-    const root = { folders: new Map(), files: [], count: 0 };
-    for (const item of S.boot.configs.filter(c => c.group === group)) {
-      const searchable = [item.path, label, item.mode, S.boot.schema.mode_labels[item.mode], item.model, item.train, item.test].join(' ').toLowerCase();
-      if (query && !query.split(/\s+/).every(term => searchable.includes(term))) continue;
-      count++;
-      const parts = item.path.slice(rootPath.length + 1).split('/');
-      let folder = root;
-      folder.count++;
-      for (const part of parts.slice(0, -1)) {
-        if (!folder.folders.has(part)) folder.folders.set(part, { folders: new Map(), files: [], count: 0 });
-        folder = folder.folders.get(part);
-        folder.count++;
-      }
-      folder.files.push(item);
-    }
-    if (root.count) tree.append(renderFolder(root, label, rootPath, true));
+  let count = 0;
+  for (const { label, rootPath, root } of configTrees(query)) {
+    count += root.paths.length;
+    tree.append(renderFolder(root, label, rootPath, true));
   }
   $('configCount').textContent = query ? `${count} of ${S.boot.configs.length} configs match` : `${count} configs · Expand a folder to browse`;
   if (!count) tree.append(h('p', { class: 'muted pad' }, query ? 'No matching configs. Try another search.' : 'No config files found.'));
@@ -897,7 +914,7 @@ async function launchDialog(initial = {}) {
   const cv = cvEnabled();
   S.preflight = { answers: initial.answers || {}, secrets: {}, name: initial.name || '', description: S.values.DESCRIPTION || '', result: null, busy: false, cv };
   openModal(cv ? 'Pre-launch checks — cross-validation' : 'Pre-launch checks',
-    h('div', { id: 'preflightBody' }, h('p', { class: 'muted' }, cv ? 'Checking environment and planning the folds…' : 'Checking environment…')),
+    h('div', { id: 'preflightBody', class: 'checks' }, h('p', { class: 'muted' }, cv ? 'Checking environment and planning the folds…' : 'Checking environment…')),
     [{ label: 'Cancel', onClick: closeModal }, { label: 'Re-check', id: 'pfRecheck', onClick: () => refreshPreflight() },
       { label: cv ? 'Launch all folds' : 'Launch', primary: true, id: 'pfLaunch', disabled: true, onClick: doLaunch }], true);
   await refreshPreflight();
@@ -930,33 +947,39 @@ async function refreshPreflight(autofill = true) {
   }
 }
 
+// One pre-launch check: status, message, details and, for a question, its options. state holds the answers and the
+// secrets; recheck runs the checks again after an answer.
+function checkItem(check, state, recheck) {
+  const icons = { ok: '✔', info: 'ℹ', warn: '!', error: '✕', question: '?', answered: '✔' };
+  const item = h('div', { class: 'check ' + check.status },
+    h('div', { class: 'check-head' }, h('span', { class: 'icon' }, icons[check.status] || '•'), h('strong', {}, check.title)),
+    h('div', { class: 'check-msg' }, check.message));
+  if (check.details?.length) {
+    item.append(h('ul', { class: 'details' }, ...check.details.slice(0, 12).map(d => h('li', {}, d)),
+      check.details.length > 12 ? h('li', {}, `… and ${check.details.length - 12} more`) : null));
+  }
+  if (check.options) {
+    const options = h('div', { class: 'options' });
+    for (const option of check.options) {
+      const radio = h('input', { type: 'radio', name: 'pf_' + check.id, value: option.value });
+      radio.checked = state.answers[check.id] === option.value;
+      radio.addEventListener('change', () => { state.answers[check.id] = option.value; recheck(); });
+      options.append(h('label', { class: 'option' }, radio, h('span', {}, option.label, option.description ? h('small', {}, option.description) : null)));
+    }
+    item.append(options);
+    if (check.secret && state.answers[check.id] === check.secret.when) {
+      const input = h('input', { type: 'password', autocomplete: 'off', placeholder: check.secret.label, value: state.secrets[check.secret.name] || '' });
+      input.addEventListener('input', () => { state.secrets[check.secret.name] = input.value; });
+      item.append(h('div', { class: 'row' }, input, h('button', { type: 'button', class: 'small', onclick: recheck }, 'Verify')));
+    }
+  }
+  return item;
+}
+
 function renderPreflight() {
   const pf = S.preflight;
   const body = $('preflightBody');
-  const icons = { ok: '✔', info: 'ℹ', warn: '!', error: '✕', question: '?', answered: '✔' };
-  body.replaceChildren();
-  for (const check of pf.result.checks) {
-    const item = h('div', { class: 'check ' + check.status },
-      h('div', { class: 'check-head' }, h('span', { class: 'icon' }, icons[check.status] || '•'), h('strong', {}, check.title)),
-      h('div', { class: 'check-msg' }, check.message));
-    if (check.details?.length) item.append(h('ul', { class: 'details' }, ...check.details.slice(0, 12).map(d => h('li', {}, d))));
-    if (check.options) {
-      const options = h('div', { class: 'options' });
-      for (const option of check.options) {
-        const radio = h('input', { type: 'radio', name: 'pf_' + check.id, value: option.value });
-        radio.checked = pf.answers[check.id] === option.value;
-        radio.addEventListener('change', () => { pf.answers[check.id] = option.value; refreshPreflight(false); });
-        options.append(h('label', { class: 'option' }, radio, h('span', {}, option.label, option.description ? h('small', {}, option.description) : null)));
-      }
-      item.append(options);
-      if (check.secret && pf.answers[check.id] === check.secret.when) {
-        const input = h('input', { type: 'password', autocomplete: 'off', placeholder: check.secret.label, value: pf.secrets[check.secret.name] || '' });
-        input.addEventListener('input', () => { pf.secrets[check.secret.name] = input.value; });
-        item.append(h('div', { class: 'row' }, input, h('button', { type: 'button', class: 'small', onclick: () => refreshPreflight(false) }, 'Verify')));
-      }
-    }
-    body.append(item);
-  }
+  body.replaceChildren(...pf.result.checks.map(check => checkItem(check, pf, () => refreshPreflight(false))));
   if (pf.result.cv?.folds) {
     body.append(h('details', { class: 'check-folds', open: pf.result.cv.folds.length <= 10 },
       h('summary', {}, `Participants of the ${pf.result.cv.folds.length} folds`), foldTable(pf.result.cv.folds)));
@@ -1000,6 +1023,261 @@ async function doLaunch() {
   }
 }
 
+// ----------------------------------------------------------------- batches
+// A batch launches many configs at once: pick configs or whole folders, check them together (the questions they share
+// are answered once), then queue one job per config.
+const BATCH_LAUNCHABLE = ['ready', 'warn'];
+const BATCH_STATUS = { ready: 'Ready', warn: 'Ready', blocked: 'Blocked', skipped: 'Skipped', busy: 'Already running' };
+const BATCH_COUNTS = [['ready', 'ready'], ['warn', 'ready with warnings'], ['skipped', 'skipped'], ['busy', 'already running'], ['blocked', 'blocked']];
+
+async function batchDialog(paths = []) {
+  S.batch = { selected: new Set(paths), query: '', backend: null, answers: {}, secrets: {}, name: '', result: null,
+    excluded: new Set(), filter: null, seq: 0, nodes: [] };
+  const b = S.batch;
+  renderBatchSelect();
+  try {
+    S.boot.configs = (await api('/api/configs')).configs;  // configs written since the page was loaded
+    if (S.batch !== b) return;
+    b.selected = new Set([...b.selected].filter(p => S.boot.configs.some(c => c.path === p)));
+    if (!b.result) renderBatchTree();
+  } catch (error) { /* keep the list loaded at startup */ }
+}
+
+// Backend of most selected configs (container paths → Docker), else the default of Settings.
+function batchBackendDefault() {
+  const guesses = S.boot.configs.filter(c => S.batch.selected.has(c.path) && c.backend).map(c => c.backend);
+  const local = guesses.filter(g => g === 'local').length;
+  if (local * 2 === guesses.length) return S.boot.settings.default_backend;
+  return local * 2 > guesses.length ? 'local' : 'docker';
+}
+
+function renderBatchSelect() {
+  const b = S.batch;
+  const search = h('input', { type: 'search', placeholder: 'Search folders, files, models or datasets', 'aria-label': 'Search configs', autocomplete: 'off' });
+  search.value = b.query;
+  search.addEventListener('input', () => { b.query = search.value; renderBatchTree(); });
+  b.radios = [['docker', 'Docker'], ['local', 'Local Python']].map(([value, label]) => {
+    const radio = h('input', { type: 'radio', name: 'batchBackend', value });
+    radio.addEventListener('change', () => { b.backend = value; });
+    return { value, radio, label: h('label', {}, radio, ' ' + label) };
+  });
+  const body = h('div', { class: 'batch-select' },
+    h('p', { class: 'muted' }, 'Choose configs or whole folders. Each config becomes one job, and the pre-launch checks run for all of them at once.'),
+    h('div', { class: 'row' }, search, h('span', { class: 'grow' }),
+      h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Backend' }, ...b.radios.map(r => r.label))),
+    h('div', { id: 'batchCount', class: 'muted small', role: 'status' }),
+    h('div', { id: 'batchTree', class: 'config-tree batch-tree' }));
+  openModal('Launch a batch', body, [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Clear selection', id: 'batchClear', onClick: () => { b.selected.clear(); updateBatchSelection(); } },
+    { label: 'Check', primary: true, id: 'batchCheck', onClick: checkBatch }], true);
+  renderBatchTree();
+  search.focus?.();
+}
+
+function renderBatchTree() {
+  const b = S.batch;
+  const tree = $('batchTree');
+  if (!b || !tree) return;
+  const expanded = new Set([...tree.querySelectorAll('details[open]')].map(el => el.dataset.path));
+  const query = b.query.trim().toLowerCase();
+  b.nodes = [];
+  tree.replaceChildren();
+  const toggle = (paths, on) => { for (const p of paths) on ? b.selected.add(p) : b.selected.delete(p); updateBatchSelection(); };
+
+  const renderFolder = (folder, name, path, root = false) => {
+    const box = h('input', { type: 'checkbox', 'aria-label': `Select every config in ${path}` });
+    box.addEventListener('change', () => toggle(folder.paths, box.checked));
+    const count = h('span', { class: 'config-folder-count' });
+    b.nodes.push({ box, count, paths: folder.paths });
+    const open = !!query || root || expanded.has(path) || folder.paths.some(p => b.selected.has(p));
+    const details = h('details', { class: 'config-folder', 'data-path': path, open });
+    details.append(h('summary', {}, box, h('span', { class: 'config-folder-name' }, name),
+      root ? h('span', { class: 'config-root-path' }, path + '/') : null, count));
+    const children = h('div', { class: 'config-folder-children' });
+    for (const [childName, child] of sortedFolders(folder)) children.append(renderFolder(child, childName, path + '/' + childName));
+    for (const item of sortedFiles(folder)) {
+      const file = h('input', { type: 'checkbox' });
+      file.addEventListener('change', () => toggle([item.path], file.checked));
+      b.nodes.push({ box: file, paths: [item.path] });
+      children.append(h('label', { class: 'config-file batch-file', title: item.path }, file,
+        h('span', { class: 'batch-file-text' }, h('span', { class: 'config-file-name' }, item.path.split('/').pop()),
+          h('span', { class: 'config-file-detail' + (item.error ? ' bad' : '') }, configDetail(item)))));
+    }
+    details.append(children);
+    return details;
+  };
+
+  const trees = configTrees(query);
+  for (const { label, rootPath, root } of trees) tree.append(renderFolder(root, label, rootPath, true));
+  if (!trees.length) tree.append(h('p', { class: 'muted pad' }, query ? 'No matching configs. Try another search.' : 'No config files found.'));
+  updateBatchSelection();
+}
+
+// Checkbox states (folders: all / some / none of their configs), the count and the backend default.
+function updateBatchSelection() {
+  const b = S.batch;
+  if (!b) return;
+  for (const node of b.nodes) {
+    const chosen = node.paths.filter(p => b.selected.has(p)).length;
+    node.box.checked = chosen > 0 && chosen === node.paths.length;
+    node.box.indeterminate = chosen > 0 && chosen < node.paths.length;
+    if (node.count) node.count.textContent = chosen ? `${chosen}/${node.paths.length}` : String(node.paths.length);
+  }
+  const n = b.selected.size;
+  $('batchCount').textContent = n ? `${n} config${n > 1 ? 's' : ''} selected` : 'No config selected';
+  $('batchCheck').textContent = n ? `Check ${n} config${n > 1 ? 's' : ''}` : 'Check';
+  $('batchCheck').disabled = !n;
+  $('batchClear').disabled = !n;
+  const backend = b.backend || batchBackendDefault();
+  for (const { value, radio } of b.radios || []) radio.checked = value === backend;
+}
+
+async function checkBatch() {
+  const b = S.batch;
+  if (!b?.selected.size) return;
+  b.backend = b.backend || batchBackendDefault();
+  b.paths = [...b.selected].sort();
+  b.result = null;
+  openModal(`Launch a batch — ${b.paths.length} config${b.paths.length > 1 ? 's' : ''} (${b.backend === 'docker' ? 'Docker' : 'local Python'})`,
+    h('div', { id: 'batchBody', class: 'checks' }, h('p', { class: 'muted' }, `Checking ${b.paths.length} configs…`)), [
+      { label: 'Back', onClick: () => { b.seq++; b.result = null; renderBatchSelect(); } },  // drops a running check
+      { label: 'Re-check', id: 'batchRecheck', onClick: () => refreshBatch(false) },
+      { label: 'Launch', primary: true, id: 'batchLaunch', disabled: true, onClick: launchBatch }], true);
+  await refreshBatch();
+}
+
+async function refreshBatch(autofill = true) {
+  const b = S.batch;
+  if (!b) return;
+  const seq = ++b.seq;
+  $('batchLaunch').disabled = true;
+  $('batchRecheck').disabled = true;
+  $('batchRecheck').textContent = 'Checking…';
+  try {
+    const result = await api('/api/batches/preflight', { method: 'POST', body: { configs: b.paths, backend: b.backend, answers: b.answers, secrets: b.secrets, exclude: [...b.excluded] } });
+    if (S.batch !== b || seq !== b.seq) return;
+    let filled = false;
+    for (const check of autofill ? result.checks : []) {
+      if (check.status === 'question' && check.default && b.answers[check.id] === undefined) {
+        b.answers[check.id] = check.default;
+        filled = true;
+      }
+    }
+    if (filled) return refreshBatch(false);
+    b.result = result;
+    if (!b.name) b.name = result.name;
+    renderBatchChecks();
+  } catch (error) {
+    if (S.batch === b && seq === b.seq) $('batchBody').replaceChildren(h('div', { class: 'msg error pre' }, error.message));
+  } finally {
+    if (S.batch === b && seq === b.seq) {
+      $('batchRecheck').disabled = false;
+      $('batchRecheck').textContent = 'Re-check';
+    }
+  }
+}
+
+function renderBatchChecks() {
+  const b = S.batch;
+  const r = b.result;
+  const body = $('batchBody');
+  const filters = BATCH_COUNTS.filter(([status]) => r.counts[status]).map(([status, label]) => h('button', {
+    type: 'button', class: 'stat batch-' + status + (b.filter === status ? ' on' : ''), title: 'Show only these configs',
+    onclick: () => { b.filter = b.filter === status ? null : status; renderBatchChecks(); },
+  }, h('b', {}, r.counts[status]), ' ' + label));
+  body.replaceChildren(
+    h('div', { class: 'batch-summary' }, h('strong', { id: 'batchWill' }), ...filters),
+    ...r.checks.map(check => checkItem(check, b, () => refreshBatch(false))));
+  const common = r.issues.filter(issue => issue.configs.length > 1);
+  if (common.length) {
+    body.append(h('h4', {}, 'Problems shared by several configs'), ...common.map(issue => h('details', { class: 'issue ' + issue.status },
+      h('summary', {}, h('span', { class: 'issue-msg' }, issue.message), h('span', { class: 'issue-count' }, `${issue.configs.length} configs`)),
+      h('div', { class: 'muted small issue-configs' }, issue.configs.join(', ')))));
+  }
+  const name = h('input', { type: 'text', placeholder: 'Batch name' });
+  name.value = b.name;
+  name.addEventListener('input', () => { b.name = name.value; });
+  body.append(h('h4', {}, 'Configs'), batchConfigTable(r),
+    h('label', { class: 'job-name' }, 'Batch name', name),
+    h('p', { class: 'muted small' }, 'Jobs are named after their config and keep its description. They start only while the launcher is running: keep it open, or reopen it, until the last job has started. Running jobs continue if it closes.'));
+  updateBatchLaunch();
+}
+
+function batchConfigTable(r) {
+  const b = S.batch;
+  const launchable = r.configs.filter(c => BATCH_LAUNCHABLE.includes(c.status));
+  const all = h('input', { type: 'checkbox', 'aria-label': 'Launch every ready config', title: 'Launch every ready config', disabled: !launchable.length });
+  all.addEventListener('change', () => {
+    for (const c of launchable) all.checked ? b.excluded.delete(c.path) : b.excluded.add(c.path);
+    for (const row of rows) row.box.checked = row.launchable && !b.excluded.has(row.path);
+    updateBatchLaunch();
+  });
+  b.syncAll = () => {
+    const chosen = launchable.filter(c => !b.excluded.has(c.path)).length;
+    all.checked = chosen > 0 && chosen === launchable.length;
+    all.indeterminate = chosen > 0 && chosen < launchable.length;
+  };
+  const shown = r.configs.filter(c => !b.filter || c.status === b.filter);
+  const rows = shown.map(c => {
+    const launchable = BATCH_LAUNCHABLE.includes(c.status);
+    const box = h('input', { type: 'checkbox', 'aria-label': `Launch ${c.name}`, disabled: !launchable });
+    box.checked = launchable && !b.excluded.has(c.path);
+    box.addEventListener('change', () => { box.checked ? b.excluded.delete(c.path) : b.excluded.add(c.path); updateBatchLaunch(); });
+    const notes = [...c.errors, ...c.warnings];
+    const note = notes.length > 1
+      ? h('details', {}, h('summary', {}, notes[0], h('span', { class: 'muted' }, ` +${notes.length - 1} more`)), h('ul', { class: 'details' }, ...notes.slice(1).map(n => h('li', {}, n))))
+      : (notes[0] || '');
+    const status = c.status === 'warn' ? `Ready · ${c.warnings.length} warning${c.warnings.length > 1 ? 's' : ''}` : BATCH_STATUS[c.status];
+    const row = h('tr', { class: 'batch-row ' + c.status },
+      h('td', {}, box),
+      h('td', { title: c.path }, h('div', { class: 'batch-name' }, ...c.name.split('/').flatMap((part, i, all) => i < all.length - 1 ? [part + '/', h('wbr')] : [part])),
+        c.description ? h('div', { class: 'muted small batch-desc', title: c.description }, c.description) : null),
+      h('td', {}, [c.model, c.datasets].filter(Boolean).join(' · ')),
+      h('td', {}, h('span', { class: 'batch-status ' + c.status }, status)),
+      h('td', { class: 'batch-notes' }, note),
+      h('td', {}, h('button', { type: 'button', class: 'small', title: 'Open this config in the editor (closes this dialog)',
+        onclick: () => { closeModal(); loadConfig(c.path); showTab('editor'); } }, 'Open')));
+    Object.assign(row, { box, path: c.path, launchable });
+    return row;
+  });
+  return h('div', { class: 'table-wrap batch-table' }, h('table', { class: 'grid-table' },
+    h('tr', {}, h('th', {}, all), ...['Config', 'Run', 'Status', 'Problems', ''].map(t => h('th', {}, t))), ...rows,
+    shown.length ? null : h('tr', {}, h('td', { colspan: '6', class: 'muted' }, 'No config with this status.'))));
+}
+
+function updateBatchLaunch() {
+  const b = S.batch;
+  const r = b?.result;
+  if (!r) return;
+  const n = r.configs.filter(c => BATCH_LAUNCHABLE.includes(c.status) && !b.excluded.has(c.path)).length;
+  $('batchWill').textContent = `${n} of ${r.configs.length} config${r.configs.length > 1 ? 's' : ''} will be launched`;
+  b.syncAll?.();
+  const button = $('batchLaunch');
+  button.textContent = n ? `Launch ${n} job${n > 1 ? 's' : ''}` : 'Launch';
+  button.disabled = !n || r.checks.some(c => ['error', 'question'].includes(c.status));
+}
+
+async function launchBatch() {
+  const b = S.batch;
+  const r = b?.result;
+  if (!r) return;
+  const launch = r.configs.filter(c => BATCH_LAUNCHABLE.includes(c.status) && !b.excluded.has(c.path)).map(c => c.path);
+  if (!launch.length) return;
+  $('batchLaunch').disabled = true;
+  try {
+    const { batch } = await api('/api/batches', { method: 'POST', body: { configs: b.paths, launch, backend: b.backend, answers: b.answers, secrets: b.secrets, name: b.name } });
+    closeModal();
+    S.batches = [batch, ...S.batches.filter(x => x.id !== batch.id)];
+    toast(`Batch "${batch.name}": ${batch.configs.length} job${batch.configs.length > 1 ? 's' : ''} queued.`, 'ok');
+    selectBatch(batch.id);
+    showTab('jobs');
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    updateBatchLaunch();
+  }
+}
+
 // -------------------------------------------------------------------- jobs
 const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training: 'Training', validating: 'Validating', testing: 'Testing', unsupervised: 'Unsupervised', report: 'Analysis report', succeeded: 'Succeeded', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted', pausing: 'Finishing epoch before pause', paused: 'Paused (GPU released)' };
 
@@ -1025,6 +1303,7 @@ async function pollJobs() {
     const data = await api('/api/jobs');
     S.jobs = data.jobs;
     S.groups = data.groups || [];
+    S.batches = data.batches || [];
     S.gpus = data.gpus;
   } catch (error) { return; }
   const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
@@ -1043,6 +1322,7 @@ const ACTIVE_STATUSES = ['queued', 'starting', 'running', 'pausing', 'stopping']
 function selectJob(id) {
   S.selectedJob = id;
   S.selectedGroup = null;
+  S.selectedBatch = null;
   S.log = null;
   renderJobList();
   updateJobDetail(true);
@@ -1051,54 +1331,102 @@ function selectJob(id) {
 function selectGroup(id) {
   S.selectedGroup = id;
   S.selectedJob = null;
+  S.selectedBatch = null;
   S.log = null;
   if ($('tab-jobs').classList.contains('active')) { renderJobList(); updateJobDetail(true); }
 }
 
-// Folds done (with the running fold's own progress), average duration of finished folds and the ETA.
-function groupProgress(group) {
-  const done = group.folds.filter(f => f.status === 'succeeded').length;
-  const failed = group.folds.filter(f => ['failed', 'interrupted', 'cancelled', 'removed'].includes(f.status)).length;
-  const running = group.folds.find(f => ['starting', 'running', 'pausing', 'stopping'].includes(f.status));
-  const runningJob = running && S.jobs.find(j => j.id === running.job);
-  const current = runningJob ? (jobFraction(runningJob) || 0) : 0;
-  const durations = group.folds.filter(f => f.status === 'succeeded' && f.started && f.finished)
+function selectBatch(id) {
+  S.selectedBatch = id;
+  S.selectedJob = null;
+  S.selectedGroup = null;
+  S.log = null;
+  if ($('tab-jobs').classList.contains('active')) { renderJobList(); updateJobDetail(true); }
+}
+
+// Jobs done (with the running jobs' own progress), average duration of the finished ones and the time left, for the
+// folds of a cross-validation or the jobs of a batch (concurrency: jobs running at once).
+function membersProgress(entries, active, concurrency = 1) {
+  const done = entries.filter(f => f.status === 'succeeded').length;
+  const failed = entries.filter(f => ['failed', 'interrupted', 'cancelled', 'removed'].includes(f.status)).length;
+  const runningEntries = entries.filter(f => ['starting', 'running', 'pausing', 'stopping'].includes(f.status));
+  const running = runningEntries[0];
+  const runningJobs = runningEntries.map(f => S.jobs.find(j => j.id === f.job)).filter(Boolean);
+  const current = runningJobs.reduce((sum, job) => sum + (jobFraction(job) || 0), 0);
+  const durations = entries.filter(f => f.status === 'succeeded' && f.started && f.finished)
     .map(f => (new Date(f.finished) - new Date(f.started)) / 1000);
   const average = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
-  const remaining = group.folds.length - done - failed;
+  const remaining = entries.length - done - failed;
   let eta = null;
-  if (average !== null && group.active) {
-    const spent = runningJob?.started ? (Date.now() - new Date(runningJob.started)) / 1000 : 0;
-    eta = Math.max(0, remaining * average - Math.min(spent, average));
+  if (average !== null && active) {
+    const spent = runningJobs.reduce((sum, job) => sum + (job.started ? Math.min((Date.now() - new Date(job.started)) / 1000, average) : 0), 0);
+    eta = Math.max(0, (remaining * average - spent) / Math.max(1, concurrency));
   }
-  return { done, failed, running, fraction: (done + current) / group.folds.length, average, eta };
+  return { done, failed, running, fraction: entries.length ? (done + current) / entries.length : 0, average, eta };
+}
+
+function groupProgress(group) {
+  return membersProgress(group.folds, group.active);
+}
+
+const batchConcurrency = record => record.answers?.policy === 'parallel' ? S.boot?.settings?.max_parallel_jobs || 1 : 1;
+const batchProgress = record => membersProgress(record.configs, record.active, batchConcurrency(record));
+
+// The headline MAE of a finished job: vHRM summary.json, else the first MAE the console reported.
+function headlineMae(job) {
+  if (Number.isFinite(job?.summary?.mae_bpm)) return job.summary.mae_bpm;
+  for (const metrics of Object.values(job?.progress?.metrics || {})) {
+    if (Number.isFinite(metrics?.MAE?.value)) return metrics.MAE.value;
+  }
+  return null;
 }
 
 function jobItem(job, nested = false) {
   const fraction = jobFraction(job);
   const phase = PHASES[job.progress?.phase] || job.status;
   return h('button', { type: 'button', class: 'item job ' + job.status + (nested ? ' fold' : '') + (job.id === S.selectedJob ? ' active' : ''), onclick: () => selectJob(job.id) },
-    h('div', { class: 'item-title' }, h('span', { class: 'dot' }), nested ? `Fold ${job.group.fold}` : job.name,
+    h('div', { class: 'item-title' }, h('span', { class: 'dot' }), nested && job.group ? `Fold ${job.group.fold}` : job.name,
       nested && job.resume_from ? h('span', { class: 'muted small' }, ' (resumed)') : null),
     h('div', { class: 'item-sub' }, `${nested ? '' : job.backend + ' · '}${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
     !nested && job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
     fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
 }
 
+// A cross-validation or batch row with its jobs nested below; the nested list can be collapsed.
+function groupRow({ id, kind, name, status, active, selected, onSelect, sub, description, fraction, members, collapsedByDefault }) {
+  S.collapsedGroups = S.collapsedGroups || {};
+  const collapsed = S.collapsedGroups[id] ?? collapsedByDefault;
+  const toggle = h('span', { class: 'group-toggle', role: 'button', title: `${collapsed ? 'Show' : 'Hide'} the ${kind}`,
+    onclick: e => { e.stopPropagation(); S.collapsedGroups[id] = !collapsed; renderJobList(); } }, collapsed ? '▸' : '▾');
+  const header = h('button', { type: 'button', class: 'item job group ' + status + (selected ? ' active' : ''), onclick: onSelect },
+    h('div', { class: 'item-title' }, toggle, h('span', { class: 'dot' }), name),
+    h('div', { class: 'item-sub' }, sub),
+    description ? h('div', { class: 'item-desc', title: description }, description) : null,
+    active ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
+  return h('div', { class: 'job-group' }, header, collapsed ? null : h('div', { class: 'group-folds' }, ...members.map(job => jobItem(job, true))));
+}
+
+const progressText = (progress, status) => (progress.failed ? ` · ${progress.failed} not completed` : '') + ` · ${status}` +
+  (progress.eta !== null ? ` · ~${fmtDuration(progress.eta)} left` : '');
+
 function groupItem(group) {
   const progress = groupProgress(group);
-  S.collapsedGroups = S.collapsedGroups || {};
-  const collapsed = S.collapsedGroups[group.id] ?? !group.active;
-  const toggle = h('span', { class: 'group-toggle', role: 'button', title: collapsed ? 'Show the folds' : 'Hide the folds',
-    onclick: e => { e.stopPropagation(); S.collapsedGroups[group.id] = !collapsed; renderJobList(); } }, collapsed ? '▸' : '▾');
-  const header = h('button', { type: 'button', class: 'item job group ' + group.status + (group.id === S.selectedGroup ? ' active' : ''), onclick: () => selectGroup(group.id) },
-    h('div', { class: 'item-title' }, toggle, h('span', { class: 'dot' }), group.name),
-    h('div', { class: 'item-sub' }, `cross-validation · ${progress.done}/${group.folds.length} folds done`,
-      progress.failed ? ` · ${progress.failed} not completed` : '', ` · ${group.status}`, progress.eta !== null ? ` · ~${fmtDuration(progress.eta)} left` : ''),
-    group.description ? h('div', { class: 'item-desc', title: group.description }, group.description) : null,
-    group.active ? h('div', { class: 'progress' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` })) : null);
-  const attempts = S.jobs.filter(j => j.group?.id === group.id).sort((a, b) => a.group.index - b.group.index || a.created.localeCompare(b.created));
-  return h('div', { class: 'job-group' }, header, collapsed ? null : h('div', { class: 'group-folds' }, ...attempts.map(job => jobItem(job, true))));
+  return groupRow({
+    id: group.id, kind: 'folds', name: group.name, status: group.status, active: group.active, selected: group.id === S.selectedGroup,
+    onSelect: () => selectGroup(group.id), description: group.description, fraction: progress.fraction, collapsedByDefault: !group.active,
+    sub: `cross-validation · ${progress.done}/${group.folds.length} folds done` + progressText(progress, group.status),
+    members: S.jobs.filter(j => j.group?.id === group.id).sort((a, b) => a.group.index - b.group.index || a.created.localeCompare(b.created)),
+  });
+}
+
+function batchItem(record) {
+  const progress = batchProgress(record);
+  return groupRow({
+    id: record.id, kind: 'jobs', name: record.name, status: record.status, active: record.active, selected: record.id === S.selectedBatch,
+    onSelect: () => selectBatch(record.id), fraction: progress.fraction, collapsedByDefault: !record.active || record.configs.length > 12,
+    sub: `batch · ${progress.done}/${record.configs.length} done` + progressText(progress, record.status),
+    members: S.jobs.filter(j => j.batch?.id === record.id).sort((a, b) => a.batch.index - b.batch.index || a.created.localeCompare(b.created)),
+  });
 }
 
 function renderJobList() {
@@ -1106,19 +1434,20 @@ function renderJobList() {
   const list = $('jobList');
   const keep = active => filter === 'all' || (filter === 'active') === active;
   const groups = (S.groups || []).filter(g => keep(g.active));
-  const known = new Set((S.groups || []).map(g => g.id));
-  const jobs = S.jobs.filter(j => !known.has(j.group?.id) && keep(ACTIVE_STATUSES.includes(j.status)));
-  const entries = [...groups.map(g => ({ created: g.created, node: () => groupItem(g) })),
-    ...jobs.map(j => ({ created: j.created, node: () => jobItem(j) }))].sort((a, b) => b.created.localeCompare(a.created));
-  if (!S.selectedJob && !S.selectedGroup) {
-    if (groups.length && (!jobs.length || groups[0].created >= jobs[0].created)) S.selectedGroup = groups[0].id;
-    else if (jobs.length) S.selectedJob = jobs[0].id;
-  }
+  const batches = (S.batches || []).filter(b => keep(b.active));
+  const known = new Set([...(S.groups || []), ...(S.batches || [])].map(g => g.id));
+  const jobs = S.jobs.filter(j => !known.has(j.group?.id) && !known.has(j.batch?.id) && keep(ACTIVE_STATUSES.includes(j.status)));
+  const entries = [...groups.map(g => ({ created: g.created, select: () => { S.selectedGroup = g.id; }, node: () => groupItem(g) })),
+    ...batches.map(b => ({ created: b.created, select: () => { S.selectedBatch = b.id; }, node: () => batchItem(b) })),
+    ...jobs.map(j => ({ created: j.created, select: () => { S.selectedJob = j.id; }, node: () => jobItem(j) }))]
+    .sort((a, b) => b.created.localeCompare(a.created));
+  if (!S.selectedJob && !S.selectedGroup && !S.selectedBatch && entries.length) entries[0].select();
   list.replaceChildren(...entries.map(e => e.node()));
   if (!entries.length) list.append(h('p', { class: 'muted pad' }, 'No jobs yet. Launch one from "New run".'));
 }
 
 function updateJobDetail(force = false) {
+  if (S.selectedBatch) { updateBatchDetail(force); return; }
   if (S.selectedGroup) { updateGroupDetail(force); return; }
   const job = S.jobs.find(j => j.id === S.selectedJob);
   const panel = $('jobDetail');
@@ -1167,6 +1496,8 @@ function updateJobDetail(force = false) {
     job.resume_from ? ['Resumed from', job.resume_from] : null,
     job.group ? ['Cross-validation', h('a', { href: '#', onclick: e => { e.preventDefault(); selectGroup(job.group.id); } },
       `${job.group.name} — fold ${job.group.fold} (${job.group.index + 1} of ${job.group.count})`)] : null,
+    job.batch ? ['Batch', h('a', { href: '#', onclick: e => { e.preventDefault(); selectBatch(job.batch.id); } },
+      `${job.batch.name} — job ${job.batch.index + 1} of ${job.batch.count}`)] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
     job.report ? ['Checkpoint', h('code', {}, job.report.checkpoint)] : null,
@@ -1417,6 +1748,82 @@ async function editGroupConfig(group) {
     const data = await api('/api/config', { params: { path: `launcher_data/cv/${group.id}/config.yaml` } });
     setValues(data.values, data.extras, group.backend, `Cross-validation config of "${group.name}" (edit and launch again)`, group.source_config);
     showTab('editor');
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+// ------------------------------------------------------------------ batch jobs
+const BATCH_ANSWERS = {
+  outputs: ['Existing results', { new_folder: 'new sub-folder', overwrite: 'overwritten', skip: 'configs skipped' }],
+  cache: ['Existing caches', { reuse: 'reused', rebuild: 'preprocessed again' }],
+  wandb: ['W&B', { existing: 'saved API key', key: 'key typed at launch', offline: 'offline', disable: 'disabled' }],
+  policy: ['Run order', { queue: 'one after another', parallel: 'several at once' }],
+};
+
+function updateBatchDetail(force = false) {
+  const record = (S.batches || []).find(b => b.id === S.selectedBatch);
+  const panel = $('jobDetail');
+  if (!record) { panel.replaceChildren(h('p', { class: 'muted' }, 'This batch was removed.')); return; }
+  if (force || panel.dataset.job !== 'batch:' + record.id) {
+    panel.dataset.job = 'batch:' + record.id;
+    panel.replaceChildren(h('div', { id: 'bdHead' }), h('div', { id: 'bdProgress', class: 'card' }), h('div', { id: 'bdJobs', class: 'card' }));
+  }
+  const progress = batchProgress(record);
+  const unfinished = record.configs.filter(c => ['failed', 'cancelled', 'interrupted', 'removed'].includes(c.status));
+  const actions = [];
+  if (record.active) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => batchAction(record, 'cancel') }, 'Stop remaining jobs'));
+  if (unfinished.length) {
+    actions.push(h('button', { type: 'button', title: 'Check the failed, stopped or removed configs again and launch them as a new batch. To continue a training from its last epoch, use Resume training on its job instead.',
+      onclick: () => batchDialog(unfinished.map(c => c.path)) }, `Relaunch ${unfinished.length} unfinished…`));
+  }
+  if (!record.active) actions.push(h('button', { type: 'button', onclick: () => batchAction(record, 'remove') }, 'Remove'));
+  $('bdHead').replaceChildren(h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, record.name),
+    h('div', { class: 'muted' }, `Batch · ${record.configs.length} job${record.configs.length > 1 ? 's' : ''} · ${record.backend} · ${record.folder || ''} · created ${fmtDate(record.created)}`)),
+  h('div', { class: 'actions' }, ...actions)));
+
+  const count = statuses => record.configs.filter(c => statuses.includes(c.status)).length;
+  const queued = count(['queued']);
+  const running = count(['starting', 'running', 'pausing', 'stopping']);
+  const settings = Object.entries(BATCH_ANSWERS).filter(([key]) => record.answers?.[key])
+    .map(([key, [label, values]]) => `${label}: ${values[record.answers[key]] || record.answers[key]}`);
+  const rows = [
+    ['Status', h('span', { class: 'status ' + record.status }, record.status)],
+    ['Jobs', [`${progress.done} of ${record.configs.length} succeeded`, running ? `${running} running` : '', queued ? `${queued} queued` : '',
+      progress.failed ? `${progress.failed} not completed` : '', count(['paused']) ? `${count(['paused'])} paused` : ''].filter(Boolean).join(' · ')],
+    progress.average !== null ? ['Job duration', `~${fmtDuration(progress.average)} on average`] : null,
+    progress.eta !== null ? ['Time left', `~${fmtDuration(progress.eta)} (estimate from the finished jobs)`] : null,
+    settings.length ? ['Launch answers', settings.join(' · ')] : null,
+  ].filter(Boolean);
+  $('bdProgress').replaceChildren(...[
+    record.active ? h('div', { class: 'progress big' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` }), h('span', {}, `${(progress.fraction * 100).toFixed(0)}%`)) : null,
+    h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v))))].filter(Boolean));
+
+  $('bdJobs').replaceChildren(h('h4', {}, 'Jobs'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+    h('tr', {}, ...['#', 'Config', 'Status', 'Phase', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
+    ...record.configs.map(entry => {
+      const job = S.jobs.find(j => j.id === entry.job);
+      const p = job?.progress || {};
+      const duration = entry.started ? fmtDuration(((entry.finished ? new Date(entry.finished) : new Date()) - new Date(entry.started)) / 1000) : '–';
+      return h('tr', { onclick: entry.job ? () => selectJob(entry.job) : null, title: entry.job ? 'Open this job' : entry.path },
+        h('td', {}, String(entry.index + 1)),
+        h('td', { title: entry.path }, entry.name),
+        h('td', {}, h('span', { class: 'status ' + entry.status }, entry.status), entry.attempts > 1 ? h('span', { class: 'muted small' }, ` (${entry.attempts} attempts)`) : null),
+        h('td', {}, entry.status === 'running' ? PHASES[p.phase] || p.phase || '–' : '–'),
+        h('td', {}, job?.epochs_total ? `${p.epoch !== null && p.epoch !== undefined ? p.epoch + 1 : '–'} / ${job.epochs_total}` : '–'),
+        h('td', {}, num(headlineMae(job))),
+        h('td', {}, duration));
+    }))));
+}
+
+async function batchAction(record, action) {
+  const prompts = {
+    cancel: `Stop "${record.name}"? Queued jobs are cancelled and running jobs stop immediately (an unfinished epoch is discarded).`,
+    remove: `Remove "${record.name}" and its ${record.configs.length} jobs from the list? Logs and config snapshots are deleted; run outputs are kept.`,
+  };
+  if (!confirm(prompts[action])) return;
+  try {
+    await api(`/api/batches/${record.id}/${action}`, { method: 'POST', body: {} });
+    if (action === 'remove') S.selectedBatch = null;
+    await pollJobs();
   } catch (error) { toast(error.message, 'error'); }
 }
 
@@ -2463,6 +2870,7 @@ async function init() {
   renderForm();
 
   $('loadConfig').addEventListener('click', () => loadConfig($('configSelect').value));
+  $('openBatch').addEventListener('click', () => batchDialog());
   $('configSearch').addEventListener('input', renderConfigTree);
   $('configPicker').addEventListener('toggle', () => {
     if ($('configPicker').open) $('configSearch').focus();

@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import configs, crossval, logparse, paths, preflight, probes, reports, schema, settings
+from . import batch, configs, crossval, logparse, paths, preflight, probes, reports, schema, settings
 
 ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
 RUNNING = ("starting", "running", "pausing", "stopping")
@@ -20,6 +20,21 @@ FINISHED = ("succeeded", "failed", "cancelled", "interrupted", "paused")
 
 def _now():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _collective_status(statuses):
+    """Status of a cross-validation or a batch from the statuses of its jobs."""
+    if any(status in RUNNING for status in statuses):
+        return "running"
+    if "queued" in statuses:
+        return "running" if any(status in FINISHED for status in statuses) else "queued"
+    if "paused" in statuses:
+        return "paused"
+    if all(status == "succeeded" for status in statuses):
+        return "succeeded"
+    if any(status in ("failed", "interrupted") for status in statuses):
+        return "failed"
+    return "cancelled"
 
 
 def _clean_description(text):
@@ -32,9 +47,11 @@ class JobManager:
     def __init__(self):
         paths.JOBS_DIR.mkdir(parents=True, exist_ok=True)
         paths.CV_DIR.mkdir(parents=True, exist_ok=True)
+        paths.BATCH_DIR.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.jobs = {}
         self.groups = {}
+        self.batches = {}
         self.processes = {}
         self.parsers = {}
         self.offsets = {}
@@ -62,7 +79,22 @@ class JobManager:
         temporary.write_text(json.dumps(group, indent=2), encoding="utf-8")
         os.replace(temporary, target)
 
+    def _batch_dir(self, batch_id):
+        return paths.BATCH_DIR / batch_id
+
+    def _save_batch(self, record):
+        target = self._batch_dir(record["id"]) / "batch.json"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        os.replace(temporary, target)
+
     def _load(self):
+        for batch_file in sorted(paths.BATCH_DIR.glob("*/batch.json")):
+            try:
+                record = json.loads(batch_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            self.batches[record["id"]] = record
         for group_file in sorted(paths.CV_DIR.glob("*/group.json")):
             try:
                 group = json.loads(group_file.read_text(encoding="utf-8"))
@@ -134,6 +166,18 @@ class JobManager:
             return bool(model_dir_host) and any(job["status"] in ACTIVE and job.get("outputs", {}).get(
                 "model_dir_host") == model_dir_host for job in self.jobs.values())
 
+    def active_owner(self, source, folders):
+        """The queued or running job launched from this config, or writing to one of these output folders."""
+        with self.lock:
+            for job in self.jobs.values():
+                if job["status"] not in ACTIVE:
+                    continue
+                outputs = job.get("outputs") or {}
+                written = {os.path.normcase(str(outputs[key])) for key in batch.OUTPUT_KEYS if outputs.get(key)}
+                if (source and job.get("source_config") == source) or written & set(folders):
+                    return self._public(job)
+        return None
+
     @staticmethod
     def _launch_request(payload):
         values, type_errors, _ = configs.normalize(payload.get("values") or {})
@@ -164,13 +208,75 @@ class JobManager:
             raise ValueError("This config runs as a cross-validation; launch it from the editor (one job per fold).")
         result = preflight.run_checks(values, extras, backend, answers, secrets, self)
         self._require_launchable(result)
-        # A resumed fold stays part of its cross-validation.
+        # A resumed fold stays part of its cross-validation, a resumed batch job part of its batch.
         original = self.jobs.get(payload.get("resume_from") or "")
         group = dict(original["group"]) if original and original.get("group") else None
+        member = dict(original["batch"]) if original and original.get("batch") else None
         job = self._queue(result["effective_values"], extras, backend, result["answers"], secrets,
                           result["validation"]["derived"].get("outputs", {}), payload.get("name"),
-                          payload.get("source"), payload.get("resume_from"), group)
+                          payload.get("source"), payload.get("resume_from"), group, member)
         return self._public(job)
+
+    def create_batch(self, payload):
+        """Queue one job per config of a batch, in the listed order, after one round of checks for all of them.
+
+        payload: configs (every config of the batch), launch (the ones to queue), backend, answers, secrets, name.
+        All or nothing: a config that is no longer launchable refuses the whole launch.
+        """
+        backend = payload.get("backend")
+        config_paths = list(dict.fromkeys(payload.get("configs") or []))
+        wanted = list(dict.fromkeys(payload.get("launch") or []))
+        if not wanted:
+            raise ValueError("No config to launch.")
+        unknown = [path for path in wanted if path not in config_paths]
+        if unknown:
+            raise ValueError("Configs to launch must be part of the batch: " + ", ".join(unknown))
+        answers = dict(payload.get("answers") or {})
+        answers["_stamp"] = datetime.now().strftime("%Y%m%d-%H%M%S")
+        secrets = payload.get("secrets") or {}
+        result = batch.run_checks(config_paths, backend, answers, secrets, self,
+                                  exclude=[path for path in config_paths if path not in wanted])
+        blocking = [check["title"] + ": " + check["message"] for check in result["checks"]
+                    if check["status"] in ("error", "question")]
+        if blocking:
+            raise ValueError("Launch blocked. " + " | ".join(blocking))
+        entries = {entry["path"]: entry for entry in result["configs"]}
+        refused = [entries[path] for path in wanted if entries[path]["status"] not in batch.LAUNCHABLE]
+        if refused:
+            raise ValueError("Some configs can no longer be launched; check the batch again. " + " | ".join(
+                f"{entry['name']}: {(entry['errors'] or [entry['status']])[0]}" for entry in refused))
+        batch_id = self._new_id()
+        name = (payload.get("name") or "").strip()[:100] or result["name"]
+        record = {
+            "id": batch_id, "name": name, "created": _now(), "backend": backend, "folder": result["folder"],
+            "answers": {key: answers[key] for key in ("outputs", "cache", "wandb", "policy", "gpu") if key in answers},
+            "configs": [{"path": path, "name": entries[path]["name"], "index": index}
+                        for index, path in enumerate(wanted)],
+        }
+        self._batch_dir(batch_id).mkdir(parents=True)
+        with self.lock:
+            self.batches[batch_id] = record
+            self._save_batch(record)
+            queued = []
+            try:
+                for config in record["configs"]:
+                    run = result["runs"][config["path"]]
+                    run_answers = dict(run["answers"])
+                    if config["index"]:
+                        run_answers.pop("build", None)  # the first job builds a missing Docker image
+                    member = {"id": batch_id, "name": name, "index": config["index"], "count": len(wanted)}
+                    queued.append(self._queue(run["values"], run["extras"], backend, run_answers, secrets,
+                                              run["outputs"], config["name"], config["path"], None, None, member,
+                                              run["caches"]))
+            except Exception:
+                for job in queued:  # all jobs or none
+                    self.jobs.pop(job["id"], None)
+                    self.secret_env.pop(job["id"], None)
+                    shutil.rmtree(self._dir(job["id"]), ignore_errors=True)
+                self.batches.pop(batch_id, None)
+                shutil.rmtree(self._batch_dir(batch_id), ignore_errors=True)
+                raise
+        return self.get_batch(batch_id)
 
     def create_group(self, payload):
         """Queue one job per fold of a cross-validation config; the folds run one after another."""
@@ -228,7 +334,8 @@ class JobManager:
                 pass  # informational copy next to the results
         return self.group(group_id)
 
-    def _queue(self, effective, extras, backend, answers, secrets, outputs, name, source, resume_from, group=None):
+    def _queue(self, effective, extras, backend, answers, secrets, outputs, name, source, resume_from, group=None,
+               member=None, caches=None):
         job_id = self._new_id()
         job_dir = self._dir(job_id)
         job_dir.mkdir(parents=True)
@@ -290,6 +397,9 @@ class JobManager:
         }
         if group:
             job["group"] = group
+        if member:
+            job["batch"] = member
+            job["caches"] = caches or []
         with self.lock:
             if mode == "train_and_test" and any(
                     j["status"] in ACTIVE and j.get("outputs", {}).get("model_dir_host") == outputs.get("model_dir_host")
@@ -516,18 +626,7 @@ class JobManager:
             folds.append(entry)
         data["folds"] = folds
         statuses = [fold["status"] for fold in folds]
-        if any(status in RUNNING for status in statuses):
-            data["status"] = "running"
-        elif "queued" in statuses:
-            data["status"] = "running" if any(s in FINISHED for s in statuses) else "queued"
-        elif "paused" in statuses:
-            data["status"] = "paused"
-        elif all(status == "succeeded" for status in statuses):
-            data["status"] = "succeeded"
-        elif any(status in ("failed", "interrupted") for status in statuses):
-            data["status"] = "failed"
-        else:
-            data["status"] = "cancelled"
+        data["status"] = _collective_status(statuses)
         data["active"] = any(status in ACTIVE for status in statuses)
         data["summary"] = crossval.read_summary(group.get("root_host"), tables=full)
         return data
@@ -604,6 +703,89 @@ class JobManager:
             if not again:
                 return
 
+    # ----------------------------------------------------------------- batches
+    def _batch_jobs(self, batch_id):
+        return [job for job in self.jobs.values() if (job.get("batch") or {}).get("id") == batch_id]
+
+    def _batch_public(self, record):
+        data = dict(record)
+        attempts = self._batch_jobs(record["id"])
+        entries = []
+        for config in record["configs"]:
+            tries = sorted((job for job in attempts if job["batch"]["index"] == config["index"]),
+                           key=lambda j: j["created"])
+            latest = tries[-1] if tries else None
+            entry = {**config, "job": None, "attempts": len(tries), "status": "removed"}
+            if latest:
+                entry.update({"job": latest["id"], "status": latest["status"], "started": latest.get("started"),
+                              "finished": latest.get("finished")})
+            entries.append(entry)
+        data["configs"] = entries
+        statuses = [entry["status"] for entry in entries]
+        data["status"] = _collective_status(statuses)
+        data["active"] = any(status in ACTIVE for status in statuses)
+        return data
+
+    def list_batches(self):
+        with self.lock:
+            return sorted((self._batch_public(record) for record in self.batches.values()),
+                          key=lambda b: b["created"], reverse=True)
+
+    def get_batch(self, batch_id):
+        with self.lock:
+            record = self.batches.get(batch_id)
+            if record is None:
+                raise KeyError(batch_id)
+            return self._batch_public(record)
+
+    def cancel_batch(self, batch_id):
+        """Cancel the queued jobs of a batch and stop its running ones."""
+        with self.lock:
+            if batch_id not in self.batches:
+                raise KeyError(batch_id)
+            for job in self._batch_jobs(batch_id):
+                if job["status"] in ("queued", "starting", "running", "pausing"):
+                    self.cancel(job["id"])
+            return self.get_batch(batch_id)
+
+    def remove_batch(self, batch_id):
+        """Forget a finished batch and its jobs; outputs on disk are kept."""
+        with self.lock:
+            if batch_id not in self.batches:
+                raise KeyError(batch_id)
+            members = self._batch_jobs(batch_id)
+            if any(job["status"] in ACTIVE for job in members):
+                raise ValueError("Stop the batch before removing it")
+            for job in members:
+                self.jobs.pop(job["id"])
+            self.batches.pop(batch_id)
+        for job in members:
+            shutil.rmtree(self._dir(job["id"]), ignore_errors=True)
+        shutil.rmtree(self._batch_dir(batch_id), ignore_errors=True)
+
+    def _batch_waits(self, job):
+        """Jobs of a batch that preprocess into the same cache folder never preprocess at the same time: a job waits
+        while an earlier job of its batch sharing a cache is queued, or while any of them is still preprocessing."""
+        member, caches = job.get("batch"), set(job.get("caches") or ())
+        if not member or not caches:
+            return False
+        for other in self.jobs.values():
+            if other is job or (other.get("batch") or {}).get("id") != member["id"] or \
+                    not caches & set(other.get("caches") or ()):
+                continue
+            if other["status"] == "queued" and self._position(other) < self._position(job):
+                return True
+            if other["status"] in RUNNING and (other.get("progress") or {}).get("phase") in (
+                    None, "starting", "preprocessing"):
+                return True
+        return False
+
+    @staticmethod
+    def _position(job):
+        """Queue order: creation time, then the place in its cross-validation or batch (queued in the same second)."""
+        member = job.get("group") or job.get("batch") or {}
+        return job["created"], member.get("index", 0)
+
     def _group_waits(self, job):
         """Folds of one cross-validation run one at a time, in fold order; an unresumed paused fold holds the rest."""
         group = job.get("group")
@@ -641,18 +823,18 @@ class JobManager:
     def _start_queued(self):
         prefs = settings.load()
         with self.lock:
-            queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"),
-                            key=lambda j: (j["created"], (j.get("group") or {}).get("index", 0)))
+            queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"), key=self._position)
             for job in queued:
                 running = [j for j in self.jobs.values() if j["status"] in ("starting", "running", "pausing", "stopping")]
                 if len(running) >= prefs["max_parallel_jobs"]:
                     return
-                if self._group_waits(job):
+                if self._group_waits(job) or self._batch_waits(job):
                     continue
                 if job["policy"] != "parallel" and job.get("gpu") is not None:
                     earlier = [j for j in self.jobs.values() if j is not job and j.get("gpu") == job["gpu"] and (
                         j["status"] in ("starting", "running", "pausing", "stopping") or
-                        (j["status"] == "queued" and j["created"] < job["created"] and j["policy"] != "parallel"))]
+                        (j["status"] == "queued" and self._position(j) < self._position(job) and
+                         j["policy"] != "parallel"))]
                     if earlier:
                         continue
                 self._launch(job)

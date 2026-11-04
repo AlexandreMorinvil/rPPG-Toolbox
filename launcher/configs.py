@@ -274,6 +274,7 @@ def list_configs():
                     "model": flat.get("MODEL.NAME", ""),
                     "train": flat.get("TRAIN.DATA.DATASET", ""),
                     "test": flat.get("TEST.DATA.DATASET", "") or flat.get("UNSUPERVISED.DATA.DATASET", ""),
+                    "backend": guess_backend(rel, flat),
                 })
             except Exception as error:
                 entry["error"] = str(error)

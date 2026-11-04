@@ -40,6 +40,10 @@ Order: batch 1 and batch 2 in any order. When batch 2 is done, run `python tools
 each batch 2 run's tested checkpoint into the batch 3 configs of the same experiment (`MODEL.INIT_WEIGHTS`,
 `INFERENCE.MODEL_PATH`). Then batch 3.
 
+To launch a whole folder at once, use the launcher's **New run → Launch a batch…** and tick the folder (e.g.
+`thesis/batch1_literature`): one round of pre-launch checks for all its configs, then one job per config, run one after
+another (see `launcher/README.md`, *Batches*).
+
 Runs write to `<runs>/<batch folder>/<run name>` (`runs` in `paths.yaml`). Each model and input preprocesses its
 data once: batch 2 and batch 3 share the lab caches (same crop modes and sizes), and the first lab run of each model
 and input decodes the videos (the face crop is the slow one).

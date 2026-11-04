@@ -35,6 +35,7 @@ Jobs run in a detached runner process, so they keep running when the launcher is
   - *Convert paths* translates data/cache/output/checkpoint paths between host paths and Docker container paths using the `.env` mounts.
   - **Training sync (optional)** — the *Validation/test follow training preprocessing* checkbox links all preprocessing parameters, frame rate and tensor layout to both splits. *Sync settings…* lets you link individual parameters to validation, test, or both, including selected vHRM operational settings. Both controls share the same links; the checkbox is partially checked for a custom selection. Enabling links opens a preview before any values are overwritten. Destination fields display *Linked to training* and stay read-only until you click *Unlink*. Turning off the quick checkbox removes its preprocessing links while preserving any other custom links and all current values; *Clear all* in the custom panel removes everything after preview/apply. Links also update hidden validation/model-specific fields. Dataset identities, participants, split boundaries, paths and cache/output identifiers are excluded. Links start off and reset when loading/creating a config (including reopening a job) or leaving training mode; saved YAML contains only ordinary values, not link settings.
   - *Save config* writes a standalone YAML; *Launch* runs the pre-launch checks.
+  - *Launch a batch…* runs many saved configs at once (see *Batches* below).
 - **Pre-launch checks** — environment (local Python/PyTorch/CUDA or Docker/Compose/image), configuration, and questions that need your decision: overwrite or use a new output sub-folder, reuse or rebuild an existing cache, Weights & Biases login (use an existing key, enter one for this run — verified with W&B and kept in memory only — switch to offline, or disable), building a missing Docker image, which GPU to use, and whether to queue or run in parallel when the GPU is busy.
 - **Jobs** — queued/running/paused/finished runs with phase, epoch, current progress bar and ETA, loss per epoch, parsed test metrics, errors with hints, the live console output, and actions to pause, stop, resume, view the config, reopen it in the editor, or open the results.
 - **Run descriptions** — `DESCRIPTION` (Experiment section, or a top-level key in YAML) holds free-form notes about the run. The pre-launch dialog shows it next to the job name for a last edit. In **Jobs**, *Edit* on the Description card changes it at any time, including for running or finished jobs. The job list shows its first line, the Results overview shows it next to the launcher job, and the Results filter searches it. Edits are stored with the job (`job.json`); the config snapshot keeps the description the job was launched with, while *Open in editor* and *Resume* use the edited one. An empty description is left out of the YAML; Docker users must rebuild the toolbox image before launching with a non-empty one.
@@ -61,6 +62,57 @@ Runs save compact per-frame signals; every plot is drawn on demand, so nothing i
 
 What runs save is set in the run editor under **Visualization outputs** (`VISUALIZE.*`): the highlight PNGs, the best-epoch validation set, and the probe interval and selection. Docker users must rebuild the toolbox image before using configs that contain these keys.
 - **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, and extra results/preprocessed-data folders to browse.
+
+## Batches
+
+**New run → Launch a batch…** launches many saved configs at once, for example every config of
+`configs/launcher/thesis/batch1_literature`. Each config becomes one ordinary job.
+
+1. **Choose the configs.** Tick configs or whole folders in the tree; a folder ticks every config below it. The search
+   keeps the selection. The backend follows the selected configs (container paths → Docker) and can be changed.
+2. **Check them together.** The usual pre-launch checks run for every config (a few seconds for 140 configs). Questions
+   that several configs share are asked **once for the batch**:
+   - *Existing results*: new sub-folder, overwrite, or **skip** the configs that already have results (useful to
+     relaunch a folder after some runs finished).
+   - *Existing caches*: reuse or preprocess again.
+   - *Weights & Biases login*, *GPU* and *Docker image*.
+   - *Run order*: one after another on the GPU (default), or up to the job limit of Settings at once.
+
+   An answer only changes the configs that asked the question, as if each config were launched alone: a config without
+   results keeps its output folder, and a split without a cache still preprocesses.
+3. **Read the results of the checks.**
+   - *Problems shared by several configs* lists each problem once, with the number of configs it affects (e.g. a data
+     folder not set in `thesis/paths.yaml`).
+   - The table gives every config's status:
+     - *Ready* (possibly with warnings).
+     - *Blocked*: errors, or the same output folder as an earlier config of the batch.
+     - *Skipped*.
+     - *Already running*: the config, or its output folder, belongs to a queued or running job.
+   - Untick ready configs to leave them out; *Open* loads a config in the editor. Click a count at the top to show only
+     those configs.
+4. **Launch.** The launch checks everything again and queues all the ready configs, or none of them if something
+   changed since the check.
+
+**In Jobs:**
+
+- **Batch row:** a batch is one row with its jobs nested below; a batch of more than 12 jobs starts collapsed. The row
+  shows the jobs done and an estimate of the time left from the finished ones.
+- **Detail:** the detail lists every job (status, phase, epoch, MAE, duration; click a row to open the job) and the
+  launch answers.
+- **Actions:** *Stop remaining jobs*; *Relaunch N unfinished…*, which opens the batch dialog with the failed, stopped
+  or removed configs (to continue a training from its last epoch, use *Resume training* on its job instead); *Remove*,
+  which keeps the outputs.
+- **Each job:** each job is named after its config path, keeps its config's description, and links back to its batch.
+  It has the usual features (pause, resume, results).
+
+**Running a batch:**
+
+- **Order:** jobs start in the listed order (config paths sorted).
+- **Shared caches:** jobs that preprocess into the same cache folder never preprocess at the same time, even in
+  parallel. For example, the thesis lab configs of one model and input share a vHRM cache.
+- **The launcher must be open:** jobs start only while the launcher runs. Keep it open, or reopen it, until the last
+  job has started. Queued jobs wait across a restart, except with a W&B key typed at launch: that key is kept in memory
+  only, so prefer `wandb login` or offline mode for long batches.
 
 ## Cross-validation (vHRM)
 
@@ -211,6 +263,6 @@ containers that are already running.
 
 ## Files
 
-- Launcher state, job logs and config snapshots: `launcher_data/` (Git-ignored).
+- Launcher state, job logs and config snapshots: `launcher_data/` (Git-ignored); batches in `launcher_data/batches/`.
 - Each job's exact config is `launcher_data/jobs/<job>/config.yaml`; Docker jobs mount it read-only into the container.
 - The W&B API key is never written to disk by the launcher.

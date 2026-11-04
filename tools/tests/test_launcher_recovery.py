@@ -20,9 +20,10 @@ class LauncherRecoveryTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.folder = Path(self.temporary.name)
-        self.patcher = patch.object(paths, 'JOBS_DIR', self.folder / 'jobs')
-        self.patcher.start()
-        self.addCleanup(self.patcher.stop)
+        for name in ('JOBS_DIR', 'CV_DIR', 'BATCH_DIR'):
+            patcher = patch.object(paths, name, self.folder / name.lower())
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.manager = jobs.JobManager.__new__(jobs.JobManager)
         self.manager.lock = threading.RLock()
         for name in ('jobs', 'processes', 'parsers', 'offsets', 'secret_env'):
@@ -81,7 +82,7 @@ class LauncherRecoveryTests(unittest.TestCase):
     def test_restart_preserves_pausing_and_paused_state(self):
         self.manager.pause('test-job')
         reloaded = jobs.JobManager.__new__(jobs.JobManager)
-        reloaded.jobs, reloaded.parsers, reloaded.offsets = {}, {}, {}
+        reloaded.jobs, reloaded.groups, reloaded.batches, reloaded.parsers, reloaded.offsets = {}, {}, {}, {}, {}
         reloaded._load()
         self.assertEqual(reloaded.jobs['test-job']['status'], 'pausing')
         self.assertIn('test-job', reloaded.parsers)

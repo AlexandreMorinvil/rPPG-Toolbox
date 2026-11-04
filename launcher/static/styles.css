@@ -305,12 +305,12 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); padding: 10px; bo
 .browse-list { border: 1px solid var(--line); border-radius: 6px; max-height: 50vh; overflow: auto; }
 .browse-item { padding: 5px 10px; cursor: pointer; border-bottom: 1px solid var(--grid); }
 .browse-item:hover { background: var(--accent-soft); }
-#preflightBody .check { display: block; border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
-#preflightBody .check.ok, #preflightBody .check.answered { border-left-color: var(--ok); }
-#preflightBody .check.info { border-left-color: #9ca3af; }
-#preflightBody .check.warn { border-left-color: var(--warn); }
-#preflightBody .check.error { border-left-color: var(--err); background: var(--err-soft); }
-#preflightBody .check.question { border-left-color: var(--accent); background: var(--accent-soft); }
+.checks .check { display: block; border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
+.checks .check.ok, .checks .check.answered { border-left-color: var(--ok); }
+.checks .check.info { border-left-color: #9ca3af; }
+.checks .check.warn { border-left-color: var(--warn); }
+.checks .check.error { border-left-color: var(--err); background: var(--err-soft); }
+.checks .check.question { border-left-color: var(--accent); background: var(--accent-soft); }
 .check-head { display: flex; gap: 8px; align-items: center; }
 .check-head .icon { width: 18px; text-align: center; font-weight: 700; }
 .check-msg { margin: 4px 0 0 26px; }
@@ -318,8 +318,42 @@ pre.code { background: #f6f8fa; border: 1px solid var(--line); padding: 10px; bo
 .options { margin: 6px 0 0 26px; display: grid; gap: 4px; }
 .option { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
 .option small { display: block; color: var(--muted); }
-#preflightBody .row { margin: 8px 0 0 26px; }
-#preflightBody .row input { flex: 1; }
+.checks > .check .row { margin: 8px 0 0 26px; }
+.checks > .check .row input { flex: 1; }
+/* Batches: config picker with checkboxes, then the checks of every config. */
+.batch-select .row { margin-bottom: 8px; }
+.batch-select input[type="search"] { flex: 1; min-width: 220px; }
+.batch-tree { max-height: min(58vh, 560px); border: 1px solid var(--line); border-radius: 8px; padding: 4px; margin-top: 6px; }
+.batch-tree input[type="checkbox"], .batch-table input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; flex: none; cursor: pointer; }
+.config-file.batch-file { flex-direction: row; align-items: flex-start; gap: 10px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
+.config-file.batch-file:hover { background: var(--bg); }
+.batch-file input { margin-top: 2px !important; }
+.batch-file-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.batch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.batch-summary strong { margin-right: 6px; }
+button.stat { padding: 2px 9px; border-radius: 12px; }
+button.stat.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.batch-blocked b { color: var(--err); }
+.batch-ready b, .batch-warn b { color: var(--ok); }
+.issue { border-left: 3px solid; border-radius: 5px; padding: 6px 10px; margin-bottom: 6px; font-size: 12px; }
+.issue.error { border-color: var(--err); background: var(--err-soft); }
+.issue.warn { border-color: var(--warn); background: var(--warn-soft); }
+.issue > summary { display: flex; gap: 10px; cursor: pointer; }
+.issue-msg { flex: 1; overflow-wrap: anywhere; }
+.issue-count { font-weight: 600; white-space: nowrap; }
+.issue-configs { margin-top: 6px; overflow-wrap: anywhere; }
+.batch-table { max-height: 46vh; }
+.batch-table td { vertical-align: top; }
+.batch-name { font-weight: 600; overflow-wrap: break-word; }
+.batch-desc { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-notes { max-width: 340px; overflow-wrap: anywhere; }
+.batch-notes summary { cursor: pointer; }
+.batch-notes .details { margin-left: 0; }
+.batch-status { font-weight: 600; white-space: nowrap; }
+.batch-status.ready, .batch-status.warn { color: var(--ok); }
+.batch-status.blocked { color: var(--err); }
+.batch-status.skipped, .batch-status.busy { color: var(--muted); }
+.batch-row.blocked .batch-name, .batch-row.skipped .batch-name, .batch-row.busy .batch-name { color: var(--muted); }
 .job-name { display: grid; gap: 4px; margin-top: 12px; }
 .job-name textarea, #jdDescription textarea { width: 100%; resize: vertical; margin-top: 6px; }
 

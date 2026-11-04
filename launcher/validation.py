@@ -6,6 +6,8 @@ import json
 import math
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 from cache_naming import (_uv_values, compact_name, legacy_cache_matches, legacy_name, preprocessing_identity,
@@ -25,6 +27,23 @@ RAW_LAYOUTS = {
 }
 MOTION_AUG_DATASETS = {"UBFC-rPPG", "PURE", "iBVP", "PhysDrive"}
 MOTION_NAME_PATTERN = re.compile(r"^[^_]+(_[^_]+)?(_[^_]+)?_[^_]+$")
+LAYOUT_TTL = 30
+_layout_counts = {}
+_layout_lock = threading.Lock()
+
+
+def _layout_count(folder, pattern):
+    """Entries of a raw-data folder matching its dataset layout, cached for a few seconds: every split of every
+    config of a batch (and each edit in the editor) globs the same folders, and a vHRM glob takes ~0.2 s."""
+    key = (str(folder), pattern)
+    with _layout_lock:
+        cached = _layout_counts.get(key)
+    if cached and time.time() - cached[0] < LAYOUT_TTL:
+        return cached[1]
+    count = sum(1 for _ in folder.glob(pattern))
+    with _layout_lock:
+        _layout_counts[key] = (time.time(), count)
+    return count
 
 
 class Report:
@@ -432,7 +451,7 @@ def _check_split(values, prefix, backend, report, env, active_fields):
             report.error(f"{section}: raw data folder not found: {raw_host}", prefix + ".DATA_PATH")
         elif raw_host is not None and dataset in RAW_LAYOUTS:
             pattern, noun = RAW_LAYOUTS[dataset]
-            count = sum(1 for _ in raw_host.glob(pattern))
+            count = _layout_count(raw_host, pattern)
             report.paths[prefix + ".DATA_PATH"]["found"] = f"{count} {noun}"
             elsewhere = dataset == "vHRM" and values.get(prefix + ".VHRM.EXPERIMENT_PATHS")
             if count == 0 and not elsewhere:
