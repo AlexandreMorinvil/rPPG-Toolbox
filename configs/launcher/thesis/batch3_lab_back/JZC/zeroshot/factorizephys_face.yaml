@@ -29,7 +29,7 @@ TRAIN:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets preparation
+    DATA_PATH: C:/Datasets
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -87,7 +87,7 @@ INFERENCE:
   EVALUATION_WINDOW:
     USE_SMALLER_WINDOW: true
     WINDOW_SIZE: 30
-  MODEL_PATH: <run batch2_lab_front/JZC/factorizephys_face.yaml, then tools/thesis_configs.py>
+  MODEL_PATH: C:/Run/thesis/batch2_lab_front/b2_jzc_factorizephys_face/vHRM_72x72_C160_Raw_FS30_e7f8578a/PreTrainedModels/b2_jzc_factorizephys_face_Epoch9.pth
 VISUALIZE:
   HIGHLIGHTS: true
   HIGHLIGHT_WORST: 3

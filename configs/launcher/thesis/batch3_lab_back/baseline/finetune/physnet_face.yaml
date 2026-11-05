@@ -21,7 +21,7 @@ TRAIN:
   LR: 0.0009
   EARLY_STOPPING:
     ENABLED: true
-    PATIENCE: 4
+    PATIENCE: 7
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b3_baseline_ft_physnet_face
   PLOT_LOSSES_AND_LR: true
@@ -29,7 +29,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets preparation
+    DATA_PATH: C:/Datasets
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -84,7 +84,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets preparation
+    DATA_PATH: C:/Datasets
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -136,7 +136,7 @@ VALID:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets preparation
+    DATA_PATH: C:/Datasets
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30

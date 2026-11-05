@@ -21,7 +21,7 @@ TRAIN:
   LR: 0.0009
   EARLY_STOPPING:
     ENABLED: true
-    PATIENCE: 4
+    PATIENCE: 7
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b3_jzc_ft_physnet_uvhead
   PLOT_LOSSES_AND_LR: true

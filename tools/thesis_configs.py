@@ -77,7 +77,7 @@ FACE_SEARCH_WIDTH = 0.7
 MAX_DURATION_SEC = 120.0     # first 2 minutes of each lab recording
 WINDOW_SEC = 30
 EPOCHS = 20
-PATIENCE = 4                 # early stopping: epochs without a lower validation loss
+PATIENCE = 7                 # early stopping: epochs without a lower validation loss
 FINETUNE = {"epochs": 10, "lr_factor": 0.1}
 MISSING = "<not set: {key} in thesis/paths.yaml>"
 
