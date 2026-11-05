@@ -62,11 +62,11 @@ def _first_line(text):
     return str(text or "").strip().split("\n", 1)[0][:200]
 
 
-def _folders(outputs):
+def folders_of(outputs):
     return {os.path.normcase(str(outputs[key])) for key in OUTPUT_KEYS if outputs.get(key)}
 
 
-def _caches(effective, derived):
+def caches_of(effective, derived):
     """Cache folders a run preprocesses into (two runs filling one cache must not preprocess at the same time)."""
     folders = []
     for prefix in schema.active_splits(effective):
@@ -118,7 +118,7 @@ def _check_config(entry, path, backend, answers, secrets, manager):
     outputs = derived.get("outputs", {})
     entry["log_path"] = outputs.get("log_path_host") or effective.get("LOG.PATH")
     run = {"values": effective, "extras": data["extras"], "outputs": outputs, "answers": result["answers"],
-           "caches": _caches(effective, derived)}
+           "caches": caches_of(effective, derived)}
     return result["checks"], run
 
 
@@ -215,18 +215,18 @@ def run_checks(config_paths, backend, answers, secrets, manager, exclude=()):
         if entry["path"] in skipped:
             entry["status"] = "skipped"
             continue
-        owner = manager.active_owner(entry["path"], _folders(run["outputs"])) if manager is not None else None
+        owner = manager.active_owner(entry["path"], folders_of(run["outputs"])) if manager is not None else None
         if owner:
             entry["status"] = "busy"
             entry["errors"].append(f"Already queued or running in the launcher: {owner['name']} ({owner['status']}).")
             continue
-        clash = next((claimed[folder_] for folder_ in _folders(run["outputs"]) if folder_ in claimed), None)
+        clash = next((claimed[folder_] for folder_ in folders_of(run["outputs"]) if folder_ in claimed), None)
         if clash:
             entry["status"] = "blocked"
             entry["errors"].append(f"Writes to the same output folder as {clash}.")
             continue
         if not entry["excluded"]:
-            claimed.update({folder_: entry["name"] for folder_ in _folders(run["outputs"])})
+            claimed.update({folder_: entry["name"] for folder_ in folders_of(run["outputs"])})
         entry["status"] = "warn" if entry["warnings"] else "ready"
     launchable = [entry for entry in entries if entry["status"] in LAUNCHABLE and not entry["excluded"]]
 

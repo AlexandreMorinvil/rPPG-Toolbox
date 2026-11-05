@@ -102,6 +102,10 @@ def train_and_test(config, data_loader_dict):
     else:
         raise ValueError('Your Model is Not Supported  Yet!')
     model_trainer.train(data_loader_dict)
+    if model_trainer.test_results_are_current():
+        print(f"[training] Best epoch unchanged ({model_trainer.best_epoch}): its test results and report are kept.",
+              flush=True)
+        return
     model_trainer.test(data_loader_dict)
     analysis_report(config, model_trainer)
 

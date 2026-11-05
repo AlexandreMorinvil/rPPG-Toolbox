@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pickle
 import random
 import tempfile
 
@@ -55,11 +56,9 @@ def _signature(trainer, loaders):
     for key in ('MODEL_DIR', 'RESUME'):
         model.pop(key, None)
     train = copy.deepcopy(cfg['TRAIN'])
-    for key in ('PLOT_LOSSES_AND_LR', 'SAVE_RESUME'):
+    # Early stopping only decides when training ends: a resume may change it.
+    for key in ('PLOT_LOSSES_AND_LR', 'SAVE_RESUME', 'EARLY_STOPPING'):
         train.pop(key, None)
-    # Preserve compatibility with checkpoints written before this optional feature.
-    if not train.get('EARLY_STOPPING', {}).get('ENABLED', False):
-        train.pop('EARLY_STOPPING', None)
     valid = copy.deepcopy(cfg['VALID'])
     for section in (train, valid):
         section['DATA'].pop('DO_PREPROCESS', None)
@@ -80,6 +79,31 @@ def _signature(trainer, loaders):
         'batches': {key: len(loaders[key]) if loaders.get(key) is not None else None
                     for key in ('train', 'valid')},
     }
+
+
+def _same_run(saved, signature):
+    """Checkpoints written before early stopping could change on resume have it in their signature."""
+    train = {key: value for key, value in saved['train'].items() if key != 'EARLY_STOPPING'}
+    return {**saved, 'train': train} == signature
+
+
+def _tested_epoch(trainer, checkpoint):
+    """Epoch of the saved test results if they were written after this checkpoint's last commit, else None.
+
+    A run tests after its last commit, so newer results come from exactly this training state; older ones
+    belong to an earlier run in the same folder.
+    """
+    output_dir = trainer.config.TEST.OUTPUT_SAVE_DIR
+    if not output_dir:
+        return None
+    outputs = Path(output_dir) / f'{trainer.model_file_name}_outputs.pickle'
+    try:
+        if outputs.stat().st_mtime <= Path(checkpoint).stat().st_mtime:
+            return None
+        with outputs.open('rb') as handle:
+            return pickle.load(handle).get('meta', {}).get('epoch')
+    except Exception:  # missing or partial results: test again
+        return None
 
 
 def _rng_state(loaders):
@@ -160,15 +184,24 @@ def training_epochs(trainer, loaders, histories):
     start_epoch = 0
     best_weights = None
     best_saved_epoch = None
+    tested_epoch = None
+    trainer._tested_epoch = None
+    trainer._continued = False
     if source:
         # Contains optimizer + Python/NumPy RNG state: only load trusted files.
         saved = torch.load(source, map_location='cpu', weights_only=False)
         if not isinstance(saved, dict) or saved.get('format_version') != FORMAT_VERSION:
             raise ValueError('Not a full training resume checkpoint; use an *_resume.pt file, '
                              'not an inference-only *_EpochN.pth file.')
-        if saved['signature'] != signature:
+        if not _same_run(saved['signature'], signature):
             raise ValueError('Resume configuration/data differs from the checkpoint. Keep the same '
                              'model, epochs, batch size, optimizer settings and training/validation splits.')
+        # Read before the first commit below touches the checkpoint; a continuation that was itself interrupted
+        # has a newer checkpoint than the results and remembers their epoch in it.
+        tested_epoch = _tested_epoch(trainer, source)
+        if tested_epoch is None:
+            tested_epoch = saved.get('tested_epoch')
+        trainer._tested_epoch = tested_epoch
         trainer.model.load_state_dict(saved['model'])
         trainer.optimizer.load_state_dict(saved['optimizer'])
         scheduler = getattr(trainer, 'scheduler', None)
@@ -180,7 +213,11 @@ def training_epochs(trainer, loaders, histories):
         for name, value in saved['selection'].items():
             setattr(trainer, name, value)
         if stopping is not None:
-            stopping.load_state_dict(saved['early_stopping'])
+            # Under the current settings, which can differ from those of the checkpoint.
+            if saved['histories'].get('valid_loss'):
+                stopping.replay(saved['histories']['valid_loss'])
+            elif saved.get('early_stopping'):
+                stopping.load_state_dict(saved['early_stopping'])
         for name, values in saved['histories'].items():
             if name in histories:
                 histories[name][:] = values
@@ -214,7 +251,7 @@ def training_epochs(trainer, loaders, histories):
             'selection': {key: getattr(trainer, key) for key in ('best_epoch', 'min_valid_loss', 'used_epoch')
                           if hasattr(trainer, key)},
             'early_stopping': stopping.state_dict() if stopping is not None else None,
-            'best_model': best_weights, 'best_saved_epoch': best_saved_epoch,
+            'best_model': best_weights, 'best_saved_epoch': best_saved_epoch, 'tested_epoch': tested_epoch,
             'histories': histories, 'rng': _rng_state(loaders),
             'wandb_step': wandb_logger.training_step(),
         }
@@ -235,6 +272,7 @@ def training_epochs(trainer, loaders, histories):
     _pause_if_requested(target)
     for epoch in range(start_epoch, trainer.max_epoch_num):
         yield epoch
+        trainer._continued = True
         stopped = stopped_after_epoch(epoch)
         commit(epoch + 1)
         if stopped:

@@ -4,11 +4,12 @@ import json
 import importlib
 import os
 from pathlib import Path
+import pickle
 import random
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -147,7 +148,7 @@ class TrainingCheckpointTests(unittest.TestCase):
             for key, value in baseline.model.state_dict().items():
                 self.assertTrue(torch.equal(value, resumed.model.state_dict()[key]))
 
-    def test_early_stopping_rejects_missing_validation_and_changed_settings(self):
+    def test_early_stopping_rejects_missing_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             trainer = self.early_trainer(directory)
             trainer.loaders['valid'] = None
@@ -157,12 +158,183 @@ class TrainingCheckpointTests(unittest.TestCase):
             trainer.config.TEST.USE_LAST_EPOCH = True
             with self.assertRaisesRegex(ValueError, 'TEST.USE_LAST_EPOCH'):
                 trainer.run()
-            trainer.config.TEST.USE_LAST_EPOCH = False
-            trainer.run()
-            resumed = self.early_trainer(directory, str(resume_path(directory, 'toy')))
-            resumed.config.TRAIN.EARLY_STOPPING.PATIENCE = 3
+
+    def stopped_run(self, folder, losses=None):
+        """A training ended by early stopping (patience 2, tolerance 0.1 at the default losses), and its checkpoint."""
+        seed()
+        trainer = self.early_trainer(folder)
+        trainer.validation_losses = losses or trainer.validation_losses
+        trainer.run()
+        self.assertTrue(trainer._early_stopping.stopped)
+        return trainer, str(resume_path(folder, 'toy'))
+
+    def continuation(self, folder, source, losses=None, enabled=True, patience=2, tolerance=0.1):
+        trainer = self.early_trainer(folder, source)
+        trainer.validation_losses = losses or trainer.validation_losses
+        settings = trainer.config.TRAIN.EARLY_STOPPING
+        settings.ENABLED, settings.PATIENCE, settings.TOLERANCE = enabled, patience, tolerance
+        return trainer
+
+    def test_continuing_without_early_stopping_matches_a_run_that_never_had_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            seed()
+            baseline = self.early_trainer(folder / 'baseline')
+            baseline.config.TRAIN.EARLY_STOPPING.ENABLED = False
+            baseline.run()
+            self.assertEqual(len(baseline.history['valid_loss']), 8)
+            expected_rng = (random.random(), np.random.random(), torch.rand(1))
+            stopped, source = self.stopped_run(folder / 'stopped')
+            self.assertEqual(len(stopped.history['valid_loss']), 4)
+            self.assertEqual(stopped.best_epoch, 2)
+            resumed = self.continuation(folder / 'stopped', source, enabled=False)
+            resumed.run()
+            self.assertEqual(resumed.history, baseline.history)
+            self.assertEqual(resumed.best_epoch, baseline.best_epoch)
+            self.assertEqual(resumed.best_epoch, 4, 'the lower validation loss after the old stop is selected')
+            self.assertEqual(resumed.scheduler.state_dict(), baseline.scheduler.state_dict())
+            for key, value in baseline.model.state_dict().items():
+                self.assertTrue(torch.equal(value, resumed.model.state_dict()[key]), key)
+            actual_rng = (random.random(), np.random.random(), torch.rand(1))
+            self.assertEqual(expected_rng[:2], actual_rng[:2])
+            self.assertTrue(torch.equal(expected_rng[2], actual_rng[2]))
+            metadata = json.loads(resume_path(folder / 'stopped', 'toy').with_suffix('.json').read_text())
+            self.assertEqual((metadata['next_epoch'], metadata['early_stopped']), (8, False))
+            self.assertTrue(metadata['training_complete'])
+
+    def test_higher_patience_counts_the_epochs_already_without_improvement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            losses = [1.0, 0.75, 0.7, 0.71, 0.72, 0.73, 0.1, 0.1]
+            _, source = self.stopped_run(directory, losses)
+            resumed = self.continuation(directory, source, losses, patience=4)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 6, 'two more epochs reach a patience of 4')
+            self.assertTrue(resumed._early_stopping.stopped)
+            again = self.continuation(directory, source, losses, patience=7)
+            again.run()
+            self.assertEqual(len(again.history['valid_loss']), 8, 'a new improvement resets the count')
+            self.assertEqual(again.best_epoch, 6)
+
+    def test_used_up_patience_trains_nothing_and_new_tolerance_replays_the_losses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory)
+            lower = self.continuation(directory, source, patience=1)
+            with patch.object(lower, 'run_epoch') as run:
+                lower.run()
+                run.assert_not_called()
+            # At tolerance 0 the losses 1.0, 0.75, 0.7, 0.71 hold one epoch without improvement, not two.
+            strict = self.continuation(directory, source, patience=2, tolerance=0.0)
+            iterator = training_epochs(strict, strict.loaders, strict.history)
+            self.assertEqual(next(iterator), 4)
+            self.assertEqual(strict._early_stopping.state_dict(), {'best_loss': 0.7, 'bad_epochs': 1, 'stopped': False})
+            iterator.close()
+
+    def test_checkpoints_with_early_stopping_in_their_signature_can_continue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory)
+            checkpoint = torch.load(source, weights_only=False)
+            self.assertNotIn('EARLY_STOPPING', checkpoint['signature']['train'])
+            checkpoint['signature']['train']['EARLY_STOPPING'] = {'ENABLED': True, 'PATIENCE': 2, 'TOLERANCE': 0.1}
+            torch.save(checkpoint, source)
+            resumed = self.continuation(directory, source, enabled=False)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 8)
+
+    def test_other_changes_are_still_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory)
+            resumed = self.continuation(directory, source, enabled=False)
+            resumed.config.TRAIN.LR = 0.5
             with self.assertRaisesRegex(ValueError, 'configuration/data differs'):
                 resumed.run()
+
+    def save_results(self, source, epoch, age=10):
+        """Saved test results of this epoch, written age seconds after (negative: before) the checkpoint."""
+        outputs = Path(source).parent / 'results' / 'toy_outputs.pickle'
+        outputs.parent.mkdir(exist_ok=True)
+        outputs.write_bytes(pickle.dumps({'meta': {'epoch': epoch}}))
+        stamp = Path(source).stat().st_mtime + age
+        os.utime(outputs, (stamp, stamp))
+        return str(outputs.parent)
+
+    def test_saved_results_are_kept_only_while_the_best_epoch_stays(self):
+        with tempfile.TemporaryDirectory() as directory:
+            flat = [1.0, 0.75, 0.7, 0.71, 0.9, 0.9, 0.9, 0.9]
+            _, source = self.stopped_run(directory, flat)
+            results = self.save_results(source, 2)
+            same = self.continuation(directory, source, flat, enabled=False)
+            same.config.TEST.OUTPUT_SAVE_DIR = results
+            same.run()
+            self.assertEqual(same.best_epoch, 2)
+            self.assertTrue(same.test_results_are_current())
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory)
+            results = self.save_results(source, 2)
+            better = self.continuation(directory, source, enabled=False)
+            better.config.TEST.OUTPUT_SAVE_DIR = results
+            better.run()
+            self.assertEqual(better.best_epoch, 4)
+            self.assertFalse(better.test_results_are_current())
+
+    def test_results_that_may_be_of_another_run_are_not_trusted(self):
+        flat = [1.0, 0.75, 0.7, 0.71, 0.9, 0.9, 0.9, 0.9]
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, flat)
+            older = self.save_results(source, 2, age=-10)
+            resumed = self.continuation(directory, source, flat, enabled=False)
+            resumed.config.TEST.OUTPUT_SAVE_DIR = older
+            resumed.run()
+            self.assertFalse(resumed.test_results_are_current(), 'older than the checkpoint')
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, flat)
+            resumed = self.continuation(directory, source, flat, enabled=False)
+            resumed.config.TEST.OUTPUT_SAVE_DIR = str(Path(directory) / 'missing')
+            resumed.run()
+            self.assertFalse(resumed.test_results_are_current(), 'no results at all')
+
+    def test_retrying_a_test_is_never_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory)
+            results = self.save_results(source, 2)
+            retry = self.continuation(directory, source)
+            retry.config.TEST.OUTPUT_SAVE_DIR = results
+            with patch.object(retry, 'run_epoch') as run:
+                retry.run()
+                run.assert_not_called()
+            self.assertFalse(retry.test_results_are_current())
+
+    def test_an_interrupted_continuation_remembers_the_tested_epoch(self):
+        flat = [1.0, 0.75, 0.7, 0.71, 0.9, 0.9, 0.9, 0.9]
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, flat)
+            results = self.save_results(source, 2)
+            first = self.continuation(directory, source, flat, enabled=False)
+            first.config.TEST.OUTPUT_SAVE_DIR = results
+            iterator = training_epochs(first, first.loaders, first.history)
+            first.run_epoch(next(iterator))
+            next(iterator)  # the epoch is committed: the checkpoint is now newer than the results
+            iterator.close()
+            older = Path(source).stat().st_mtime - 10
+            os.utime(Path(results) / 'toy_outputs.pickle', (older, older))
+            second = self.continuation(directory, source, flat, enabled=False)
+            second.config.TEST.OUTPUT_SAVE_DIR = results
+            second.run()
+            self.assertEqual(second.best_epoch, 2)
+            self.assertTrue(second.test_results_are_current())
+
+    def test_run_skips_the_test_and_report_only_when_the_results_are_current(self):
+        main = importlib.import_module('main')
+        config = _C.clone()
+        config.MODEL.NAME = 'Physnet'
+        for current in (True, False):
+            trainer = Mock(best_epoch=2)
+            trainer.test_results_are_current.return_value = current
+            with patch.object(main.trainer.PhysnetTrainer, 'PhysnetTrainer', return_value=trainer), \
+                    patch.object(main, 'analysis_report') as report:
+                main.train_and_test(config, {})
+            trainer.train.assert_called_once()
+            self.assertEqual(trainer.test.called, not current)
+            self.assertEqual(report.called, not current)
 
     def test_legacy_disabled_checkpoint_remains_resumable(self):
         with tempfile.TemporaryDirectory() as directory:

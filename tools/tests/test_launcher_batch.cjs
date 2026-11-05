@@ -59,8 +59,18 @@ function fixture() {
   assert.ok(init > 0, 'Only omit application startup in the test fixture');
   vm.runInContext(source.slice(0, init), context, { filename: file });
   vm.runInContext('renderForm = () => {}; scheduleValidate = () => {}; updateJobDetail = () => {};', context);
-  const api = vm.runInContext(`({ S, renderJobList, renderBatchSelect, renderBatchChecks, updateBatchDetail, batchProgress, headlineMae })`, context);
-  api.S.boot = { schema: { mode_labels: { train_and_test: 'Training', unsupervised_method: 'Unsupervised' } }, platform: 'nt',
+  const api = vm.runInContext(`({ S, renderJobList, renderBatchSelect, renderBatchChecks, updateBatchDetail, batchProgress, headlineMae,
+    continueDialog, editQueuedDialog, renderContinueRows, renderEditRows, renderEditParameters, editRequest, continueRequest })`, context);
+  const fields = [
+    { key: 'TRAIN.EPOCHS', type: 'int', label: 'Epochs', section: 'Training' },
+    { key: 'TRAIN.EARLY_STOPPING.ENABLED', type: 'bool', label: 'Enable early stopping', section: 'Training', group: 'Early stopping' },
+    { key: 'TRAIN.EARLY_STOPPING.PATIENCE', type: 'int', label: 'Patience (epochs)', section: 'Training', group: 'Early stopping' },
+    { key: 'WANDB.MODE', type: 'enum', label: 'W&B mode', section: 'Tracking', options: ['online', 'offline'] },
+    { key: 'DEVICE', type: 'enum', label: 'Device', section: 'Run', options: ['cuda:0', 'cpu'] },
+  ];
+  api.S.fields = fields;
+  api.S.fieldMap = Object.fromEntries(fields.map(field => [field.key, field]));
+  api.S.boot = { schema: { locked_when_queued: ['WANDB.'], mode_labels: { train_and_test: 'Training', unsupervised_method: 'Unsupervised' } }, platform: 'nt',
     settings: { default_backend: 'docker', max_parallel_jobs: 2 }, configs: [
       { path: 'configs/thesis/b1/UBFC/physnet_face.yaml', group: 'local', mode: 'train_and_test', model: 'Physnet', train: 'UBFC-rPPG', test: 'UBFC-rPPG', backend: 'local' },
       { path: 'configs/thesis/b1/UBFC/pos_face.yaml', group: 'local', mode: 'unsupervised_method', model: '', train: '', test: 'UBFC-rPPG', backend: 'local' },
@@ -211,4 +221,85 @@ test('the batch detail lists its jobs and relaunches the unfinished ones', () =>
   // Two queued jobs of ~1 h, two at a time.
   const progress = f.batchProgress(f.S.batches[0]);
   assert.ok(Math.abs(progress.eta - 3600) < 5, `expected ~1 h left, got ${progress.eta}`);
+});
+
+test('the batch offers to continue its stopped trainings and to edit its queued jobs', () => {
+  const f = fixture();
+  f.S.batches = [{ id: 'B1', name: 'thesis/b1', created: '2026-11-03T10:00:00', status: 'running', active: true, backend: 'local',
+    configs: [entry(0, 'succeeded'), entry(1, 'succeeded'), entry(2, 'queued'), entry(3, 'queued')] }];
+  f.S.jobs = [job('j0', 0, 'succeeded', { can_continue: true }), job('j1', 1, 'succeeded', { can_continue: false }),
+    job('j2', 2, 'queued'), job('j3', 3, 'queued')];
+  f.S.selectedBatch = 'B1';
+  f.updateBatchDetail(true);
+  assert.deepEqual(f.el('bdHead').byTag('button').map(n => n.textContent), ['Continue 1 training…', 'Edit 2 queued…', 'Stop remaining jobs']);
+});
+
+const continuationRows = () => [
+  { job: 'j0', name: 'JZC/rhythmformer', next_epoch: 5, epochs_total: 20, best_epoch: 0, min_epochs: 4, max_epochs: 15, errors: [] },
+  { job: 'j1', name: 'RM/physnet', next_epoch: 9, epochs_total: 20, best_epoch: 4, min_epochs: null, max_epochs: 11, errors: [] },
+  { job: 'j2', name: 'RM/other', next_epoch: 6, epochs_total: 20, best_epoch: 1, min_epochs: 0, max_epochs: 14, errors: ['A patience of 4 is already used up.'] },
+];
+const rowBoxes = f => f.el('changeRows').byTag('input');
+
+test('the continue dialog shows what each job will train and sends only the chosen jobs', () => {
+  const f = fixture();
+  f.continueDialog([{ id: 'j0' }, { id: 'j1' }, { id: 'j2' }]);
+  const c = f.S.changing;
+  assert.equal(f.el('modalTitle').textContent, 'Continue 3 trainings');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.continueRequest(c).body.early_stopping)), { enabled: false }, 'removing early stopping is the default');
+  c.mode = 'patience';
+  assert.equal(f.continueRequest(c), null, 'no request without a patience');
+  c.patience = '8';
+  assert.equal(f.continueRequest(c).body.early_stopping.patience, '8');
+  c.rows = continuationRows();
+  f.renderContinueRows(c);
+  const text = f.el('changeRows').textContent;
+  assert.ok(text.includes('5 / 20') && text.includes('4–15 more epochs'), text);
+  assert.ok(text.includes('up to 11 more epochs'), 'without the losses, only the maximum is known');
+  assert.ok(text.includes('already used up'));
+  const boxes = rowBoxes(f);
+  assert.deepEqual(boxes.map(box => [box.checked, 'disabled' in box.attrs]), [[true, false], [true, false], [false, true]]);
+  assert.equal(f.el('changeApply').textContent, 'Continue 2 trainings');
+  assert.equal(f.el('changeApply').disabled, false);
+  boxes[0].checked = false;
+  boxes[0].events.change();
+  assert.equal(f.el('changeApply').textContent, 'Continue 1 training');
+  assert.deepEqual([...c.excluded], ['j0']);
+  c.mode = 'remove';
+  f.renderContinueRows(c);
+  assert.ok(f.el('changeRows').textContent.includes('15 more epochs'));
+  assert.ok(!f.el('changeRows').textContent.includes('4–15'));
+});
+
+test('the edit dialog offers the editable parameters and shows the change per job', () => {
+  const f = fixture();
+  f.editQueuedDialog([{ id: 'j2' }, { id: 'j3' }, { id: 'j4' }]);
+  const e = f.S.changing;
+  assert.equal(f.el('modalTitle').textContent, 'Edit 3 queued jobs');
+  const picker = f.el('editParameters').byTag('select')[0];
+  const offered = picker.byTag('option').map(o => o.attrs.value);
+  assert.ok(offered.includes('TRAIN.EARLY_STOPPING.PATIENCE'));
+  assert.ok(!offered.includes('WANDB.MODE'), 'locked parameters are not offered');
+  assert.equal(picker.value, 'TRAIN.EARLY_STOPPING.PATIENCE');
+  assert.equal(f.editRequest(e), null, 'no request without a value');
+  f.renderEditRows(e);
+  assert.ok(f.el('changeRows').textContent.includes('Enter a value'));
+  picker.value = 'TRAIN.EARLY_STOPPING.ENABLED';
+  picker.events.change();
+  const value = f.el('editParameters').byTag('select')[1];
+  assert.deepEqual(value.byTag('option').map(o => o.attrs.value), ['', 'true', 'false'], 'a switch offers true and false');
+  e.changes[0] = { key: 'TRAIN.EARLY_STOPPING.PATIENCE', value: '8' };
+  f.renderEditParameters(e);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.editRequest(e).body.changes)), { 'TRAIN.EARLY_STOPPING.PATIENCE': '8' });
+  e.rows = [
+    { job: 'j2', name: 'baseline/physnet', status: 'change', before: { 'TRAIN.EARLY_STOPPING.PATIENCE': 4 }, after: { 'TRAIN.EARLY_STOPPING.PATIENCE': 8 }, errors: [] },
+    { job: 'j3', name: 'baseline/pos', status: 'unused', before: {}, after: {}, errors: [] },
+    { job: 'j4', name: 'started', status: 'error', before: {}, after: {}, errors: ['Already started.'] },
+  ];
+  f.renderEditRows(e);
+  const text = f.el('changeRows').textContent;
+  assert.ok(text.includes('Patience (epochs): 4 → 8'), text);
+  assert.ok(text.includes('does not use it') && text.includes('Already started.'));
+  assert.deepEqual(rowBoxes(f).map(box => box.checked), [true, false, false]);
+  assert.equal(f.el('changeApply').textContent, 'Apply to 1 job');
 });

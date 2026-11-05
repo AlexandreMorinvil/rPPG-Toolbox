@@ -43,6 +43,26 @@ class EarlyStoppingTests(unittest.TestCase):
         self.assertTrue(stopping.update(float('-inf')))
         self.assertEqual(stopping.best_loss, 1.0)
 
+    def test_loaded_state_is_judged_by_the_current_patience(self):
+        saved = {'best_loss': 1.0, 'bad_epochs': 4, 'stopped': True}
+        higher, lower = EarlyStopping(8, 0.0), EarlyStopping(3, 0.0)
+        higher.load_state_dict(saved)
+        lower.load_state_dict({**saved, 'stopped': False})
+        self.assertFalse(higher.stopped)
+        self.assertEqual(higher.bad_epochs, 4)
+        self.assertTrue(lower.stopped)
+
+    def test_replay_gives_the_state_of_these_settings(self):
+        losses = [1.0, 0.95, 0.9, 0.85]
+        strict = EarlyStopping(5, 0.0)
+        strict.replay(losses)
+        self.assertEqual((strict.best_loss, strict.bad_epochs), (0.85, 0))
+        tolerant = EarlyStopping(2, 0.2)
+        tolerant.replay(losses)
+        self.assertEqual((tolerant.best_loss, tolerant.bad_epochs, tolerant.stopped), (1.0, 3, True))
+        tolerant.replay([])
+        self.assertEqual((tolerant.best_loss, tolerant.bad_epochs, tolerant.stopped), (None, 0, False))
+
     def test_settings_validation(self):
         cfg = _C.clone()
         validate_settings(cfg.TRAIN.EARLY_STOPPING, True)  # disabled by default
