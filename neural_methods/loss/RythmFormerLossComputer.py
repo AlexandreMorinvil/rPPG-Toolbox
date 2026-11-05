@@ -10,6 +10,18 @@ import torch.nn.functional as F
 import torch.nn as nn
 from evaluation.post_process import calculate_metric_per_video
 
+HR_BAND = (45, 150)      # classes of the cross-entropy, in bpm (end excluded)
+FULL_HR_BAND = (36, 199)  # where calculate_metric_per_video can find a heart rate: 0.6-3.3 Hz
+
+
+def frequency_band(hr_gt):
+    """The classes for this clip: a clip outside the usual band, such as hard exercise, needs the full one.
+
+    Only those clips change: the loss of a clip inside the band stays comparable with runs that never left it.
+    """
+    return HR_BAND if HR_BAND[0] <= hr_gt < HR_BAND[1] else FULL_HR_BAND
+
+
 def normal_sampling(mean, label_k, std):
     return math.exp(-(label_k-mean)**2/(2*std**2))/(math.sqrt(2*math.pi)*std)
 
@@ -144,15 +156,16 @@ class TorchLossComputer(object):
         hr_gt, pred_hr_peak, SNR, macc = calculate_metric_per_video(inputs.detach().cpu(), target.detach().cpu(), diff_flag = diff_flag, fs=Fs, hr_method='FFT')
         inputs = inputs.view(1, -1)
         target = target.view(1, -1)
-        bpm_range = torch.arange(45, 150, dtype=torch.float).to(torch.device('cuda'))
+        low, high = frequency_band(hr_gt)
+        bpm_range = torch.arange(low, high, dtype=torch.float).to(torch.device('cuda'))
         ca = TorchLossComputer.complex_absolute(inputs, Fs, bpm_range)
         sa = ca/torch.sum(ca)
 
-        target_distribution = [normal_sampling(int(hr_gt), i, std) for i in range(45, 150)]
+        target_distribution = [normal_sampling(int(hr_gt), i, std) for i in range(low, high)]
         target_distribution = [i if i > 1e-15 else 1e-15 for i in target_distribution]
         target_distribution = torch.Tensor(target_distribution).to(torch.device('cuda'))
 
-        hr_gt = torch.tensor(hr_gt-45).view(1).type(torch.long).to(torch.device('cuda'))
+        hr_gt = torch.tensor(hr_gt-low).view(1).type(torch.long).to(torch.device('cuda'))
         return F.cross_entropy(ca, hr_gt) , kl_loss(sa , target_distribution)
 
     @staticmethod
