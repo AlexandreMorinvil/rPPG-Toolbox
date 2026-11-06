@@ -10,7 +10,7 @@ video:
   UBFC-rPPG: D:/rPPG_Datasets/UBFC_dataset/DATASET_2
   PURE: D:/rPPG_Datasets/PURE
   COHFACE: D:/rPPG_Datasets/COHFACE
-  lab: F:/Datasets preparation              # holds baseline/, JZC/ and RM/
+  lab: C:/Datasets                         # holds baseline/, JZC/ and RM/
 
 # UV input: the vHRM Studio conversions (mirror mode).
 uv:

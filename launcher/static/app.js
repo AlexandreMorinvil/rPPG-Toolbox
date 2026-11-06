@@ -126,6 +126,7 @@ function closeModal() {
   $('modal').classList.add('hidden');
   S.preflight = null;
   S.batch = null;
+  S.changing = null;
 }
 
 function showTab(name) {
@@ -1389,7 +1390,7 @@ function jobItem(job, nested = false) {
   const phase = PHASES[job.progress?.phase] || job.status;
   return h('button', { type: 'button', class: 'item job ' + job.status + (nested ? ' fold' : '') + (job.id === S.selectedJob ? ' active' : ''), onclick: () => selectJob(job.id) },
     h('div', { class: 'item-title' }, h('span', { class: 'dot' }), nested && job.group ? `Fold ${job.group.fold}` : job.name,
-      nested && job.resume_from ? h('span', { class: 'muted small' }, ' (resumed)') : null),
+      nested && job.group && job.resume_from ? h('span', { class: 'muted small' }, ' (resumed)') : null),
     h('div', { class: 'item-sub' }, `${nested ? '' : job.backend + ' · '}${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
     !nested && job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
     fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
@@ -1473,6 +1474,8 @@ function updateJobDetail(force = false) {
   const actions = [];
   if (job.can_pause) actions.push(h('button', { type: 'button', onclick: () => pauseJob(job) }, 'Pause after epoch'));
   if (job.can_resume) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => resumeJob(job) }, job.recovery?.training_complete ? 'Retry plots / test' : 'Resume training'));
+  if (job.can_continue) actions.push(h('button', { type: 'button', class: 'primary', title: 'Train for more epochs from where early stopping ended this job', onclick: () => continueDialog([job]) }, 'Continue training…'));
+  if (job.status === 'queued' && job.mode !== 'report') actions.push(h('button', { type: 'button', onclick: () => editQueuedDialog([job]) }, 'Edit parameters…'));
   if (['queued', 'running', 'starting', 'pausing'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop now'));
   actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, 'View config'));
   actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
@@ -1772,7 +1775,12 @@ function updateBatchDetail(force = false) {
   }
   const progress = batchProgress(record);
   const unfinished = record.configs.filter(c => ['failed', 'cancelled', 'interrupted', 'removed'].includes(c.status));
+  const members = record.configs.map(c => S.jobs.find(j => j.id === c.job)).filter(Boolean);
+  const stopped = members.filter(j => j.can_continue);
+  const waiting = members.filter(j => j.status === 'queued' && j.mode !== 'report');
   const actions = [];
+  if (stopped.length) actions.push(h('button', { type: 'button', class: 'primary', title: 'Train for more epochs from where early stopping ended these jobs', onclick: () => continueDialog(stopped) }, `Continue ${countOf(stopped.length, 'training')}…`));
+  if (waiting.length) actions.push(h('button', { type: 'button', title: 'Change parameters of the jobs that have not started yet', onclick: () => editQueuedDialog(waiting) }, `Edit ${waiting.length} queued…`));
   if (record.active) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => batchAction(record, 'cancel') }, 'Stop remaining jobs'));
   if (unfinished.length) {
     actions.push(h('button', { type: 'button', title: 'Check the failed, stopped or removed configs again and launch them as a new batch. To continue a training from its last epoch, use Resume training on its job instead.',
@@ -1828,6 +1836,171 @@ async function batchAction(record, action) {
     if (action === 'remove') S.selectedBatch = null;
     await pollJobs();
   } catch (error) { toast(error.message, 'error'); }
+}
+
+// -------------------------------------- changing stopped and queued jobs
+const countOf = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// The dialogs below share this: one report row per job (row.usable: it can take part), ticked unless excluded.
+function jobChoiceTable(state, titles, cells, update) {
+  const rows = state.rows.map(row => {
+    const box = h('input', { type: 'checkbox', 'aria-label': `Include ${row.name}`, disabled: !row.usable });
+    box.checked = row.usable && !state.excluded.has(row.job);
+    box.addEventListener('change', () => { box.checked ? state.excluded.delete(row.job) : state.excluded.add(row.job); update(); });
+    return h('tr', { class: 'batch-row' + (row.usable ? '' : ' blocked') }, h('td', {}, box), h('td', { class: 'batch-name' }, row.name), ...cells(row).map(cell => h('td', {}, cell)));
+  });
+  return h('div', { class: 'table-wrap batch-table' }, h('table', { class: 'grid-table' },
+    h('tr', {}, h('th', {}, ''), h('th', {}, 'Job'), ...titles.map(title => h('th', {}, title))), ...rows));
+}
+
+// Refreshes the report of the open dialog: changing a setting drops the answer of an earlier request.
+async function refreshChoice(state, request, render) {
+  const seq = ++state.seq;
+  const button = $('changeApply');
+  button.disabled = true;
+  const body = $('changeRows');
+  if (!request) { state.rows = []; render(); return; }
+  try {
+    const { results } = await api(request.path, { method: 'POST', body: { ...request.body, dry_run: true } });
+    if (S.changing !== state || seq !== state.seq) return;
+    state.rows = results;
+    render();
+  } catch (error) {
+    if (S.changing === state && seq === state.seq) body.replaceChildren(h('div', { class: 'msg error pre' }, error.message));
+  }
+}
+
+async function applyChoice(state, request, done) {
+  const jobs = state.rows.filter(row => row.usable && !state.excluded.has(row.job)).map(row => row.job);
+  if (!jobs.length) return;
+  $('changeApply').disabled = true;
+  try {
+    await api(request.path, { method: 'POST', body: { ...request.body, jobs } });
+    closeModal();
+    toast(done(jobs.length), 'ok');
+    await pollJobs();
+    updateJobDetail(true);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    state.refresh();
+  }
+}
+
+function continueRequest(c) {
+  if (c.mode === 'patience' && c.patience === '') return null;
+  return { path: '/api/jobs/continue', body: { jobs: c.ids,
+    early_stopping: c.mode === 'remove' ? { enabled: false } : { enabled: true, patience: c.patience, tolerance: c.tolerance } } };
+}
+
+function continueDialog(jobs) {
+  const c = S.changing = { ids: jobs.map(j => j.id), excluded: new Set(), rows: [], seq: 0, mode: 'remove', patience: '', tolerance: '' };
+  c.refresh = () => refreshChoice(c, continueRequest(c), () => renderContinueRows(c));
+  const choose = mode => { c.mode = mode; c.refresh(); };
+  const radio = (mode, checked) => {
+    const input = h('input', { type: 'radio', name: 'continueMode', value: mode });
+    input.checked = checked;
+    input.addEventListener('change', () => choose(mode));
+    return input;
+  };
+  const patience = h('input', { type: 'number', id: 'continuePatience', min: '1', step: '1', 'aria-label': 'New patience in epochs', class: 'short' });
+  const tolerance = h('input', { type: 'text', inputmode: 'decimal', id: 'continueTolerance', placeholder: 'unchanged', 'aria-label': 'New improvement tolerance', class: 'short' });
+  const withPatience = radio('patience', false);
+  patience.addEventListener('change', () => { c.patience = patience.value.trim(); withPatience.checked = true; choose('patience'); });
+  tolerance.addEventListener('change', () => { c.tolerance = tolerance.value.trim(); if (c.mode === 'patience') c.refresh(); });
+  openModal(`Continue ${countOf(jobs.length, 'training')}`, h('div', { class: 'checks' },
+    h('p', { class: 'muted' }, 'Each job continues from its last epoch with its optimizer, learning-rate schedule and random state, as if early stopping had not ended it. Its maximum number of epochs stays the same.'),
+    h('div', { class: 'change-options' },
+      h('label', {}, radio('remove', true), ' Remove early stopping: train up to the maximum epochs'),
+      h('div', { class: 'row' }, h('label', {}, withPatience, ' Use a patience of'), patience, h('span', {}, 'epochs, tolerance'), tolerance)),
+    h('div', { id: 'changeRows' }),
+    h('p', { class: 'muted small' }, 'If the best epoch changes, the test and the analysis report are redone with the new weights and the test results are replaced; the previous report stays in its own report/Epoch folder. If it does not change, the results are kept. Continuations start after the jobs already queued.')), [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Continue', primary: true, id: 'changeApply', disabled: true, onClick: () => applyChoice(c, continueRequest(c), n => `${countOf(n, 'training')} queued to continue.`) }], true);
+  c.refresh();
+}
+
+function renderContinueRows(c) {
+  const update = () => {
+    const n = c.rows.filter(row => row.usable && !c.excluded.has(row.job)).length;
+    const button = $('changeApply');
+    button.textContent = n ? `Continue ${countOf(n, 'training')}` : 'Continue';
+    button.disabled = !n;
+  };
+  for (const row of c.rows) row.usable = !row.errors.length;
+  const planned = row => {
+    if (row.errors.length) return '–';
+    if (row.min_epochs === null || c.mode === 'remove') return `${c.mode === 'remove' ? '' : 'up to '}${countOf(row.max_epochs, 'more epoch')}`;
+    return row.min_epochs === row.max_epochs ? countOf(row.max_epochs, 'more epoch') : `${row.min_epochs}–${row.max_epochs} more epochs`;
+  };
+  $('changeRows').replaceChildren(c.mode === 'patience' && c.patience === '' ? h('p', { class: 'muted' }, 'Enter the new patience.') :
+    jobChoiceTable(c, ['Epochs done', 'Best epoch', 'Will train', 'Problem'], row => [
+      row.next_epoch === null || row.next_epoch === undefined ? '–' : `${row.next_epoch} / ${row.epochs_total}`,
+      row.best_epoch ?? '–', planned(row), row.errors.join(' ')], update));
+  update();
+}
+
+const editableFields = () => S.fields.filter(field => !S.boot.schema.locked_when_queued.some(prefix => field.key.startsWith(prefix)));
+
+function editRequest(e) {
+  const changes = Object.fromEntries(e.changes.filter(change => change.value !== '').map(change => [change.key, change.value]));
+  return Object.keys(changes).length ? { path: '/api/jobs/edit', body: { jobs: e.ids, changes } } : null;
+}
+
+// The server converts the text to the type of the field, as when it reads a config.
+function parameterInput(field, change, onChange) {
+  const choices = field.type === 'bool' ? ['true', 'false'] : ['enum', 'enum_list'].includes(field.type) ? field.options : null;
+  if (choices) {
+    const select = h('select', { 'aria-label': `New value of ${field.label}` }, h('option', { value: '' }, '— choose —'),
+      ...choices.map(option => h('option', { value: option }, (field.option_labels || {})[option] || option)));
+    select.value = change.value;
+    select.addEventListener('change', () => onChange(select.value));
+    return select;
+  }
+  const input = h('input', { type: 'text', 'aria-label': `New value of ${field.label}`, placeholder: 'new value', class: 'short' });
+  input.value = change.value;
+  input.addEventListener('change', () => onChange(input.value.trim()));
+  return input;
+}
+
+function renderEditParameters(e) {
+  const sections = [...new Set(editableFields().map(field => field.section))];
+  $('editParameters').replaceChildren(...e.changes.map((change, index) => {
+    const select = h('select', { 'aria-label': 'Parameter to change' }, ...sections.map(section => h('optgroup', { label: section },
+      ...editableFields().filter(field => field.section === section).map(field => h('option', { value: field.key }, `${field.group ? field.group + ' · ' : ''}${field.label} (${field.key})`)))));
+    select.value = change.key;
+    select.addEventListener('change', () => { change.key = select.value; change.value = ''; renderEditParameters(e); e.refresh(); });
+    return h('div', { class: 'row edit-parameter' }, select,
+      parameterInput(S.fieldMap[change.key], change, value => { change.value = value; e.refresh(); }),
+      e.changes.length > 1 ? h('button', { type: 'button', class: 'small', onclick: () => { e.changes.splice(index, 1); renderEditParameters(e); e.refresh(); } }, 'Remove') : null);
+  }), h('button', { type: 'button', class: 'small', onclick: () => { e.changes.push({ key: 'TRAIN.EPOCHS', value: '' }); renderEditParameters(e); } }, 'Add a parameter'));
+}
+
+function editQueuedDialog(jobs) {
+  const e = S.changing = { ids: jobs.map(j => j.id), excluded: new Set(), rows: [], seq: 0, changes: [{ key: 'TRAIN.EARLY_STOPPING.PATIENCE', value: '' }] };
+  e.refresh = () => refreshChoice(e, editRequest(e), () => renderEditRows(e));
+  openModal(`Edit ${countOf(jobs.length, 'queued job')}`, h('div', { class: 'checks' },
+    h('p', { class: 'muted' }, 'Changes the configuration of these jobs before they start. The config files they were launched from stay as they are.'),
+    h('div', { id: 'editParameters' }), h('div', { id: 'changeRows' })), [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Apply', primary: true, id: 'changeApply', disabled: true, onClick: () => applyChoice(e, editRequest(e), n => `${countOf(n, 'queued job')} updated.`) }], true);
+  renderEditParameters(e);
+  e.refresh();
+}
+
+function renderEditRows(e) {
+  const update = () => {
+    const n = e.rows.filter(row => row.usable && !e.excluded.has(row.job)).length;
+    const button = $('changeApply');
+    button.textContent = n ? `Apply to ${countOf(n, 'job')}` : 'Apply';
+    button.disabled = !n;
+  };
+  const text = value => Array.isArray(value) ? value.join(', ') : String(value);
+  const NOTES = { same: 'Already this value.', unused: 'This config does not use it.' };
+  for (const row of e.rows) row.usable = row.status === 'change';
+  $('changeRows').replaceChildren(editRequest(e) ? jobChoiceTable(e, ['Change', 'Note'], row => [
+    Object.keys(row.after).map(key => `${S.fieldMap[key].label}: ${text(row.before[key])} → ${text(row.after[key])}`).join('; ') || '–',
+    NOTES[row.status] || row.errors.join(' ')], update) : h('p', { class: 'muted' }, 'Enter a value to see what it changes in each job.'));
+  update();
 }
 
 // ------------------------------------------------------- preprocessed data

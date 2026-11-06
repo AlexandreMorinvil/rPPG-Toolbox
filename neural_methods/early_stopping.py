@@ -47,4 +47,10 @@ class EarlyStopping:
     def load_state_dict(self, state):
         self.best_loss = state['best_loss']
         self.bad_epochs = state['bad_epochs']
-        self.stopped = state['stopped']
+        self.stopped = self.bad_epochs >= self.patience  # the patience may differ from the saved one
+
+    def replay(self, losses):
+        """The state these settings would have reached on these validation losses."""
+        self.best_loss, self.bad_epochs, self.stopped = None, 0, False
+        for loss in losses:
+            self.update(loss)

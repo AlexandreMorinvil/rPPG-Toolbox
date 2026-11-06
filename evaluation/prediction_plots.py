@@ -5,6 +5,7 @@ movement x view scenario); everything else is browsed on demand in the launcher.
 """
 
 import csv
+import glob
 import os
 
 import matplotlib
@@ -212,6 +213,8 @@ def render_highlights(outputs, output_dir, worst=3):
             return []
         folder = os.path.join(output_dir, "highlights")
         os.makedirs(folder, exist_ok=True)
+        for stale in glob.glob(os.path.join(folder, "*.png")):  # a new test can pick other recordings
+            os.remove(stale)
         index = []
         for rank, (name, reason) in enumerate(picks):
             path = os.path.join(folder, f"{rank:02d}_{reason}_{name}.png".replace("/", "_"))

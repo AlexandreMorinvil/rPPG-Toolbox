@@ -548,9 +548,18 @@ def defaults():
     return {field["key"]: field["default"] for field in FIELDS}
 
 
+# Not editable on a queued job: decided by the launch checks, or not a setting of one run.
+LOCKED_WHEN_QUEUED = ("TOOLBOX_MODE", "DESCRIPTION", "LOG.PATH", "MODEL.RESUME", "WANDB.", "CROSS_VALIDATION.")
+
+
+def locked_when_queued(key):
+    return key.startswith(LOCKED_WHEN_QUEUED)
+
+
 def client_schema():
     return {
         "fields": FIELDS,
+        "locked_when_queued": LOCKED_WHEN_QUEUED,
         "splits": {key: {k: v for k, v in spec.items() if k != "datasets"} for key, spec in SPLITS.items()},
         "model_profiles": MODEL_PROFILES,
         "modes": MODES,

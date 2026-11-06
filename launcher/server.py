@@ -338,6 +338,10 @@ class Handler(BaseHTTPRequestHandler):
                         "gpus": probes.gpus()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
+        elif method == "POST" and route == "/api/jobs/continue":
+            self._json(manager.continue_jobs(body))
+        elif method == "POST" and route == "/api/jobs/edit":
+            self._json(manager.edit_queued(body))
         elif route.startswith("/api/jobs/"):
             parts = route.split("/")
             job_id = parts[3] if len(parts) > 3 else ""
