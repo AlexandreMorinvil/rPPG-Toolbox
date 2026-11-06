@@ -149,12 +149,17 @@ def gpus():
     return _cached(("gpus",), 3, compute)
 
 
+# `wandb login` writes its login under the API host of the wandb version: recent ones use the CoreWeave Forge host.
+WANDB_NETRC_HOSTS = ("api.wandb.ai", "api.forge.coreweave.com")
+
+
 def wandb_netrc():
     home = Path.home()
     for name in ("_netrc", ".netrc"):
         path = home / name
         try:
-            if path.is_file() and "api.wandb.ai" in path.read_text(encoding="utf-8", errors="ignore"):
+            if path.is_file() and any(host in path.read_text(encoding="utf-8", errors="ignore")
+                                      for host in WANDB_NETRC_HOSTS):
                 return True
         except OSError:
             continue

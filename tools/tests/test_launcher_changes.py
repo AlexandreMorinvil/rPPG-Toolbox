@@ -5,6 +5,7 @@ them. No job is started: the job manager is built without its monitor thread, as
 """
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -383,6 +384,31 @@ class RouteTests(Fixture):
             http.shutdown()
             thread.join(timeout=5)
             http.server_close()
+
+
+class WandbLoginTests(unittest.TestCase):
+    """A continuation has no field for a key, so it relies on the login that `wandb login` saved."""
+
+    def status_with_netrc(self, content):
+        with tempfile.TemporaryDirectory() as home, patch.dict("os.environ"):
+            os.environ.pop("WANDB_API_KEY", None)
+            if content is not None:
+                (Path(home) / "_netrc").write_text(content, encoding="utf-8")
+            with patch.object(Path, "home", return_value=Path(home)):
+                checks = preflight.Checks()
+                preflight._wandb_checks({"WANDB.ENABLED": True, "WANDB.MODE": "online"}, "local",
+                                        {"wandb": "existing"}, {}, checks, {"ok": True, "wandb": True})
+        return checks.items[-1]["status"]
+
+    def test_the_login_of_recent_wandb_versions_is_found(self):
+        self.assertEqual(self.status_with_netrc("machine api.forge.coreweave.com\n  login user\n  password x\n"), "answered")
+
+    def test_the_login_of_older_wandb_versions_is_found(self):
+        self.assertEqual(self.status_with_netrc("machine api.wandb.ai\n  login user\n  password x\n"), "answered")
+
+    def test_a_login_for_another_service_or_none_still_asks(self):
+        self.assertEqual(self.status_with_netrc("machine example.com\n  login user\n  password x\n"), "question")
+        self.assertEqual(self.status_with_netrc(None), "question")
 
 
 if __name__ == "__main__":
