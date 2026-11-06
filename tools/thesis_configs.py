@@ -77,7 +77,8 @@ FACE_SEARCH_WIDTH = 0.7
 MAX_DURATION_SEC = 120.0     # first 2 minutes of each lab recording
 WINDOW_SEC = 30
 EPOCHS = 20
-PATIENCE = 7                 # early stopping: epochs without a lower validation loss
+PATIENCE = 4                 # early stopping: epochs without a lower validation loss
+MIN_EPOCHS = 10              # early stopping: never before this many epochs (the LR peaks at 30 % of the epochs)
 FINETUNE = {"epochs": 10, "lr_factor": 0.1}
 MISSING = "<not set: {key} in thesis/paths.yaml>"
 
@@ -203,7 +204,8 @@ def neural_config(setup, batch, name, description, tags, model_key, blocks, mode
               "DEVICE": options.get("device", "cuda:0"), "NUM_OF_GPU_TRAIN": 1}
     if mode == "train_and_test":
         config["TRAIN"] = {"EPOCHS": epochs, "BATCH_SIZE": 4, "LR": lr or model["lr"],
-                           "EARLY_STOPPING": {"ENABLED": True, "PATIENCE": PATIENCE, "TOLERANCE": 0.0},
+                           "EARLY_STOPPING": {"ENABLED": True, "PATIENCE": PATIENCE, "TOLERANCE": 0.0,
+                                              "MIN_EPOCHS": MIN_EPOCHS},
                            "MODEL_FILE_NAME": name, "PLOT_LOSSES_AND_LR": True, "DATA_LOADER_WORKERS": 4,
                            "SAVE_RESUME": True, "DATA": blocks["train"]}
         config["VALID"] = {"DATA": blocks["valid"]}

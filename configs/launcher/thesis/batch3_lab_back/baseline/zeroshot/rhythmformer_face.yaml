@@ -78,7 +78,7 @@ INFERENCE:
   EVALUATION_WINDOW:
     USE_SMALLER_WINDOW: true
     WINDOW_SIZE: 30
-  MODEL_PATH: <run batch2_lab_front/baseline/rhythmformer_face.yaml, then tools/thesis_configs.py>
+  MODEL_PATH: C:/Run/thesis/batch2_lab_front/b2_baseline_rhythmformer_face/vHRM_128x128_C160_Standardized_FS30_a9f2cf8d/PreTrainedModels/b2_baseline_rhythmformer_face_Epoch18.pth
 VISUALIZE:
   HIGHLIGHTS: true
   HIGHLIGHT_WORST: 3

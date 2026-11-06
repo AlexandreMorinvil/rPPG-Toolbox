@@ -437,6 +437,14 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(runs["batch3_lab_back/baseline/finetune/physnet_face.yaml"]["MODEL"]["INIT_WEIGHTS"]
                         .endswith("b2_baseline_physnet_face_Epoch7.pth"))
 
+    def test_every_training_has_the_same_early_stopping(self):
+        runs, _ = thesis_configs.build_runs(self.setup, self.splits)
+        trainings = [config for config in runs.values() if config["TOOLBOX_MODE"] == "train_and_test"]
+        self.assertEqual(len(trainings), 87)
+        for config in trainings:
+            self.assertEqual(config["TRAIN"]["EARLY_STOPPING"],
+                             {"ENABLED": True, "PATIENCE": 4, "TOLERANCE": 0.0, "MIN_EPOCHS": 10})
+
     def test_finding_paths_fills_empty_entries_and_keeps_the_folders_of_other_computers(self):
         self.setup["video"]["PURE"] = ""
         changes = thesis_configs.update_paths(
