@@ -22,7 +22,7 @@ MODEL:
     MD_RESIDUAL: true
     MD_INFERENCE: true
 LOG:
-  PATH: C:/Run/thesis/batch1_literature/b1_PURE_factorizephys_uvfull
+  PATH: D:/Run/thesis/batch1_literature/b1_PURE_factorizephys_uvfull
 DEVICE: cuda:0
 NUM_OF_GPU_TRAIN: 1
 TRAIN:
@@ -31,7 +31,7 @@ TRAIN:
   LR: 0.001
   EARLY_STOPPING:
     ENABLED: true
-    PATIENCE: 4
+    PATIENCE: 7
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b1_PURE_factorizephys_uvfull
   PLOT_LOSSES_AND_LR: true
@@ -40,7 +40,7 @@ TRAIN:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -72,7 +72,7 @@ VALID:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -104,7 +104,7 @@ TEST:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0

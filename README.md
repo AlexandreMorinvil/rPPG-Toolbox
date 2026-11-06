@@ -430,6 +430,13 @@ the lowest validation loss, not the epoch that triggered stopping.
 - `TRAIN.EARLY_STOPPING.TOLERANCE`: minimum absolute loss reduction needed to reset
   patience (default `0.0`). Improvement must be **strictly greater** than this value.
   Small reductions accumulate relative to the last significant improvement.
+- `TRAIN.EARLY_STOPPING.MIN_EPOCHS`: completed epochs before early stopping can end
+  training (default `0`, no minimum). Epochs before it still count against patience, so
+  a patience already used up stops training as soon as this number is reached.
+- `TRAIN.EARLY_STOPPING.PATIENCE_AFTER_MIN_EPOCHS`: count only the epochs after
+  `MIN_EPOCHS` against patience (default `false`). They are compared with the best loss
+  so far, including the minimum's epochs, so training lasts at least `MIN_EPOCHS` +
+  `PATIENCE` epochs.
 
 For example, patience `5` and tolerance `0.001` stop after five consecutive validation
 epochs without a reduction greater than `0.001`. A tolerance of zero counts any strict

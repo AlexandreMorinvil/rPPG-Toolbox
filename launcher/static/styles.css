@@ -354,6 +354,11 @@ button.stat.on { border-color: var(--accent); background: var(--accent-soft); co
 .batch-status.blocked { color: var(--err); }
 .batch-status.skipped, .batch-status.busy { color: var(--muted); }
 .batch-row.blocked .batch-name, .batch-row.skipped .batch-name, .batch-row.busy .batch-name { color: var(--muted); }
+.change-options { display: grid; gap: 6px; margin-bottom: 10px; }
+.change-options input.short, .edit-parameter input.short { width: 8em; }
+.edit-parameter { margin-bottom: 6px; }
+.edit-parameter select:first-child { flex: 1 1 320px; min-width: 0; }
+#changeRows { margin-top: 10px; }
 .job-name { display: grid; gap: 4px; margin-top: 12px; }
 .job-name textarea, #jdDescription textarea { width: 100%; resize: vertical; margin-top: 6px; }
 

@@ -1,5 +1,6 @@
 """Incremental parsing of toolbox console output into progress and metrics."""
 
+import copy
 import re
 
 TQDM = re.compile(
@@ -56,7 +57,8 @@ def _number(text):
 
 
 class LogParser:
-    def __init__(self, mode=None, epochs_total=None, state=None):
+    def __init__(self, mode=None, epochs_total=None, state=None, history=None):
+        """history: progress of the attempt this one resumes; its log holds the earlier epochs and results."""
         self.partial = ""
         self.in_traceback = False
         self.state = state or {
@@ -78,6 +80,11 @@ class LogParser:
             "warnings": 0,
             "last_line": "",
         }
+        for key in ("epoch", "valid_loss", "best_epoch", "metrics", "report_path"):
+            if (history or {}).get(key) is not None:
+                self.state[key] = copy.deepcopy(history[key])
+        for epoch, loss in ((history or {}).get("train_loss") or {}).items():
+            self.state["train_loss"][epoch] = {"sum": loss, "count": 1}
         self.mode = mode
         self._loss_sum = {}
         self._workers = {}
@@ -190,6 +197,7 @@ class LogParser:
         if match:
             self.state["epoch"] = int(match.group(1))
             self.state["phase"] = "training"
+            self.state["train_loss"].pop(match.group(1), None)  # an unfinished epoch replayed by a resume
             return
         if stripped.startswith("===Validating==="):
             self.state["phase"] = "validating"

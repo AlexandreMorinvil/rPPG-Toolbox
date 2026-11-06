@@ -11,11 +11,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import batch, configs, crossval, logparse, paths, preflight, probes, reports, schema, settings
+from neural_methods.early_stopping import EarlyStopping
+
+from . import batch, configs, crossval, logparse, paths, preflight, probes, reports, schema, settings, validation
 
 ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
 RUNNING = ("starting", "running", "pausing", "stopping")
 FINISHED = ("succeeded", "failed", "cancelled", "interrupted", "paused")
+STOPPING = "TRAIN.EARLY_STOPPING."
 
 
 def _now():
@@ -41,6 +44,42 @@ def _clean_description(text):
     if not isinstance(text, str):
         raise ValueError("The description must be text.")
     return text.replace("\r\n", "\n").strip()[:20000]
+
+
+def _stopping_values(request):
+    """The early stopping values of a continuation: off, or a new patience (and the other settings if given)."""
+    request = request or {}
+    values = {STOPPING + "ENABLED": bool(request.get("enabled"))}
+    if not values[STOPPING + "ENABLED"]:
+        return values
+    if request.get("patience") in (None, ""):
+        raise ValueError("Enter the new patience.")
+    for name in ("patience", "tolerance", "min_epochs", "patience_after_min_epochs"):
+        if request.get(name) in (None, ""):
+            continue
+        key = STOPPING + name.upper()
+        values[key], error = configs.coerce(schema.FIELD_MAP[key], request[name])
+        if error:
+            raise ValueError(f"{schema.FIELD_MAP[key]['label']}: {error}")
+    return values
+
+
+def _epochs_without_improvement(job, values):
+    """Epochs already counted against the patience under these settings, from the validation losses of its log."""
+    losses = (job.get("progress") or {}).get("valid_loss") or {}
+    monitor = EarlyStopping(values[STOPPING + "PATIENCE"], values[STOPPING + "TOLERANCE"],
+                            values[STOPPING + "MIN_EPOCHS"], values[STOPPING + "PATIENCE_AFTER_MIN_EPOCHS"])
+    monitor.replay(float("nan") if loss is None else loss for _, loss in sorted(
+        losses.items(), key=lambda item: int(item[0])))
+    return monitor.bad_epochs, len(losses)
+
+
+def _fewest_more_epochs(values, used, done):
+    """Epochs before early stopping can end a training with done epochs, used of them counted against the patience."""
+    patience, minimum = values[STOPPING + "PATIENCE"], values[STOPPING + "MIN_EPOCHS"]
+    if values[STOPPING + "PATIENCE_AFTER_MIN_EPOCHS"]:
+        return max(minimum - done, 0) + patience - used
+    return max(patience - used, minimum - done)
 
 
 class JobManager:
@@ -111,7 +150,7 @@ class JobManager:
                 continue
             self.jobs[job["id"]] = job
             if job["status"] in ("starting", "running", "pausing", "stopping"):
-                self.parsers[job["id"]] = logparse.LogParser(job["mode"], job.get("epochs_total"))
+                self.parsers[job["id"]] = self._new_parser(job)
                 self.offsets[job["id"]] = 0
             elif job["status"] == "queued" and job.get("needs_secret"):
                 job["status"] = "failed"
@@ -133,8 +172,7 @@ class JobManager:
                 raise KeyError(job_id)
             return self._public(job, full=True)
 
-    @staticmethod
-    def _public(job, full=False):
+    def _public(self, job, full=False):
         data = dict(job)
         checkpoint = job.get("resume_checkpoint_host")
         available = bool(checkpoint and Path(checkpoint).is_file())
@@ -148,9 +186,16 @@ class JobManager:
                     data["can_pause"] = False
             except (OSError, ValueError):
                 pass
+        data["can_continue"] = self._can_continue(job, data.get("recovery"))
         if not full:
             data.pop("steps", None)
         return data
+
+    def _can_continue(self, job, recovery):
+        """Early stopping ended its training before the last epoch, and no later attempt took over the checkpoint."""
+        return bool(recovery and recovery.get("early_stopped") and job["status"] in FINISHED
+                    and recovery.get("next_epoch", 0) < recovery.get("epochs_total", 0)
+                    and not any(other.get("resume_from") == job["id"] for other in self.jobs.values()))
 
     def running_count(self):
         with self.lock:
@@ -334,6 +379,29 @@ class JobManager:
                 pass  # informational copy next to the results
         return self.group(group_id)
 
+    @staticmethod
+    def _config_fields(effective, backend, answers, outputs):
+        """What a job record takes from its config: when it is queued, and again when a queued job is edited."""
+        mode = effective["TOOLBOX_MODE"]
+        recovery = mode == "train_and_test" and effective.get("TRAIN.SAVE_RESUME", True)
+        prefix = effective.get("TRAIN.MODEL_FILE_NAME", "") + "_resume.pt"
+        return {
+            "mode": mode,
+            "model": effective.get("MODEL.NAME") if mode != "unsupervised_method" else
+            ",".join(effective.get("UNSUPERVISED.METHOD", [])),
+            "datasets": {
+                "train": effective.get("TRAIN.DATA.DATASET") if mode == "train_and_test" else None,
+                "test": effective.get("UNSUPERVISED.DATA.DATASET") if mode == "unsupervised_method"
+                else effective.get("TEST.DATA.DATASET"),
+            },
+            "epochs_total": effective.get("TRAIN.EPOCHS") if mode == "train_and_test" else None,
+            "gpu": preflight.gpu_index(effective, backend, answers),
+            "training_recovery": recovery,
+            "resume_checkpoint_host": str(Path(outputs["model_dir_host"]) / prefix)
+            if recovery and outputs.get("model_dir_host") else None,
+            "resume_checkpoint": (outputs.get("model_dir", "").rstrip("/\\") + "/" + prefix) if recovery else None,
+        }
+
     def _queue(self, effective, extras, backend, answers, secrets, outputs, name, source, resume_from, group=None,
                member=None, caches=None):
         job_id = self._new_id()
@@ -343,8 +411,8 @@ class JobManager:
         config_path.write_text(configs.dump_yaml(configs.build_tree(effective, extras)), encoding="utf-8")
         (job_dir / "output.log").touch()
 
-        mode = effective["TOOLBOX_MODE"]
-        gpu = preflight.gpu_index(effective, backend, answers)
+        fields = self._config_fields(effective, backend, answers, outputs)
+        mode, gpu = fields["mode"], fields["gpu"]
         env_additions = {}
         if backend == "docker":
             env_additions["GPU_DEVICE_ID"] = str(gpu if gpu is not None else 0)
@@ -354,10 +422,6 @@ class JobManager:
             self.secret_env[job_id] = {"WANDB_API_KEY": key}
 
         steps = self._steps(job_id, backend, config_path, answers)
-        recovery = mode == "train_and_test" and effective.get("TRAIN.SAVE_RESUME", True)
-        prefix = effective.get("TRAIN.MODEL_FILE_NAME", "") + "_resume.pt"
-        checkpoint_host = str(Path(outputs["model_dir_host"]) / prefix) if recovery and outputs.get("model_dir_host") else None
-        checkpoint = (outputs.get("model_dir", "").rstrip("/\\") + "/" + prefix) if recovery else None
         name = (name or "").strip() or self._default_name(effective)
         job = {
             "id": job_id,
@@ -368,16 +432,7 @@ class JobManager:
             "finished": None,
             "status": "queued",
             "backend": backend,
-            "mode": mode,
-            "model": effective.get("MODEL.NAME") if mode != "unsupervised_method" else
-            ",".join(effective.get("UNSUPERVISED.METHOD", [])),
-            "datasets": {
-                "train": effective.get("TRAIN.DATA.DATASET") if mode == "train_and_test" else None,
-                "test": effective.get("UNSUPERVISED.DATA.DATASET") if mode == "unsupervised_method"
-                else effective.get("TEST.DATA.DATASET"),
-            },
-            "epochs_total": effective.get("TRAIN.EPOCHS") if mode == "train_and_test" else None,
-            "gpu": gpu,
+            **fields,
             "policy": answers.get("policy", "queue"),
             "env": env_additions,
             "needs_secret": needs_secret,
@@ -390,9 +445,6 @@ class JobManager:
             "returncode": None,
             "error": None,
             "progress": {},
-            "training_recovery": recovery,
-            "resume_checkpoint_host": checkpoint_host,
-            "resume_checkpoint": checkpoint,
             "resume_from": resume_from,
         }
         if group:
@@ -555,6 +607,21 @@ class JobManager:
             self._save(job)
             return self._public(job)
 
+    def _checkpoint_busy(self, job):
+        return any(other["status"] in ACTIVE and other.get("outputs", {}).get("model_dir_host") ==
+                   job.get("outputs", {}).get("model_dir_host") for other in self.jobs.values())
+
+    def _resume_data(self, job):
+        """The job's config snapshot, set to continue from its recovery checkpoint."""
+        data = configs.load_config(configs.relative(self._dir(job["id"]) / "config.yaml"))
+        values = data["values"]
+        values["DESCRIPTION"] = job.get("description", values.get("DESCRIPTION", ""))
+        values["MODEL.RESUME"] = job["resume_checkpoint"]
+        values["TRAIN.SAVE_RESUME"] = True
+        for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
+            values[prefix + ".DO_PREPROCESS"] = False
+        return data
+
     def resume_config(self, job_id):
         """Prepare a new attempt; normal preflight still handles credentials/GPU checks."""
         with self.lock:
@@ -564,19 +631,171 @@ class JobManager:
             if not self._public(job)["can_resume"]:
                 raise ValueError("No committed full-state checkpoint is available for this job. "
                                  "Legacy epoch .pth files can only be evaluated, not fully resumed.")
-            if any(other["status"] in ACTIVE and other.get("outputs", {}).get("model_dir_host") ==
-                   job.get("outputs", {}).get("model_dir_host") for other in self.jobs.values()):
+            if self._checkpoint_busy(job):
                 raise ValueError("Another active attempt is already using this checkpoint folder.")
-            data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
-            values = data["values"]
-            values["DESCRIPTION"] = job.get("description", values.get("DESCRIPTION", ""))
-            values["MODEL.RESUME"] = job["resume_checkpoint"]
-            values["TRAIN.SAVE_RESUME"] = True
-            for prefix in ("TRAIN.DATA", "VALID.DATA", "TEST.DATA"):
-                values[prefix + ".DO_PREPROCESS"] = False
+            data = self._resume_data(job)
             data.update({"backend": job["backend"], "resume_from": job_id,
                          "name": job["name"] + " (resumed)", "answers": {"outputs": "overwrite", "policy": "queue"}})
             return data
+
+    def continue_jobs(self, payload):
+        """Queue trainings ended by early stopping again from their last epoch, with other early stopping settings.
+
+        payload: jobs, early_stopping (enabled, patience, tolerance, min_epochs, patience_after_min_epochs),
+        dry_run (only report what would happen).
+        All or nothing: a job that cannot continue refuses the whole request.
+        """
+        stopping = _stopping_values(payload.get("early_stopping"))
+        job_ids = list(dict.fromkeys(payload.get("jobs") or []))
+        if not job_ids:
+            raise ValueError("No job to continue.")
+        plans = [self._plan_continuation(job_id, stopping) for job_id in job_ids]
+        rows = [row for row, _ in plans]
+        if payload.get("dry_run"):
+            return {"results": rows}
+        refused = [row for row in rows if row["errors"]]
+        if refused:
+            raise ValueError("Some jobs cannot continue. " + " | ".join(
+                f"{row['name']}: {row['errors'][0]}" for row in refused))
+        with self.lock:
+            queued = []
+            try:
+                for row, run in plans:
+                    queued.append(self._queue(*run))
+            except Exception:
+                for job in queued:  # all jobs or none
+                    self.jobs.pop(job["id"], None)
+                    shutil.rmtree(self._dir(job["id"]), ignore_errors=True)
+                raise
+            return {"results": rows, "jobs": [self._public(job) for job in queued]}
+
+    def _plan_continuation(self, job_id, stopping):
+        """(report row, the arguments of _queue) of one job; the row's errors say why it cannot continue."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            public = self._public(job)
+            busy = self._checkpoint_busy(job)
+        recovery = public.get("recovery") or {}
+        total, done = recovery.get("epochs_total"), recovery.get("next_epoch")
+        row = {"job": job_id, "name": job["name"], "epochs_total": total, "next_epoch": done,
+               "best_epoch": (job.get("progress") or {}).get("best_epoch"), "errors": [], "min_epochs": None}
+        if not public["can_continue"]:
+            row["errors"].append("Only a finished training ended by early stopping before its last epoch can continue.")
+            return row, None
+        if busy:
+            row["errors"].append("Another active attempt is already using this checkpoint folder.")
+            return row, None
+        data = self._resume_data(job)
+        values = data["values"]
+        values.update(stopping)
+        row["max_epochs"] = total - done
+        if values[STOPPING + "ENABLED"]:
+            used, known = _epochs_without_improvement(job, values)
+            if known == done:
+                row["min_epochs"] = min(_fewest_more_epochs(values, used, done), total - done)
+                if row["min_epochs"] <= 0:
+                    row["errors"].append(f"A patience of {values[STOPPING + 'PATIENCE']} is already used up: "
+                                         f"{used} epochs without improvement so far.")
+        answers = {"outputs": "overwrite", "policy": job.get("policy", "queue"), "wandb": "existing",
+                   "_stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
+        if job["backend"] == "docker":
+            answers["gpu"] = str(job["gpu"] if job.get("gpu") is not None else 0)
+        result = preflight.run_checks(values, data["extras"], job["backend"], answers, {}, self)
+        for check in result["checks"]:
+            if check["status"] in ("error", "question"):
+                row["errors"].append(f"{check['title']}: " + "; ".join(check.get("details") or [check["message"]]))
+        name = job["name"].removesuffix(" (continued)") + " (continued)"
+        return row, (result["effective_values"], data["extras"], job["backend"], result["answers"], {},
+                     result["validation"]["derived"].get("outputs", {}), name, job.get("source_config"), job_id,
+                     job.get("group"), job.get("batch"))
+
+    def edit_queued(self, payload):
+        """Change config values of queued jobs before they start, in their config snapshots.
+
+        payload: jobs, changes {key: value}, dry_run (only report what would happen). All or nothing: a job that cannot
+        take the change refuses the whole request. Jobs that do not use a parameter are left as they are.
+        """
+        changes = payload.get("changes") or {}
+        job_ids = list(dict.fromkeys(payload.get("jobs") or []))
+        if not job_ids or not changes:
+            raise ValueError("Choose the jobs and the values to change.")
+        for key in changes:
+            if key not in schema.FIELD_MAP or schema.locked_when_queued(key):
+                raise ValueError(f"{key} cannot be changed on a queued job: cancel it and launch it again.")
+        plans = [self._plan_edit(job_id, changes) for job_id in job_ids]
+        rows = [row for row, _ in plans]
+        if payload.get("dry_run"):
+            return {"results": rows}
+        refused = [row for row in rows if row["errors"]]
+        if refused:
+            raise ValueError("Some jobs cannot take this change. " + " | ".join(
+                f"{row['name']}: {row['errors'][0]}" for row in refused))
+        with self.lock:  # the queue cannot start a job meanwhile
+            started = [row["name"] for row in rows if self.jobs[row["job"]]["status"] != "queued"]
+            if started:
+                raise ValueError("Already started: " + ", ".join(started) + ". Nothing was changed.")
+            for row, run in plans:
+                if run:
+                    self._apply_edit(self.jobs[row["job"]], *run)
+            return {"results": rows, "jobs": [self._public(self.jobs[row["job"]]) for row in rows]}
+
+    def _plan_edit(self, job_id, changes):
+        """(report row, what _apply_edit needs) of one job; status: change, same, unused or error."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            status = job["status"]
+        row = {"job": job_id, "name": job["name"], "status": "error", "before": {}, "after": {}, "errors": []}
+        if status != "queued" or job["mode"] == "report":
+            row["errors"].append("Already started." if status != "queued" else "A report job has no such parameters.")
+            return row, None
+        data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
+        values = data["values"]
+        before = {key: values[key] for key in changes}
+        for key, raw in changes.items():
+            values[key], error = configs.coerce(schema.FIELD_MAP[key], raw)
+            if error:
+                row["errors"].append(f"{schema.FIELD_MAP[key]['label']}: {error}")
+        if row["errors"]:
+            return row, None
+        for key in changes:  # after all the changes: one can make another one active
+            if schema.is_active(schema.FIELD_MAP[key], values):
+                row["before"][key], row["after"][key] = before[key], values[key]
+        for key in changes:
+            if key not in row["after"]:
+                values[key] = before[key]
+        if not row["after"]:
+            row["status"] = "unused"
+            return row, None
+        if row["before"] == row["after"]:
+            row["status"] = "same"
+            return row, None
+        if values.get("MODEL.RESUME") and any(not key.startswith(STOPPING) for key in row["after"]):
+            row["errors"].append("A queued continuation can only change early stopping: the rest must stay as trained.")
+            return row, None
+        report = validation.validate(values, data["extras"], job["backend"])
+        row["errors"] += [problem["message"] for problem in report["errors"]]
+        derived = report["derived"]
+        outputs = derived.get("outputs", {})
+        if not row["errors"] and batch.folders_of(outputs) != batch.folders_of(job.get("outputs") or {}):
+            row["errors"].append("This changes the output folder chosen at launch: cancel the job and launch it again.")
+        if row["errors"]:
+            return row, None
+        row["status"] = "change"
+        return row, (values, data["extras"], outputs, batch.caches_of(values, derived))
+
+    def _apply_edit(self, job, values, extras, outputs, caches):
+        target = self._dir(job["id"]) / "config.yaml"
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text(configs.dump_yaml(configs.build_tree(values, extras)), encoding="utf-8")
+        os.replace(temporary, target)
+        job.update(self._config_fields(values, job["backend"], {"gpu": job.get("gpu")}, outputs))
+        if job.get("batch"):
+            job["caches"] = caches
+        self._save(job)
 
     def set_description(self, job_id, text):
         """Edit the notes of any job; the config snapshot keeps the description it was launched with."""
@@ -865,7 +1084,7 @@ class JobManager:
             self._save(job)
             return
         self.processes[job["id"]] = process
-        self.parsers[job["id"]] = logparse.LogParser(job["mode"], job.get("epochs_total"))
+        self.parsers[job["id"]] = self._new_parser(job)
         self.offsets[job["id"]] = 0
         job.update({"status": "running", "started": _now(), "pid": process.pid})
         job.pop("needs_secret", None)
@@ -885,6 +1104,11 @@ class JobManager:
                     return None
         return None
 
+    def _new_parser(self, job):
+        """A resumed attempt carries on the loss curves, best epoch and results of the attempt it resumes."""
+        previous = self.jobs.get(job.get("resume_from") or "") or {}
+        return logparse.LogParser(job["mode"], job.get("epochs_total"), history=previous.get("progress"))
+
     def _read_new_output(self, job):
         log_path = self._dir(job["id"]) / "output.log"
         offset = self.offsets.get(job["id"], 0)
@@ -897,7 +1121,7 @@ class JobManager:
         if not data:
             return False
         self.offsets[job["id"]] = offset + len(data)
-        parser = self.parsers.setdefault(job["id"], logparse.LogParser(job["mode"], job.get("epochs_total")))
+        parser = self.parsers.setdefault(job["id"], self._new_parser(job))
         parser.feed(data.decode("utf-8", errors="replace"))
         # config.py can rewrite weight prefixes for motion augmentation. Track
         # the actual committed checkpoint rather than assuming the YAML prefix.

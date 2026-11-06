@@ -735,6 +735,15 @@ def validate(values, extras=None, backend="docker", type_errors=None, platform=N
             tolerance = values.get("TRAIN.EARLY_STOPPING.TOLERANCE")
             if tolerance is not None and not math.isfinite(tolerance):
                 report.error("Improvement tolerance must be finite.", "TRAIN.EARLY_STOPPING.TOLERANCE")
+            min_epochs, epochs = values.get("TRAIN.EARLY_STOPPING.MIN_EPOCHS"), values.get("TRAIN.EPOCHS")
+            if min_epochs and epochs:
+                earliest = min_epochs
+                if values.get("TRAIN.EARLY_STOPPING.PATIENCE_AFTER_MIN_EPOCHS"):
+                    earliest += values.get("TRAIN.EARLY_STOPPING.PATIENCE") or 0
+                if earliest >= epochs:
+                    report.warn(f"Early stopping can act after {earliest} epochs at the earliest, which reaches "
+                                f"Epochs ({epochs}): it cannot end this training early.",
+                                "TRAIN.EARLY_STOPPING.MIN_EPOCHS")
             report.note("Epochs is an upper limit. Early stopping preserves the lowest-loss checkpoint "
                         "and its patience state across pause/resume.", "TRAIN.EARLY_STOPPING.ENABLED")
         if values.get("MODEL.INIT_WEIGHTS") and not values.get("MODEL.RESUME"):

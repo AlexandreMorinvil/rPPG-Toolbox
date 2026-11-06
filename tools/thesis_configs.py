@@ -2,7 +2,7 @@
 
     python tools/thesis_configs.py                # check the inputs, write configs/launcher/thesis/
     python tools/thesis_configs.py --check        # check only: missing folders, split problems
-    python tools/thesis_configs.py --find-paths   # search the drives for the datasets, update thesis/paths.yaml
+    python tools/thesis_configs.py --find-paths   # search the drives for the empty entries of thesis/paths.yaml
 
 Batches (inputs: face = face crop; uvhead / uvbody / uvfull = UV map of the head / everything but the head / the
 whole body; POS runs on every participant, the neural models train on the training split):
@@ -77,7 +77,7 @@ FACE_SEARCH_WIDTH = 0.7
 MAX_DURATION_SEC = 120.0     # first 2 minutes of each lab recording
 WINDOW_SEC = 30
 EPOCHS = 20
-PATIENCE = 4                 # early stopping: epochs without a lower validation loss
+PATIENCE = 7                 # early stopping: epochs without a lower validation loss
 FINETUNE = {"epochs": 10, "lr_factor": 0.1}
 MISSING = "<not set: {key} in thesis/paths.yaml>"
 
@@ -242,6 +242,11 @@ def batch_folder(batch):
     return {"batch1": "batch1_literature", "batch2": "batch2_lab_front", "batch3": "batch3_lab_back"}[batch]
 
 
+def batch_setup(paths, batch):
+    """The inputs of one batch: its own cache and run folders (the batches can run on different computers)."""
+    return {**paths, "cache": paths["cache"][batch], "runs": paths["runs"][batch]}
+
+
 # ---------------------------------------------------------------- the runs
 
 def best_checkpoint(log_path, name):
@@ -260,11 +265,12 @@ def best_checkpoint(log_path, name):
     return None
 
 
-def build_runs(setup, splits):
+def build_runs(paths, splits):
     """{relative config path: config}, and the batch 2 runs whose checkpoint batch 3 still waits for."""
     runs, waiting = {}, []
 
     # Batch 1: literature datasets, one training per dataset.
+    setup = batch_setup(paths, "batch1")
     for dataset, info in LITERATURE.items():
         short, subjects = info["short"], splits["literature"][dataset]
         for input_key in BATCH_INPUTS["batch1"]:
@@ -287,6 +293,7 @@ def build_runs(setup, splits):
                 data_block(setup, dataset, input_key, POS, "test"))
 
     # Batch 2: lab data, front camera, one training per experiment, model and input.
+    setup = batch_setup(paths, "batch2")
     for experiment in LAB_EXPERIMENTS["batch2"]:
         persons = {split: lab_folders(splits, split, experiment) for split in SPLITS}
         people = {split: lab_people(splits, split, experiment) for split in SPLITS}
@@ -314,6 +321,8 @@ def build_runs(setup, splits):
                 data_block(setup, "lab", input_key, POS, "test", lab={**lab2, "participants": []}))
 
     # Batch 3: lab data, back cameras, one fine-tuning per experiment from its batch 2 model.
+    batch2_runs = setup["runs"]
+    setup = batch_setup(paths, "batch3")
     back, views = ["back-left", "back-right"], ["front", "back-left", "back-right"]
     for experiment in LAB_EXPERIMENTS["batch3"]:
         persons = {split: lab_folders(splits, split, experiment) for split in SPLITS}
@@ -322,7 +331,7 @@ def build_runs(setup, splits):
             label = INPUTS[input_key]["label"]
             for model_key, model in MODELS.items():
                 source = f"b2_{short}_{model_key}_{input_key}"
-                checkpoint = best_checkpoint(f"{setup['runs']}/{batch_folder('batch2')}/{source}", source)
+                checkpoint = best_checkpoint(f"{batch2_runs}/{batch_folder('batch2')}/{source}", source)
                 if checkpoint is None:
                     waiting.append(source)
                     checkpoint = (f"<run batch2_lab_front/{experiment}/{model_key}_{input_key}.yaml, "
@@ -556,11 +565,19 @@ def find_paths(roots, max_depth=5, skip=()):
 
 
 PATHS_TEMPLATE = """# Where the thesis datasets are, and where runs and caches go (tools/thesis_configs.py reads it).
-# After moving a drive: python tools/thesis_configs.py --find-paths   (fills the entries it can find, keeps the rest)
-# then:                 python tools/thesis_configs.py                (writes every config again)
+# The batches run on different computers, so a folder can be missing here and right there: entries are never replaced
+# because their folder is missing. After moving a drive, change the entry (or empty it for --find-paths to fill it).
+# Fill the empty entries: python tools/thesis_configs.py --find-paths
+# Write every config:     python tools/thesis_configs.py
 
-cache: {cache}            # preprocessing caches (shared by every run)
-runs: {runs}                        # LOG.PATH root: <runs>/<batch>/<run name>
+cache:                                      # preprocessing caches (shared by the runs of a batch)
+  batch1: {cache_batch1}
+  batch2: {cache_batch2}
+  batch3: {cache_batch3}
+runs:                                       # LOG.PATH root: <runs>/<batch folder>/<run name>
+  batch1: {runs_batch1}
+  batch2: {runs_batch2}
+  batch3: {runs_batch3}
 
 # Face crop input: the original videos.
 video:
@@ -591,8 +608,9 @@ def write_paths(setup, path):
 
     video, uv, options = setup.get("video") or {}, setup.get("uv") or {}, setup.get("options") or {}
     lab = uv.get("lab") or {}
+    folders = {f"{key}_{batch}": value(setup[key][batch]) for key in ("cache", "runs") for batch in setup[key]}
     text = PATHS_TEMPLATE.format(
-        cache=value(setup.get("cache")), runs=value(setup.get("runs")),
+        **folders,
         video_ubfc=value(video.get("UBFC-rPPG")), video_pure=value(video.get("PURE")),
         video_cohface=value(video.get("COHFACE")), video_lab=value(video.get("lab")),
         uv_ubfc=value(uv.get("UBFC-rPPG")), uv_pure=value(uv.get("PURE")), uv_cohface=value(uv.get("COHFACE")),
@@ -602,16 +620,16 @@ def write_paths(setup, path):
 
 
 def update_paths(setup, found, experiments):
-    """Fill the entries that are empty or point to a missing folder; return the changes."""
+    """Fill the empty entries; return the changes. A missing folder stays: it can belong to another computer."""
     changes = []
     for (kind, dataset), folders in sorted(found.items()):
         section = setup.setdefault(kind, {})
-        if not _exists(section.get(dataset)):
+        if not section.get(dataset):
             section[dataset] = folders[0].replace("\\", "/")
             changes.append(f"{kind}.{dataset} = {section[dataset]}" + (f" (also: {folders[1:]})" if folders[1:] else ""))
     lab = setup.setdefault("uv", {}).setdefault("lab", {})
     for experiment, candidates in sorted(experiments.items()):
-        if not _exists(lab.get(experiment)):
+        if not lab.get(experiment):
             count, folder = max(candidates)
             lab[experiment] = folder.replace("\\", "/")
             others = [f"{other} ({n} files)" for n, other in sorted(candidates, reverse=True) if other != folder]
@@ -626,7 +644,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="Check the inputs only; write nothing.")
     parser.add_argument("--find-paths", action="store_true",
-                        help="Search the drives for the datasets and update thesis/paths.yaml (missing entries only).")
+                        help="Search the drives for the datasets and update thesis/paths.yaml (empty entries only).")
     parser.add_argument("--search-roots", nargs="+", help="Folders to search (default: every drive).")
     parser.add_argument("--max-depth", type=int, default=5, help="Folder depth searched below each root.")
     parser.add_argument("--thesis-dir", default=str(THESIS_DIR), help="Folder of paths.yaml and splits.yaml.")
@@ -638,13 +656,13 @@ def main(argv=None):
     if args.find_paths:
         roots = args.search_roots or search_roots()
         print(f"Searching {', '.join(roots)} (depth {args.max_depth}) ...")
-        found, experiments = find_paths(roots, args.max_depth, skip=[setup.get("cache") or "", setup.get("runs") or ""])
+        found, experiments = find_paths(roots, args.max_depth, skip=[*setup["cache"].values(), *setup["runs"].values()])
         changes = update_paths(setup, found, experiments)
         if changes:
             write_paths(setup, thesis_dir / "paths.yaml")
             print("Updated thesis/paths.yaml:\n  " + "\n  ".join(changes))
         else:
-            print("Nothing to update: every entry of thesis/paths.yaml exists, or nothing new was found.")
+            print("Nothing to update: every entry of thesis/paths.yaml is set, or nothing new was found.")
 
     errors, warnings = check_inputs(setup, splits)
     for message in warnings:

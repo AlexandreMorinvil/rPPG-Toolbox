@@ -3,7 +3,7 @@ BASE: ['']
 TOOLBOX_MODE: unsupervised_method
 DESCRIPTION: 'Batch 1 - POS on UBFC-rPPG, UV map of the whole body, every subject (the test subjects are a subset: see thesis/splits.yaml).'
 LOG:
-  PATH: C:/Run/thesis/batch1_literature/b1_UBFC_pos_uvfull
+  PATH: D:/Run/thesis/batch1_literature/b1_UBFC_pos_uvfull
 DEVICE: cuda:0
 TRAIN:
   DATA_LOADER_WORKERS: 2
@@ -13,7 +13,7 @@ UNSUPERVISED:
   DATA:
     DATASET: UBFC-rPPG
     DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0

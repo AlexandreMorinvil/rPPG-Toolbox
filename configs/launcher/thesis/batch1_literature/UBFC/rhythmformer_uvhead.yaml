@@ -10,7 +10,7 @@ MODEL:
   RESUME: ''
   INIT_WEIGHTS: ''
 LOG:
-  PATH: C:/Run/thesis/batch1_literature/b1_UBFC_rhythmformer_uvhead
+  PATH: D:/Run/thesis/batch1_literature/b1_UBFC_rhythmformer_uvhead
 DEVICE: cuda:0
 NUM_OF_GPU_TRAIN: 1
 TRAIN:
@@ -19,7 +19,7 @@ TRAIN:
   LR: 0.009
   EARLY_STOPPING:
     ENABLED: true
-    PATIENCE: 4
+    PATIENCE: 7
     TOLERANCE: 0.0
   MODEL_FILE_NAME: b1_UBFC_rhythmformer_uvhead
   PLOT_LOSSES_AND_LR: true
@@ -28,7 +28,7 @@ TRAIN:
   DATA:
     DATASET: UBFC-rPPG
     DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -62,7 +62,7 @@ VALID:
   DATA:
     DATASET: UBFC-rPPG
     DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -94,7 +94,7 @@ TEST:
   DATA:
     DATASET: UBFC-rPPG
     DATA_PATH: D:/rPPG_Datasets_uv/UBFC_dataset/DATASET_2
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0

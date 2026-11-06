@@ -113,6 +113,12 @@ What runs save is set in the run editor under **Visualization outputs** (`VISUAL
 - **The launcher must be open:** jobs start only while the launcher runs. Keep it open, or reopen it, until the last
   job has started. Queued jobs wait across a restart, except with a W&B key typed at launch: that key is kept in memory
   only, so prefer `wandb login` or offline mode for long batches.
+- **Change queued jobs:** **Edit N queued…** on the batch (or **Edit parameters…** on a job) changes parameters of jobs
+  that have not started, such as the patience, with a preview per job. It changes their config snapshots, not the config
+  files, so a later relaunch from those files uses the old values. Changes that would move the output folder (for
+  example preprocessing settings), the output path, W&B settings and the mode are refused: cancel the job and launch it
+  again for those.
+- **Continue finished jobs:** see [Continue a training that early stopping ended](#continue-a-training-that-early-stopping-ended).
 
 ## Cross-validation (vHRM)
 
@@ -209,10 +215,40 @@ In **Training → Early stopping**, enable early stopping and set **Patience (ep
 and **Improvement tolerance**. Turn off **Test the last epoch** and configure the
 validation split. Patience counts consecutive epochs without a loss reduction
 strictly greater than the absolute tolerance; zero tolerance counts any reduction.
-Defaults are disabled, patience 10, tolerance 0.0. The best actual validation-loss
-checkpoint is selected independently of the tolerance, and **Epochs** stays an upper
-limit. The patience state survives pause/resume. An early-stopped run is complete;
-recovery retries plots/testing without training further.
+**Minimum epochs** holds off the stop until that many epochs are done; the epochs before
+it still count against the patience, so a patience already used up stops training as
+soon as the minimum is reached. With **Start patience after the minimum**, only the epochs
+after it count, compared with the best loss so far, so training lasts at least the minimum
+plus the patience. Defaults are disabled, patience 10, tolerance 0.0, no minimum, patience
+counted from the first epoch. The best actual validation-loss checkpoint is selected independently of the
+tolerance, and **Epochs** stays an upper limit. The patience state survives pause/resume.
+**Retry plots / test** on an early-stopped run does not train further; **Continue
+training…** does.
+
+### Continue a training that early stopping ended
+
+**Continue training…** on a job (or **Continue N trainings…** on its batch) queues it
+again from its last epoch, either without early stopping or with a new patience. A new
+attempt with its own log links to the original and takes its place in the batch.
+
+- **As if it had not stopped:** weights, optimizer, learning-rate schedule, RNG and
+  histories come from the recovery checkpoint, so it continues the same training. Epochs
+  without improvement before the stop still count against a new patience: patience 8
+  after a stop at patience 4 gives at least 4 more epochs. A patience that is already used
+  up is refused, unless a higher **minimum epochs** still requires more epochs.
+- **The maximum stays:** **Epochs** cannot be raised here, because the OneCycle schedule
+  was planned for that number and has no epochs after it.
+- **Results:** if the best epoch changes, the test and the analysis report run with the new
+  weights: the test results are replaced and the new report is written to its own
+  `report/Epoch<N>` folder, next to the previous one. If it does not change, the test and
+  the report are skipped and the results stay. The test also runs if the saved results
+  cannot be shown to come from this checkpoint (missing, or older than it).
+- **Later steps:** batch 3 of the thesis configs reads the tested checkpoint when
+  `tools/thesis_configs.py` runs, so run it again after continuing batch 2.
+
+Runs from before this feature can continue too, as long as they have their
+`<prefix>_resume.pt` file. Outside the launcher, set `MODEL.RESUME` to it and change
+`TRAIN.EARLY_STOPPING` in the YAML.
 
 ## Pause, stop and resume training
 

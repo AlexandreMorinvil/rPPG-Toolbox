@@ -38,6 +38,13 @@ class BaseTrainer:
             print(f'[training] Initialised model weights from {init_weights}', flush=True)
         return training_epochs(self, data_loader, histories)
 
+    def test_results_are_current(self):
+        """A training continued from a checkpoint ran more epochs, and the saved test results still are of the
+        selected one. Retrying a failed test trains nothing, so it does not count."""
+        tested = getattr(self, '_tested_epoch', None)
+        return bool(getattr(self, '_continued', False) and not self.config.TEST.USE_LAST_EPOCH
+                    and tested is not None and tested == getattr(self, 'best_epoch', None))
+
     def record_validation_loss(self, loss, epoch):
         """Select the lowest finite loss and update shared early-stopping state."""
         loss = float(loss)
@@ -53,8 +60,12 @@ class BaseTrainer:
         if stopping is not None:
             stopping.update(loss)
             self._early_stopping_epoch = epoch
+            minimum = ''
+            if stopping.min_epochs:
+                minimum = (f', counted after {stopping.min_epochs} epochs' if stopping.patience_after_min_epochs
+                           else f', at least {stopping.min_epochs} epochs')
             print(f'[training] Early stopping patience: {stopping.bad_epochs}/{stopping.patience} '
-                  f'(tolerance {stopping.tolerance:g})', flush=True)
+                  f'(tolerance {stopping.tolerance:g}{minimum})', flush=True)
 
     def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
         """Forward a per-batch metric to wandb honouring config.WANDB.* settings.
