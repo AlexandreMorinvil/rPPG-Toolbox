@@ -22,7 +22,7 @@ MODEL:
     MD_RESIDUAL: true
     MD_INFERENCE: true
 LOG:
-  PATH: C:/Run/thesis/batch1_literature/b1_COHFACE_factorizephys_face
+  PATH: D:/Run/thesis/batch1_literature/b1_COHFACE_factorizephys_face
 DEVICE: cuda:0
 NUM_OF_GPU_TRAIN: 1
 TRAIN:
@@ -40,7 +40,7 @@ TRAIN:
   DATA:
     DATASET: COHFACE
     DATA_PATH: D:/rPPG_Datasets/COHFACE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
     BEGIN: 0.0
@@ -70,7 +70,7 @@ VALID:
   DATA:
     DATASET: COHFACE
     DATA_PATH: D:/rPPG_Datasets/COHFACE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
     BEGIN: 0.0
@@ -100,7 +100,7 @@ TEST:
   DATA:
     DATASET: COHFACE
     DATA_PATH: D:/rPPG_Datasets/COHFACE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 20
     BEGIN: 0.0

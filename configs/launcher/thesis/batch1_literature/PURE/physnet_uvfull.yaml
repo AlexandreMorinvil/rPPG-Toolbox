@@ -12,7 +12,7 @@ MODEL:
   PHYSNET:
     FRAME_NUM: 128
 LOG:
-  PATH: C:/Run/thesis/batch1_literature/b1_PURE_physnet_uvfull
+  PATH: D:/Run/thesis/batch1_literature/b1_PURE_physnet_uvfull
 DEVICE: cuda:0
 NUM_OF_GPU_TRAIN: 1
 TRAIN:
@@ -30,7 +30,7 @@ TRAIN:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -62,7 +62,7 @@ VALID:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
@@ -94,7 +94,7 @@ TEST:
   DATA:
     DATASET: PURE
     DATA_PATH: D:/rPPG_Datasets_uv/PURE
-    CACHED_PATH: C:/Datasets_Preprocessed
+    CACHED_PATH: D:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
     BEGIN: 0.0
