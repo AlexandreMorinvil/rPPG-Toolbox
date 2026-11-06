@@ -19,7 +19,7 @@ TRAIN:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -49,7 +49,7 @@ TEST:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [baseline]
-      EXPERIMENT_PATHS: ['baseline=F:/Datasets_vhrm/laboratory/baseline']
+      EXPERIMENT_PATHS: ['baseline=C:/Users/alexa/Datasets_vhrm/baseline']
       PARTICIPANTS: [H03_baseline_after, H03_baseline_before, PO06_baseline, PO08_baseline, RM06_baseline_after, RM06_baseline_before,
         RM12_baseline_after, RM12_baseline_before, RM15_baseline_after, RM15_baseline_before, RM16_baseline_after, RM16_baseline_before,
         RM17_baseline_after, RM17_baseline_before, RM20_baseline_after, RM20_baseline_before, jzc02_baseline, jzc07_baseline,

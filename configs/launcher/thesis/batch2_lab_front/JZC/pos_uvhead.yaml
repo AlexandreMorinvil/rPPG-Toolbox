@@ -12,7 +12,7 @@ UNSUPERVISED:
   METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -42,7 +42,7 @@ UNSUPERVISED:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [JZC]
-      EXPERIMENT_PATHS: ['JZC=<not set: uv.lab.JZC in thesis/paths.yaml>']
+      EXPERIMENT_PATHS: ['JZC=C:/Users/alexa/Datasets_vhrm/JZC']
       PARTICIPANTS: []
       EXCLUDE_PARTICIPANTS: []
       LABELS: []

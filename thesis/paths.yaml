@@ -18,9 +18,9 @@ uv:
   PURE: D:/rPPG_Datasets_uv/PURE
   COHFACE: D:/rPPG_Datasets_uv/COHFACE
   lab:                                      # one folder per experiment (they need not share a parent)
-    baseline: F:/Datasets_vhrm/laboratory/baseline
-    JZC: ''
-    RM: F:/Datasets_vhrm/laboratory/RM
+    baseline: C:/Users/alexa/Datasets_vhrm/baseline
+    JZC: C:/Users/alexa/Datasets_vhrm/JZC
+    RM: C:/Users/alexa/Datasets_vhrm/RM
 
 options:
   device: cuda:0

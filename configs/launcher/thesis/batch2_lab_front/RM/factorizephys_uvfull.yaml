@@ -39,7 +39,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -69,7 +69,7 @@ TRAIN:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [RM]
-      EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
+      EXPERIMENT_PATHS: ['RM=C:/Users/alexa/Datasets_vhrm/RM']
       PARTICIPANTS: [RM01, RM04, RM07, RM08, RM10, RM18, RM19, RM22, RM23, RM24]
       EXCLUDE_PARTICIPANTS: []
       LABELS: [Squat]
@@ -92,7 +92,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -122,7 +122,7 @@ VALID:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [RM]
-      EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
+      EXPERIMENT_PATHS: ['RM=C:/Users/alexa/Datasets_vhrm/RM']
       PARTICIPANTS: [RM09, RM14]
       EXCLUDE_PARTICIPANTS: []
       LABELS: [Squat]
@@ -145,7 +145,7 @@ VALID:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -175,7 +175,7 @@ TEST:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [RM]
-      EXPERIMENT_PATHS: ['RM=F:/Datasets_vhrm/laboratory/RM']
+      EXPERIMENT_PATHS: ['RM=C:/Users/alexa/Datasets_vhrm/RM']
       PARTICIPANTS: [RM06, RM12, RM15, RM16, RM17, RM20]
       EXCLUDE_PARTICIPANTS: []
       LABELS: [Squat]

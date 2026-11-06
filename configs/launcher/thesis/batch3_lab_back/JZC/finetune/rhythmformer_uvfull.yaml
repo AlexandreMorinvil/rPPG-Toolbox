@@ -27,7 +27,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -57,7 +57,7 @@ TRAIN:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [JZC]
-      EXPERIMENT_PATHS: ['JZC=<not set: uv.lab.JZC in thesis/paths.yaml>']
+      EXPERIMENT_PATHS: ['JZC=C:/Users/alexa/Datasets_vhrm/JZC']
       PARTICIPANTS: [jzc01, jzc03, jzc04, jzc05, jzc06, jzc08, jzc09, jzc15]
       EXCLUDE_PARTICIPANTS: []
       LABELS: []
@@ -80,7 +80,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -110,7 +110,7 @@ VALID:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [JZC]
-      EXPERIMENT_PATHS: ['JZC=<not set: uv.lab.JZC in thesis/paths.yaml>']
+      EXPERIMENT_PATHS: ['JZC=C:/Users/alexa/Datasets_vhrm/JZC']
       PARTICIPANTS: [jzc11, jzc13, jzc14]
       EXCLUDE_PARTICIPANTS: []
       LABELS: []
@@ -133,7 +133,7 @@ VALID:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -163,7 +163,7 @@ TEST:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [JZC]
-      EXPERIMENT_PATHS: ['JZC=<not set: uv.lab.JZC in thesis/paths.yaml>']
+      EXPERIMENT_PATHS: ['JZC=C:/Users/alexa/Datasets_vhrm/JZC']
       PARTICIPANTS: [jzc02, jzc07, jzc10, jzc12, jzc16, jzc17]
       EXCLUDE_PARTICIPANTS: []
       LABELS: []

@@ -13,7 +13,7 @@ UNSUPERVISED:
   METRICS: [MAE, RMSE, MAPE, Pearson, SNR]
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -43,7 +43,7 @@ UNSUPERVISED:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [baseline]
-      EXPERIMENT_PATHS: ['baseline=F:/Datasets_vhrm/laboratory/baseline']
+      EXPERIMENT_PATHS: ['baseline=C:/Users/alexa/Datasets_vhrm/baseline']
       PARTICIPANTS: []
       EXCLUDE_PARTICIPANTS: []
       LABELS: []

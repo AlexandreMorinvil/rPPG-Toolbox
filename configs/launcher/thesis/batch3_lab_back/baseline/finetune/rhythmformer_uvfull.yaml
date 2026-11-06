@@ -27,7 +27,7 @@ TRAIN:
   SAVE_RESUME: true
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -57,7 +57,7 @@ TRAIN:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [baseline]
-      EXPERIMENT_PATHS: ['baseline=F:/Datasets_vhrm/laboratory/baseline']
+      EXPERIMENT_PATHS: ['baseline=C:/Users/alexa/Datasets_vhrm/baseline']
       PARTICIPANTS: [H04_baseline_after, H04_baseline_before, PO01_baseline, PO05_baseline, PO07_baseline, RM010_baseline_after,
         RM010_baseline_before, RM01_baseline_after, RM01_baseline_before, RM04_baseline_after, RM04_baseline_before, RM07_baseline_after,
         RM07_baseline_before, RM08_baseline_after, RM08_baseline_before, RM18_baseline_after, RM18_baseline_before, RM19_baseline_after,
@@ -84,7 +84,7 @@ TRAIN:
 VALID:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -114,7 +114,7 @@ VALID:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [baseline]
-      EXPERIMENT_PATHS: ['baseline=F:/Datasets_vhrm/laboratory/baseline']
+      EXPERIMENT_PATHS: ['baseline=C:/Users/alexa/Datasets_vhrm/baseline']
       PARTICIPANTS: [PO04_baseline, RM09_baseline_after, RM09_baseline_before, RM14_baseline_after, RM14_baseline_before,
         jzc11_baseline, jzc13_baseline, jzc14_baseline]
       EXCLUDE_PARTICIPANTS: []
@@ -138,7 +138,7 @@ VALID:
 TEST:
   DATA:
     DATASET: vHRM
-    DATA_PATH: F:/Datasets_vhrm/laboratory
+    DATA_PATH: C:/Users/alexa/Datasets_vhrm
     CACHED_PATH: C:/Datasets_Preprocessed
     DO_PREPROCESS: true
     FS: 30
@@ -168,7 +168,7 @@ TEST:
       RESAMPLE_TO_FS: false
     VHRM:
       EXPERIMENTS: [baseline]
-      EXPERIMENT_PATHS: ['baseline=F:/Datasets_vhrm/laboratory/baseline']
+      EXPERIMENT_PATHS: ['baseline=C:/Users/alexa/Datasets_vhrm/baseline']
       PARTICIPANTS: [H03_baseline_after, H03_baseline_before, PO06_baseline, PO08_baseline, RM06_baseline_after, RM06_baseline_before,
         RM12_baseline_after, RM12_baseline_before, RM15_baseline_after, RM15_baseline_before, RM16_baseline_after, RM16_baseline_before,
         RM17_baseline_after, RM17_baseline_before, RM20_baseline_after, RM20_baseline_before, jzc02_baseline, jzc07_baseline,
