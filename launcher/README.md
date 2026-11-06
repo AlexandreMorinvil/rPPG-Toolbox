@@ -27,6 +27,10 @@ New-NetFirewallRule -DisplayName "rPPG launcher" -Direction Inbound -Protocol TC
 
 Jobs run in a detached runner process, so they keep running when the launcher is closed; reopening the launcher re-attaches to them.
 
+The launcher keeps the Python code it loaded when it started, while the page and each new job read theirs from disk. When
+the content of that code changes (a `git pull`, for example), a notice at the top of the page asks for a restart and gives
+the command.
+
 ## Tabs
 
 - **New run** — start from any YAML in `configs/` or `docker/configs/`, or from a blank config (training, checkpoint evaluation, or unsupervised methods). Choose the **Docker** or **Local Python** backend per run.

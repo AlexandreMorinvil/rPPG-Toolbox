@@ -77,7 +77,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft
 .gpu { background: #1f2937; padding: 3px 8px; border-radius: 5px; }
 
 main { flex: 1; min-height: 0; }
-.tab-panel { display: none; height: calc(100vh - 48px); }
+.restart-notice { padding: 6px 16px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-bottom: 1px solid var(--warn); }
+.tab-panel { display: none; height: calc(100vh - 48px - var(--notice-height, 0px)); }
 .tab-panel.active { display: flex; flex-direction: column; }
 
 /* ---------- editor ---------- */

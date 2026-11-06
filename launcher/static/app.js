@@ -1302,6 +1302,21 @@ function elapsed(job) {
   return fmtDuration((end - new Date(job.started)) / 1000);
 }
 
+// Written only when it changes, so that the command stays selectable between polls.
+function showRestartNotice(restart) {
+  const key = JSON.stringify(restart || null);
+  if (key === S.restartNotice) return;
+  S.restartNotice = key;
+  const notice = $('restartNotice');
+  notice.classList.toggle('hidden', !restart);
+  if (!restart) return;
+  const shown = restart.files.slice(0, 3).join(', ') + (restart.files.length > 3 ? ` and ${restart.files.length - 3} more` : '');
+  notice.title = restart.files.join('\n');
+  notice.replaceChildren(h('strong', {}, 'Restart the launcher: its code changed. '),
+    `It still runs the code from when it started, so new settings or fixes can be ignored (changed: ${shown}). Stop it with Ctrl+C, run `,
+    h('code', {}, restart.command), ', then reload this page. Running jobs keep going.');
+}
+
 async function pollJobs() {
   try {
     const data = await api('/api/jobs');
@@ -1309,6 +1324,7 @@ async function pollJobs() {
     S.groups = data.groups || [];
     S.batches = data.batches || [];
     S.gpus = data.gpus;
+    showRestartNotice(data.restart);
   } catch (error) { return; }
   const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
   $('jobsBadge').textContent = active;
@@ -1918,7 +1934,8 @@ function continueDialog(jobs) {
     h('p', { class: 'muted' }, 'Each job continues from its last epoch with its optimizer, learning-rate schedule and random state, as if early stopping had not ended it. Its maximum number of epochs stays the same.'),
     h('div', { class: 'change-options' },
       h('label', {}, radio('remove', true), ' Remove early stopping: train up to the maximum epochs'),
-      h('div', { class: 'row' }, h('label', {}, withPatience, ' Use a patience of'), patience, h('span', {}, 'epochs, tolerance'), tolerance, h('span', {}, ', minimum epochs'), minEpochs, h('span', {}, ', patience counts'), afterMinimum)),
+      h('div', { class: 'row' }, h('label', {}, withPatience, ' Use a patience of'), patience, h('span', {}, 'epochs, tolerance'), tolerance),
+      h('div', { class: 'row' }, h('span', {}, 'Minimum epochs'), minEpochs, h('span', {}, 'Patience counts'), afterMinimum)),
     h('div', { id: 'changeRows' }),
     h('p', { class: 'muted small' }, 'If the best epoch changes, the test and the analysis report are redone with the new weights and the test results are replaced; the previous report stays in its own report/Epoch folder. If it does not change, the results are kept. Continuations start after the jobs already queued.')), [
     { label: 'Cancel', onClick: closeModal },
@@ -3046,6 +3063,7 @@ async function init() {
   document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
     if (S.boot) showTab(t.dataset.tab); else S.pendingTab = t.dataset.tab;
   }));
+  new ResizeObserver(([entry]) => document.documentElement.style.setProperty('--notice-height', `${entry.target.offsetHeight}px`)).observe($('restartNotice'));
   S.boot = await api('/api/bootstrap');
   S.fields = S.boot.schema.fields;
   S.fieldMap = Object.fromEntries(S.fields.map(f => [f.key, f]));

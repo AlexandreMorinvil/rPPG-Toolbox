@@ -13,8 +13,8 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import (batch, configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results, schema,
-               settings, validation)
+from . import (batch, code_watch, configs, crossval, jobs, paths, preflight, preprocessed, probes, reports, results,
+               schema, settings, validation)
 
 MAX_BODY = 4 * 1024 * 1024
 
@@ -105,6 +105,7 @@ class LauncherServer(ThreadingHTTPServer):
         # domain name in the Host header, so IP literals stay safe.
         self.allow_ip_hosts = allow_ip_hosts
         self.manager = jobs.JobManager()
+        self.code_watch = code_watch.CodeWatch()
         self.env_tests = {}
         self.env_lock = threading.Lock()
 
@@ -335,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("Not found", 404)
         elif method == "GET" and route == "/api/jobs":
             self._json({"jobs": manager.list(), "groups": manager.list_groups(), "batches": manager.list_batches(),
-                        "gpus": probes.gpus()})
+                        "gpus": probes.gpus(), "restart": self.server.code_watch.notice()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
         elif method == "POST" and route == "/api/jobs/continue":
