@@ -146,6 +146,40 @@ class ContinueTests(Fixture):
         self.assertTrue(values["TRAIN.EARLY_STOPPING.ENABLED"])
         self.assertEqual(values["TRAIN.EARLY_STOPPING.PATIENCE"], 10)
 
+    def test_a_minimum_of_epochs_gives_a_used_up_patience_more_epochs(self):
+        self.add("a", recovery=STOPPED, losses=LOSSES)
+        request = {"jobs": ["a"], "early_stopping": {"enabled": True, "patience": 4, "min_epochs": "10"}}
+        row = self.manager.continue_jobs({**request, "dry_run": True})["results"][0]
+        self.assertEqual((row["min_epochs"], row["max_epochs"], row["errors"]), (4, 14, []), "6 of the 10 are done")
+        new = self.manager.continue_jobs(request)["jobs"][0]
+        self.assertEqual(self.snapshot(new["id"])["TRAIN.EARLY_STOPPING.MIN_EPOCHS"], 10)
+
+    def test_a_minimum_of_epochs_only_counts_when_it_asks_for_more(self):
+        self.add("a", recovery=STOPPED, losses=LOSSES, **{"TRAIN.EARLY_STOPPING.MIN_EPOCHS": 9})
+        request = {"jobs": ["a"], "early_stopping": {"enabled": True}, "dry_run": True}
+        def planned(**stopping):
+            request["early_stopping"] = {"enabled": True, **stopping}
+            return self.manager.continue_jobs(request)["results"][0]
+        self.assertEqual(planned(patience=4)["min_epochs"], 3, "the job's own minimum of 9 stays")
+        self.assertEqual(planned(patience=10)["min_epochs"], 6, "the patience asks for more")
+        self.assertEqual(planned(patience=4, min_epochs=50)["min_epochs"], 14, "the maximum stays")
+        self.assertIn("already used up", planned(patience=4, min_epochs=6)["errors"][0])
+
+    def test_a_patience_after_the_minimum_only_counts_the_epochs_after_it(self):
+        self.add("a", recovery=STOPPED, losses=LOSSES)
+        def planned(**stopping):
+            request = {"jobs": ["a"], "early_stopping": {"enabled": True, "patience": 4,
+                                                         "patience_after_min_epochs": "true", **stopping}}
+            return self.manager.continue_jobs({**request, "dry_run": True})["results"][0]
+        self.assertEqual(planned(min_epochs=4)["min_epochs"], 2, "epochs 5 and 6 of the 4 count")
+        self.assertEqual(planned(min_epochs=10)["min_epochs"], 8, "4 to reach the minimum, then the patience")
+        self.assertEqual(planned(min_epochs=18)["min_epochs"], 14, "the maximum stays")
+        self.assertIn("already used up", planned(min_epochs=1)["errors"][0])
+        self.assertIn("already used up", planned(min_epochs=4, patience_after_min_epochs="false")["errors"][0])
+        new = self.manager.continue_jobs({"jobs": ["a"], "early_stopping": {
+            "enabled": True, "patience": 4, "min_epochs": 10, "patience_after_min_epochs": "true"}})["jobs"][0]
+        self.assertTrue(self.snapshot(new["id"])["TRAIN.EARLY_STOPPING.PATIENCE_AFTER_MIN_EPOCHS"])
+
     def test_a_used_up_patience_or_a_blocked_job_refuses_the_whole_request(self):
         self.add("a", recovery=STOPPED, losses=LOSSES)
         self.add("b", recovery=STOPPED, losses=LOSSES)

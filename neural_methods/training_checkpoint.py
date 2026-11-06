@@ -153,7 +153,8 @@ def training_epochs(trainer, loaders, histories):
     source = trainer.config.MODEL.RESUME
     settings = trainer.config.TRAIN.EARLY_STOPPING
     validate_settings(settings, trainer.config.TEST.USE_LAST_EPOCH)
-    stopping = EarlyStopping(settings.PATIENCE, settings.TOLERANCE) if settings.ENABLED else None
+    stopping = EarlyStopping(settings.PATIENCE, settings.TOLERANCE, settings.MIN_EPOCHS,
+                             settings.PATIENCE_AFTER_MIN_EPOCHS) if settings.ENABLED else None
     trainer._early_stopping = stopping
     trainer._early_stopping_epoch = None
     if stopping is not None and (loaders.get('valid') is None or len(loaders['valid']) == 0):
@@ -166,7 +167,7 @@ def training_epochs(trainer, loaders, histories):
             raise RuntimeError('Early stopping requires record_validation_loss() after each epoch.')
         if stopping.stopped:
             print(f'[training] Early stopping at epoch {epoch}: validation loss did not improve '
-                  f'by more than {stopping.tolerance:g} for {stopping.patience} consecutive epochs. '
+                  f'by more than {stopping.tolerance:g} for {stopping.bad_epochs} consecutive epochs. '
                   f'Best epoch: {trainer.best_epoch}.', flush=True)
         return stopping.stopped
 
@@ -217,7 +218,7 @@ def training_epochs(trainer, loaders, histories):
             if saved['histories'].get('valid_loss'):
                 stopping.replay(saved['histories']['valid_loss'])
             elif saved.get('early_stopping'):
-                stopping.load_state_dict(saved['early_stopping'])
+                stopping.load_state_dict(saved['early_stopping'], saved['next_epoch'])
         for name, values in saved['histories'].items():
             if name in histories:
                 histories[name][:] = values

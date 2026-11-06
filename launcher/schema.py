@@ -97,6 +97,13 @@ def _training_fields():
          "Absolute loss reduction required to reset patience (strictly greater than this value). "
          "Zero counts any reduction; small reductions accumulate relative to the last significant improvement.",
          min=0.0, when=when, group="Early stopping")
+    _add("TRAIN.EARLY_STOPPING.MIN_EPOCHS", "int", 0, "Minimum epochs", s,
+         "Early stopping cannot end training before this many epochs are done. Epochs before it still count "
+         "against the patience, so a patience already used up stops training right at this number. Zero: no minimum.",
+         min=0, max=10000, when=when, group="Early stopping")
+    _add("TRAIN.EARLY_STOPPING.PATIENCE_AFTER_MIN_EPOCHS", "bool", False, "Start patience after the minimum", s,
+         "Count only the epochs after Minimum epochs against the patience, compared with the best loss so far, "
+         "so training lasts at least Minimum epochs + Patience.", when=when, group="Early stopping")
     _add("TRAIN.BATCH_SIZE", "int", 4, "Batch size", s, "Also used for validation.", min=1, max=4096, when=when)
     _add("TRAIN.LR", "float", 1e-4, "Learning rate", s, "Peak learning rate (OneCycle for most trainers).",
          min=1e-8, max=1.0, when=when)

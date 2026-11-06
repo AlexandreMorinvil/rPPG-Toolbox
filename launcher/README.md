@@ -215,10 +215,15 @@ In **Training → Early stopping**, enable early stopping and set **Patience (ep
 and **Improvement tolerance**. Turn off **Test the last epoch** and configure the
 validation split. Patience counts consecutive epochs without a loss reduction
 strictly greater than the absolute tolerance; zero tolerance counts any reduction.
-Defaults are disabled, patience 10, tolerance 0.0. The best actual validation-loss
-checkpoint is selected independently of the tolerance, and **Epochs** stays an upper
-limit. The patience state survives pause/resume. **Retry plots / test** on an
-early-stopped run does not train further; **Continue training…** does.
+**Minimum epochs** holds off the stop until that many epochs are done; the epochs before
+it still count against the patience, so a patience already used up stops training as
+soon as the minimum is reached. With **Start patience after the minimum**, only the epochs
+after it count, compared with the best loss so far, so training lasts at least the minimum
+plus the patience. Defaults are disabled, patience 10, tolerance 0.0, no minimum, patience
+counted from the first epoch. The best actual validation-loss checkpoint is selected independently of the
+tolerance, and **Epochs** stays an upper limit. The patience state survives pause/resume.
+**Retry plots / test** on an early-stopped run does not train further; **Continue
+training…** does.
 
 ### Continue a training that early stopping ended
 
@@ -230,7 +235,7 @@ attempt with its own log links to the original and takes its place in the batch.
   histories come from the recovery checkpoint, so it continues the same training. Epochs
   without improvement before the stop still count against a new patience: patience 8
   after a stop at patience 4 gives at least 4 more epochs. A patience that is already used
-  up is refused.
+  up is refused, unless a higher **minimum epochs** still requires more epochs.
 - **The maximum stays:** **Epochs** cannot be raised here, because the OneCycle schedule
   was planned for that number and has no epochs after it.
 - **Results:** if the best epoch changes, the test and the analysis report run with the new

@@ -47,14 +47,14 @@ def _clean_description(text):
 
 
 def _stopping_values(request):
-    """The early stopping values of a continuation: off, or a new patience (and tolerance if given)."""
+    """The early stopping values of a continuation: off, or a new patience (and the other settings if given)."""
     request = request or {}
     values = {STOPPING + "ENABLED": bool(request.get("enabled"))}
     if not values[STOPPING + "ENABLED"]:
         return values
     if request.get("patience") in (None, ""):
         raise ValueError("Enter the new patience.")
-    for name in ("patience", "tolerance"):
+    for name in ("patience", "tolerance", "min_epochs", "patience_after_min_epochs"):
         if request.get(name) in (None, ""):
             continue
         key = STOPPING + name.upper()
@@ -67,10 +67,19 @@ def _stopping_values(request):
 def _epochs_without_improvement(job, values):
     """Epochs already counted against the patience under these settings, from the validation losses of its log."""
     losses = (job.get("progress") or {}).get("valid_loss") or {}
-    monitor = EarlyStopping(values[STOPPING + "PATIENCE"], values[STOPPING + "TOLERANCE"])
+    monitor = EarlyStopping(values[STOPPING + "PATIENCE"], values[STOPPING + "TOLERANCE"],
+                            values[STOPPING + "MIN_EPOCHS"], values[STOPPING + "PATIENCE_AFTER_MIN_EPOCHS"])
     monitor.replay(float("nan") if loss is None else loss for _, loss in sorted(
         losses.items(), key=lambda item: int(item[0])))
     return monitor.bad_epochs, len(losses)
+
+
+def _fewest_more_epochs(values, used, done):
+    """Epochs before early stopping can end a training with done epochs, used of them counted against the patience."""
+    patience, minimum = values[STOPPING + "PATIENCE"], values[STOPPING + "MIN_EPOCHS"]
+    if values[STOPPING + "PATIENCE_AFTER_MIN_EPOCHS"]:
+        return max(minimum - done, 0) + patience - used
+    return max(patience - used, minimum - done)
 
 
 class JobManager:
@@ -632,7 +641,8 @@ class JobManager:
     def continue_jobs(self, payload):
         """Queue trainings ended by early stopping again from their last epoch, with other early stopping settings.
 
-        payload: jobs, early_stopping (enabled, patience, tolerance), dry_run (only report what would happen).
+        payload: jobs, early_stopping (enabled, patience, tolerance, min_epochs, patience_after_min_epochs),
+        dry_run (only report what would happen).
         All or nothing: a job that cannot continue refuses the whole request.
         """
         stopping = _stopping_values(payload.get("early_stopping"))
@@ -684,7 +694,7 @@ class JobManager:
         if values[STOPPING + "ENABLED"]:
             used, known = _epochs_without_improvement(job, values)
             if known == done:
-                row["min_epochs"] = min(values[STOPPING + "PATIENCE"] - used, total - done)
+                row["min_epochs"] = min(_fewest_more_epochs(values, used, done), total - done)
                 if row["min_epochs"] <= 0:
                     row["errors"].append(f"A patience of {values[STOPPING + 'PATIENCE']} is already used up: "
                                          f"{used} epochs without improvement so far.")

@@ -60,8 +60,12 @@ class BaseTrainer:
         if stopping is not None:
             stopping.update(loss)
             self._early_stopping_epoch = epoch
+            minimum = ''
+            if stopping.min_epochs:
+                minimum = (f', counted after {stopping.min_epochs} epochs' if stopping.patience_after_min_epochs
+                           else f', at least {stopping.min_epochs} epochs')
             print(f'[training] Early stopping patience: {stopping.bad_epochs}/{stopping.patience} '
-                  f'(tolerance {stopping.tolerance:g})', flush=True)
+                  f'(tolerance {stopping.tolerance:g}{minimum})', flush=True)
 
     def _wandb_log_batch(self, loss, epoch, batch_idx, lr=None, extra=None):
         """Forward a per-batch metric to wandb honouring config.WANDB.* settings.

@@ -168,12 +168,108 @@ class TrainingCheckpointTests(unittest.TestCase):
         self.assertTrue(trainer._early_stopping.stopped)
         return trainer, str(resume_path(folder, 'toy'))
 
-    def continuation(self, folder, source, losses=None, enabled=True, patience=2, tolerance=0.1):
+    def continuation(self, folder, source, losses=None, enabled=True, patience=2, tolerance=0.1, min_epochs=0,
+                     after_minimum=False):
         trainer = self.early_trainer(folder, source)
         trainer.validation_losses = losses or trainer.validation_losses
         settings = trainer.config.TRAIN.EARLY_STOPPING
         settings.ENABLED, settings.PATIENCE, settings.TOLERANCE = enabled, patience, tolerance
+        settings.MIN_EPOCHS, settings.PATIENCE_AFTER_MIN_EPOCHS = min_epochs, after_minimum
         return trainer
+
+    FLAT_LOSSES = [1.0, 0.75, 0.7, 0.71, 0.72, 0.73, 0.74, 0.75]
+
+    def test_minimum_epochs_trains_past_a_used_up_patience_then_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.early_trainer(directory)
+            trainer.validation_losses = self.FLAT_LOSSES
+            trainer.config.TRAIN.EARLY_STOPPING.MIN_EPOCHS = 6
+            trainer.run()
+            self.assertEqual(len(trainer.history['valid_loss']), 6, 'patience alone stops after 4')
+            self.assertEqual(trainer.best_epoch, 2)
+            metadata = json.loads(resume_path(directory, 'toy').with_suffix('.json').read_text())
+            self.assertEqual((metadata['next_epoch'], metadata['early_stopped']), (6, True))
+            self.assertTrue(metadata['training_complete'])
+
+    def test_patience_after_the_minimum_trains_the_minimum_plus_the_patience(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            for name, after_minimum, epochs in (('held_back', False, 4), ('after', True, 5)):
+                trainer = self.continuation(folder / name, '', self.FLAT_LOSSES, min_epochs=3, after_minimum=after_minimum)
+                trainer.run()
+                self.assertEqual(len(trainer.history['valid_loss']), epochs, name)
+                self.assertTrue(trainer._early_stopping.stopped)
+
+    def test_a_stopped_training_can_continue_with_the_patience_after_the_minimum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, self.FLAT_LOSSES)
+            resumed = self.continuation(directory, source, self.FLAT_LOSSES, min_epochs=3, after_minimum=True)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 5, 'only epoch 3 of the first four counts')
+            self.assertEqual(resumed._early_stopping.bad_epochs, 2)
+
+    def test_minimum_epochs_above_the_maximum_runs_every_epoch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.early_trainer(directory, save_resume=False)
+            trainer.validation_losses = self.FLAT_LOSSES
+            trainer.config.TRAIN.EARLY_STOPPING.MIN_EPOCHS = 50
+            trainer.run()
+            self.assertEqual(len(trainer.history['valid_loss']), 8)
+            self.assertFalse(trainer._early_stopping.stopped)
+
+    def test_minimum_epochs_survives_a_pause(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            partial = self.early_trainer(folder / 'partial')
+            partial.validation_losses = self.FLAT_LOSSES
+            partial.config.TRAIN.EARLY_STOPPING.MIN_EPOCHS = 6
+            iterator = training_epochs(partial, partial.loaders, partial.history)
+            for _ in range(5):
+                partial.run_epoch(next(iterator))
+            control = folder / 'control.json'
+            control.write_text(json.dumps({'action': 'pause'}))
+            with patch.dict(os.environ, {'RPPG_TRAINING_CONTROL': str(control)}), self.assertRaises(TrainingPaused):
+                next(iterator)
+            source = str(resume_path(partial.model_dir, 'toy'))
+            resumed = self.continuation(folder / 'resumed', source, self.FLAT_LOSSES, min_epochs=6)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 6)
+            self.assertTrue(resumed._early_stopping.stopped)
+
+    def test_a_higher_minimum_continues_a_stopped_training(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, self.FLAT_LOSSES)
+            met = self.continuation(directory, source, self.FLAT_LOSSES, min_epochs=4)
+            with patch.object(met, 'run_epoch') as run:
+                met.run()
+                run.assert_not_called()
+            resumed = self.continuation(directory, source, self.FLAT_LOSSES, min_epochs=7)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 7)
+            self.assertTrue(resumed._early_stopping.stopped)
+
+    def test_minimum_counts_the_checkpoint_epochs_without_a_loss_history(self):
+        """PhysMamba keeps no histories, so its state comes from the checkpoint's early stopping entry."""
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, self.FLAT_LOSSES)
+            checkpoint = torch.load(source, weights_only=False)
+            del checkpoint['histories']['valid_loss']
+            torch.save(checkpoint, source)
+            resumed = self.continuation(directory, source, self.FLAT_LOSSES, min_epochs=6)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 2, 'epochs 4 and 5 reach the minimum of 6')
+            self.assertTrue(resumed._early_stopping.stopped)
+
+    def test_patience_after_the_minimum_without_a_loss_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, source = self.stopped_run(directory, self.FLAT_LOSSES)
+            checkpoint = torch.load(source, weights_only=False)
+            del checkpoint['histories']['valid_loss']
+            torch.save(checkpoint, source)
+            resumed = self.continuation(directory, source, self.FLAT_LOSSES, min_epochs=3, after_minimum=True)
+            resumed.run()
+            self.assertEqual(len(resumed.history['valid_loss']), 1, 'as with the history: stops after epoch 4')
+            self.assertTrue(resumed._early_stopping.stopped)
 
     def test_continuing_without_early_stopping_matches_a_run_that_never_had_it(self):
         with tempfile.TemporaryDirectory() as directory:
