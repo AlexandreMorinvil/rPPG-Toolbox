@@ -8,14 +8,16 @@ The configs are in `configs/launcher/thesis/` (launcher config tree: `launcher/t
 |---|---|
 | `thesis/paths.yaml` | Dataset folders (videos and vHRM Studio conversions), cache and run folders, device, wandb |
 | `thesis/splits.yaml` | Train / validation / test people (lab) and subjects (UBFC-rPPG, PURE, COHFACE) |
-| `tools/thesis_configs.py` | Writes the 140 configs; `--check` checks the inputs; `--find-paths` searches the drives |
+| `tools/thesis_configs.py` | Writes the 140 configs; `--check` checks the inputs; `--find-paths` fills the empty entries of `paths.yaml` |
 | `tools/paired_comparison.py` | Participant-level paired comparison of runs (bootstrap CI, equivalence) |
 | `tools/vhrm_window_features.py` | Movement and skin visibility of every evaluation window |
 
 ## Before running
 
-1. Plug in the drives, then `python tools/thesis_configs.py --find-paths`. It fills the entries of `paths.yaml` that
-   are empty or point to a missing folder (it searches every drive, about 10 s per drive), and keeps the others.
+1. Plug in the drives, then `python tools/thesis_configs.py --find-paths`. It fills the empty entries of `paths.yaml`
+   (it searches every drive, about 10 s per drive) and keeps the others, even when their folder is missing here: the
+   batches run on different computers, so `paths.yaml` holds the folders of the computer that runs each config. The
+   cache and run folders are per batch; `--check` warns about folders this computer does not have.
 2. `uv.lab.JZC` must point to the folder of the JZC conversions (`jzc01/`, `jzc02/`, ... with
    `labelled_segments/*/cam*_skin_uv.h5`). Until then the UV lab configs show an error in the launcher.
 3. `python tools/thesis_configs.py` writes the configs and lists what is missing. `--check` lists it without writing.
@@ -44,7 +46,7 @@ To launch a whole folder at once, use the launcher's **New run → Launch a batc
 `thesis/batch1_literature`): one round of pre-launch checks for all its configs, then one job per config, run one after
 another (see `launcher/README.md`, *Batches*).
 
-Runs write to `<runs>/<batch folder>/<run name>` (`runs` in `paths.yaml`). Each model and input preprocesses its
+Runs write to `<runs>/<batch folder>/<run name>` (`runs` of the batch in `paths.yaml`). Each model and input preprocesses its
 data once: batch 2 and batch 3 share the lab caches (same crop modes and sizes), and the first lab run of each model
 and input decodes the videos (the face crop is the slow one).
 
@@ -78,10 +80,10 @@ Every run writes `window_results.csv` (one row per window, with `has_reading`). 
 ```
 # Batch 1, PhysNet on UBFC-rPPG: is the UV map equivalent to the face crop (margin 1 bpm)?
 python tools/paired_comparison.py --reference face --margin 1.0 \
-    --run face=C:/Run/thesis/batch1_literature/b1_UBFC_physnet_face \
-    --run uvhead=C:/Run/thesis/batch1_literature/b1_UBFC_physnet_uvhead \
-    --run uvfull=C:/Run/thesis/batch1_literature/b1_UBFC_physnet_uvfull \
-    --output C:/Run/thesis/analysis/b1_UBFC_physnet
+    --run face=D:/Run/thesis/batch1_literature/b1_UBFC_physnet_face \
+    --run uvhead=D:/Run/thesis/batch1_literature/b1_UBFC_physnet_uvhead \
+    --run uvfull=D:/Run/thesis/batch1_literature/b1_UBFC_physnet_uvfull \
+    --output D:/Run/thesis/analysis/b1_UBFC_physnet
 
 # POS: every participant (--split all), or the test people only (default)
 python tools/paired_comparison.py --split all --reference face --run face=.../b1_UBFC_pos_face --run uvfull=...

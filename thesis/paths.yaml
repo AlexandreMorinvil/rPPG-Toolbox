@@ -1,9 +1,17 @@
 # Where the thesis datasets are, and where runs and caches go (tools/thesis_configs.py reads it).
-# After moving a drive: python tools/thesis_configs.py --find-paths   (fills the entries it can find, keeps the rest)
-# then:                 python tools/thesis_configs.py                (writes every config again)
+# The batches run on different computers, so a folder can be missing here and right there: entries are never replaced
+# because their folder is missing. After moving a drive, change the entry (or empty it for --find-paths to fill it).
+# Fill the empty entries: python tools/thesis_configs.py --find-paths
+# Write every config:     python tools/thesis_configs.py
 
-cache: C:/Datasets_Preprocessed            # preprocessing caches (shared by every run)
-runs: C:/Run/thesis                        # LOG.PATH root: <runs>/<batch>/<run name>
+cache:                                      # preprocessing caches (shared by the runs of a batch)
+  batch1: D:/Datasets_Preprocessed
+  batch2: C:/Datasets_Preprocessed
+  batch3: C:/Datasets_Preprocessed
+runs:                                       # LOG.PATH root: <runs>/<batch folder>/<run name>
+  batch1: D:/Run/thesis
+  batch2: C:/Run/thesis
+  batch3: C:/Run/thesis
 
 # Face crop input: the original videos.
 video:

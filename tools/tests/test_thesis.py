@@ -348,7 +348,9 @@ class GeneratorTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.root = Path(self.directory.name)
         _, self.splits = thesis_configs.load_inputs()
-        self.setup = {"cache": "C:/cache", "runs": str(self.root / "runs").replace("\\", "/"),
+        runs = str(self.root / "runs").replace("\\", "/")
+        self.setup = {"cache": dict.fromkeys(("batch1", "batch2", "batch3"), "C:/cache"),
+                      "runs": dict.fromkeys(("batch1", "batch2", "batch3"), runs),
                       "video": {"UBFC-rPPG": "F:/u", "PURE": "F:/p", "COHFACE": "F:/c", "lab": "F:/lab"},
                       "uv": {"UBFC-rPPG": "F:/uu", "PURE": "F:/up", "COHFACE": "F:/uc",
                              "lab": {"baseline": "F:/uv/baseline", "JZC": "", "RM": "F:/uv/RM"}},
@@ -413,6 +415,60 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(finetune["TRAIN"]["DATA"]["VHRM"]["VIEWS"], ["back-left", "back-right"])
         self.assertEqual(finetune["TEST"]["DATA"]["VHRM"]["VIEWS"], ["front", "back-left", "back-right"])
 
+    def test_each_batch_keeps_its_own_folders(self):
+        self.setup["cache"]["batch1"] = "D:/cache"
+        self.setup["runs"]["batch1"] = "D:/runs"
+        log = self.root / "runs" / "batch2_lab_front" / "b2_baseline_physnet_face" / "cache"
+        (log / "PreTrainedModels").mkdir(parents=True)
+        (log / "PreTrainedModels" / "b2_baseline_physnet_face_Epoch7.pth").write_bytes(b"")
+        (log / "saved_test_outputs").mkdir()
+        with open(log / "saved_test_outputs" / "b2_baseline_physnet_face_outputs.pickle", "wb") as handle:
+            pickle.dump({"meta": {"epoch": 7}}, handle)
+        runs, _ = thesis_configs.build_runs(self.setup, self.splits)
+        literature = runs["batch1_literature/UBFC/physnet_face.yaml"]
+        self.assertEqual(literature["LOG"]["PATH"], "D:/runs/batch1_literature/b1_UBFC_physnet_face")
+        self.assertEqual(literature["TRAIN"]["DATA"]["CACHED_PATH"], "D:/cache")
+        self.assertEqual(literature["TRAIN"]["DATA"]["DATA_PATH"], "F:/u")
+        for relative in ("batch2_lab_front/baseline/physnet_face.yaml", "batch3_lab_back/baseline/finetune/physnet_face.yaml"):
+            lab = runs[relative]
+            self.assertTrue(lab["LOG"]["PATH"].startswith(self.setup["runs"]["batch2"]))
+            self.assertEqual(lab["TRAIN"]["DATA"]["CACHED_PATH"], "C:/cache")
+            self.assertEqual(lab["TRAIN"]["DATA"]["DATA_PATH"], "F:/lab")
+        self.assertTrue(runs["batch3_lab_back/baseline/finetune/physnet_face.yaml"]["MODEL"]["INIT_WEIGHTS"]
+                        .endswith("b2_baseline_physnet_face_Epoch7.pth"))
+
+    def test_finding_paths_fills_empty_entries_and_keeps_the_folders_of_other_computers(self):
+        self.setup["video"]["PURE"] = ""
+        changes = thesis_configs.update_paths(
+            self.setup, {("video", "PURE"): ["E:/found/PURE"], ("video", "COHFACE"): ["E:/found/COHFACE"]},
+            {"JZC": [(5, "E:/found/JZC")], "RM": [(5, "E:/found/RM")]})
+        self.assertEqual(len(changes), 2)
+        self.assertEqual(self.setup["video"]["PURE"], "E:/found/PURE")
+        self.assertEqual(self.setup["uv"]["lab"]["JZC"], "E:/found/JZC")
+        self.assertEqual(self.setup["video"]["COHFACE"], "F:/c")                # missing on this computer: kept
+        self.assertEqual(self.setup["uv"]["lab"]["RM"], "F:/uv/RM")
+        written = self.root / "paths.yaml"
+        self.setup["cache"]["batch1"] = "D:/cache"
+        thesis_configs.write_paths(self.setup, written)
+        with open(written, encoding="utf-8") as handle:
+            self.assertEqual(yaml.safe_load(handle), self.setup)
+
+    def test_the_committed_configs_have_the_folders_of_the_paths_file(self):
+        def folders(node, prefix=""):
+            found = {}
+            for key, value in node.items():
+                if isinstance(value, dict):
+                    found.update(folders(value, f"{prefix}{key}."))
+                elif key in ("DATA_PATH", "CACHED_PATH", "EXPERIMENT_PATHS") or prefix + key == "LOG.PATH":
+                    found[prefix + key] = value
+            return found
+
+        setup, splits = thesis_configs.load_inputs()
+        runs, _ = thesis_configs.build_runs(setup, splits)
+        for relative, config in runs.items():
+            with self.subTest(config=relative), open(thesis_configs.OUTPUT_DIR / relative, encoding="utf-8") as handle:
+                self.assertEqual(folders(yaml.safe_load(handle)), folders(config))
+
     def test_the_split_file_assigns_each_session_once(self):
         errors, _ = thesis_configs.check_inputs(self.setup, self.splits)
         self.assertEqual(errors, [])
@@ -424,7 +480,8 @@ class GeneratorTests(unittest.TestCase):
 
 class LauncherCheckTests(unittest.TestCase):
     def test_subject_overlap_missing_weights_and_experiment_folders(self):
-        setup = {"cache": "C:/cache", "runs": "C:/runs",
+        setup = {"cache": dict.fromkeys(("batch1", "batch2", "batch3"), "C:/cache"),
+                 "runs": dict.fromkeys(("batch1", "batch2", "batch3"), "C:/runs"),
                  "video": {"UBFC-rPPG": "F:/u", "PURE": "F:/p", "COHFACE": "F:/c", "lab": "F:/lab"},
                  "uv": {"UBFC-rPPG": "F:/uu", "PURE": "F:/up", "COHFACE": "F:/uc",
                         "lab": {"baseline": "F:/uv/baseline", "JZC": "", "RM": "F:/uv/RM"}}, "options": {}}
