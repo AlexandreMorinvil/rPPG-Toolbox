@@ -1887,7 +1887,7 @@ async function applyChoice(state, request, done) {
 }
 
 function continueRequest(c) {
-  if (c.mode === 'patience' && c.patience === '') return null;
+  if (c.mode === 'patience' && !c.patience && !c.tolerance && !c.minEpochs && !c.patienceAfterMinimum) return null;
   return { path: '/api/jobs/continue', body: { jobs: c.ids,
     early_stopping: c.mode === 'remove' ? { enabled: false } : { enabled: true, patience: c.patience, tolerance: c.tolerance, min_epochs: c.minEpochs, patience_after_min_epochs: c.patienceAfterMinimum } } };
 }
@@ -1902,16 +1902,18 @@ function continueDialog(jobs) {
     input.addEventListener('change', () => choose(mode));
     return input;
   };
-  const patience = h('input', { type: 'number', id: 'continuePatience', min: '1', step: '1', 'aria-label': 'New patience in epochs', class: 'short' });
+  const patience = h('input', { type: 'number', id: 'continuePatience', min: '1', step: '1', placeholder: 'unchanged', 'aria-label': 'New patience in epochs', class: 'short' });
   const tolerance = h('input', { type: 'text', inputmode: 'decimal', id: 'continueTolerance', placeholder: 'unchanged', 'aria-label': 'New improvement tolerance', class: 'short' });
   const minEpochs = h('input', { type: 'number', id: 'continueMinEpochs', min: '0', step: '1', placeholder: 'unchanged', 'aria-label': 'New minimum number of epochs', class: 'short' });
   const afterMinimum = h('select', { id: 'continueAfterMinimum', 'aria-label': 'When the patience starts counting' },
     h('option', { value: '' }, 'unchanged'), h('option', { value: 'false' }, 'from the first epoch'), h('option', { value: 'true' }, 'after the minimum'));
   const withPatience = radio('patience', false);
-  patience.addEventListener('change', () => { c.patience = patience.value.trim(); withPatience.checked = true; choose('patience'); });
-  tolerance.addEventListener('change', () => { c.tolerance = tolerance.value.trim(); if (c.mode === 'patience') c.refresh(); });
-  minEpochs.addEventListener('change', () => { c.minEpochs = minEpochs.value.trim(); if (c.mode === 'patience') c.refresh(); });
-  afterMinimum.addEventListener('change', () => { c.patienceAfterMinimum = afterMinimum.value; if (c.mode === 'patience') c.refresh(); });
+  // Any of these settings means keeping early stopping, whichever option was selected.
+  const setting = (input, name) => input.addEventListener('change', () => { c[name] = input.value.trim(); withPatience.checked = true; choose('patience'); });
+  setting(patience, 'patience');
+  setting(tolerance, 'tolerance');
+  setting(minEpochs, 'minEpochs');
+  setting(afterMinimum, 'patienceAfterMinimum');
   openModal(`Continue ${countOf(jobs.length, 'training')}`, h('div', { class: 'checks' },
     h('p', { class: 'muted' }, 'Each job continues from its last epoch with its optimizer, learning-rate schedule and random state, as if early stopping had not ended it. Its maximum number of epochs stays the same.'),
     h('div', { class: 'change-options' },
@@ -1937,7 +1939,7 @@ function renderContinueRows(c) {
     if (row.min_epochs === null || c.mode === 'remove') return `${c.mode === 'remove' ? '' : 'up to '}${countOf(row.max_epochs, 'more epoch')}`;
     return row.min_epochs === row.max_epochs ? countOf(row.max_epochs, 'more epoch') : `${row.min_epochs}–${row.max_epochs} more epochs`;
   };
-  $('changeRows').replaceChildren(c.mode === 'patience' && c.patience === '' ? h('p', { class: 'muted' }, 'Enter the new patience.') :
+  $('changeRows').replaceChildren(!continueRequest(c) ? h('p', { class: 'muted' }, 'Enter a new patience or minimum epochs.') :
     jobChoiceTable(c, ['Epochs done', 'Best epoch', 'Will train', 'Problem'], row => [
       row.next_epoch === null || row.next_epoch === undefined ? '–' : `${row.next_epoch} / ${row.epochs_total}`,
       row.best_epoch ?? '–', planned(row), row.errors.join(' ')], update));

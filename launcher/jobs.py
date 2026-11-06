@@ -47,13 +47,11 @@ def _clean_description(text):
 
 
 def _stopping_values(request):
-    """The early stopping values of a continuation: off, or a new patience (and the other settings if given)."""
+    """The early stopping values of a continuation: off, or the settings to change (the others stay the job's)."""
     request = request or {}
     values = {STOPPING + "ENABLED": bool(request.get("enabled"))}
     if not values[STOPPING + "ENABLED"]:
         return values
-    if request.get("patience") in (None, ""):
-        raise ValueError("Enter the new patience.")
     for name in ("patience", "tolerance", "min_epochs", "patience_after_min_epochs"):
         if request.get(name) in (None, ""):
             continue
@@ -61,6 +59,8 @@ def _stopping_values(request):
         values[key], error = configs.coerce(schema.FIELD_MAP[key], request[name])
         if error:
             raise ValueError(f"{schema.FIELD_MAP[key]['label']}: {error}")
+    if len(values) == 1:
+        raise ValueError("Enter a new patience or minimum epochs.")
     return values
 
 
@@ -696,8 +696,11 @@ class JobManager:
             if known == done:
                 row["min_epochs"] = min(_fewest_more_epochs(values, used, done), total - done)
                 if row["min_epochs"] <= 0:
+                    minimum = values[STOPPING + "MIN_EPOCHS"]
                     row["errors"].append(f"A patience of {values[STOPPING + 'PATIENCE']} is already used up: "
-                                         f"{used} epochs without improvement so far.")
+                                         f"{used} epochs without improvement so far"
+                                         + (f", and the {done} epochs done reach the minimum of {minimum}." if minimum
+                                            else "."))
         answers = {"outputs": "overwrite", "policy": job.get("policy", "queue"), "wandb": "existing",
                    "_stamp": datetime.now().strftime("%Y%m%d-%H%M%S")}
         if job["backend"] == "docker":

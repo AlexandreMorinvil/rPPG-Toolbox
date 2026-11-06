@@ -228,8 +228,9 @@ training…** does.
 ### Continue a training that early stopping ended
 
 **Continue training…** on a job (or **Continue N trainings…** on its batch) queues it
-again from its last epoch, either without early stopping or with a new patience. A new
-attempt with its own log links to the original and takes its place in the batch.
+again from its last epoch, either without early stopping or with other early stopping
+settings; a setting left empty keeps the job's value. A new attempt with its own log links
+to the original and takes its place in the batch.
 
 - **As if it had not stopped:** weights, optimizer, learning-rate schedule, RNG and
   histories come from the recovery checkpoint, so it continues the same training. Epochs

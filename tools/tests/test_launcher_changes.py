@@ -154,6 +154,24 @@ class ContinueTests(Fixture):
         new = self.manager.continue_jobs(request)["jobs"][0]
         self.assertEqual(self.snapshot(new["id"])["TRAIN.EARLY_STOPPING.MIN_EPOCHS"], 10)
 
+    def test_a_minimum_of_epochs_alone_keeps_the_patience_of_the_job(self):
+        self.add("a", recovery=STOPPED, losses=LOSSES)
+        request = {"jobs": ["a"], "early_stopping": {"enabled": True, "patience": "", "tolerance": "", "min_epochs": "10",
+                                                     "patience_after_min_epochs": ""}}
+        row = self.manager.continue_jobs({**request, "dry_run": True})["results"][0]
+        self.assertEqual((row["min_epochs"], row["errors"]), (4, []))
+        values = self.snapshot(self.manager.continue_jobs(request)["jobs"][0]["id"])
+        self.assertEqual(values["TRAIN.EARLY_STOPPING.PATIENCE"], 4)
+        self.assertEqual(values["TRAIN.EARLY_STOPPING.MIN_EPOCHS"], 10)
+
+    def test_a_refusal_says_when_the_minimum_is_already_reached(self):
+        self.add("a", recovery=STOPPED, losses=LOSSES)
+        def refusal(**stopping):
+            request = {"jobs": ["a"], "early_stopping": {"enabled": True, "patience": 4, **stopping}, "dry_run": True}
+            return self.manager.continue_jobs(request)["results"][0]["errors"][0]
+        self.assertIn("the 6 epochs done reach the minimum of 5", refusal(min_epochs=5))
+        self.assertNotIn("minimum", refusal())
+
     def test_a_minimum_of_epochs_only_counts_when_it_asks_for_more(self):
         self.add("a", recovery=STOPPED, losses=LOSSES, **{"TRAIN.EARLY_STOPPING.MIN_EPOCHS": 9})
         request = {"jobs": ["a"], "early_stopping": {"enabled": True}, "dry_run": True}
