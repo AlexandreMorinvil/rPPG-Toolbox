@@ -45,17 +45,18 @@ SCOPES = {"all": "all recordings", "test": "test participants only",
 def report_folder(config, checkpoint):
     """<experiment folder>/report/<checkpoint name, without the run's checkpoint prefix>.
 
-    The experiment folder is the one holding the checkpoint's PreTrainedModels/ folder; for a checkpoint stored
-    elsewhere (released weights), the config's: PreTrainedModels/ of a training, saved_test_outputs/ of an evaluation.
+    An evaluation (only_test) reports in its own folder, the one of its saved_test_outputs/: several evaluations can
+    test the same checkpoint on different data. A training reports in the experiment folder holding the checkpoint's
+    PreTrainedModels/ folder, or its own for a checkpoint stored elsewhere (released weights).
     The launcher (launcher/reports.report_location) follows the same rule.
     """
     checkpoint = Path(checkpoint)
-    if checkpoint.parent.name == Path(config.MODEL.MODEL_DIR).name:
-        experiment = checkpoint.parent.parent
-    elif config.TOOLBOX_MODE == "train_and_test":
-        experiment = Path(config.MODEL.MODEL_DIR).parent
-    else:
+    if config.TOOLBOX_MODE != "train_and_test":
         experiment = Path(config.TEST.OUTPUT_SAVE_DIR).parent
+    elif checkpoint.parent.name == Path(config.MODEL.MODEL_DIR).name:
+        experiment = checkpoint.parent.parent
+    else:
+        experiment = Path(config.MODEL.MODEL_DIR).parent
     name = checkpoint.stem
     prefix = f"{config.TRAIN.MODEL_FILE_NAME}_"
     if config.TRAIN.MODEL_FILE_NAME and name.startswith(prefix) and len(name) > len(prefix):

@@ -8,7 +8,7 @@ The configs are in `configs/launcher/thesis/` (launcher config tree: `launcher/t
 |---|---|
 | `thesis/paths.yaml` | Dataset folders (videos and vHRM Studio conversions), cache and run folders, device, wandb |
 | `thesis/splits.yaml` | Train / validation / test people (lab) and subjects (UBFC-rPPG, PURE, COHFACE) |
-| `tools/thesis_configs.py` | Writes the 140 configs; `--check` checks the inputs; `--find-paths` fills the empty entries of `paths.yaml` |
+| `tools/thesis_configs.py` | Writes the 188 configs; `--check` checks the inputs; `--find-paths` fills the empty entries of `paths.yaml` |
 | `tools/paired_comparison.py` | Participant-level paired comparison of runs (bootstrap CI, equivalence) |
 | `tools/vhrm_window_features.py` | Movement and skin visibility of every evaluation window |
 
@@ -34,13 +34,22 @@ Inputs: `face` = face crop, `uvhead` = UV map of the head chart, `uvbody` = ever
 | `batch3_lab_back/<baseline, JZC>/finetune/` | 24 | The experiment's batch 2 model fine-tuned on its back-left + back-right videos, tested on the three views |
 | `batch3_lab_back/<baseline, JZC>/zeroshot/` | 24 | The experiment's batch 2 model tested on the three views as it is (the reference for the fine-tuning) |
 | `batch3_lab_back/<baseline, JZC>/` | 8 POS | POS on the back views (batch 2 has the front) |
+| `batch2_lab_front/RM/from_<baseline, JZC>/` | 24 tests | No training on RM: the batch 2 model of baseline or JZC tested on the RM test people, front camera |
+| `batch3_lab_back/RM/from_<baseline, JZC>/` | 24 tests | No training on RM: the fine-tuned batch 3 model of baseline or JZC tested on the RM test people, three views |
 
 Each experiment uses its own people of the split (the same person is in the same split in every experiment). The
 JZC UV configs wait for `uv.lab.JZC`; everything else in batches 1 and 2 can run now.
 
+The `RM/from_*` tests replace the RM trainings (`batch2_lab_front/RM/*.yaml`, kept but not used: their results are
+poor). They use the 6 RM test people, Squat segments only, who are also test people in baseline and JZC, so the models
+never trained on them. Their report covers the same 6 people with every label (like `test_set/` of the RM trainings)
+and is written in the test's own run folder. To launch only them, tick the `from_*` folders: ticking `RM/` also ticks
+the trainings.
+
 Order: batch 1 and batch 2 in any order. When batch 2 is done, run `python tools/thesis_configs.py` again: it writes
 each batch 2 run's tested checkpoint into the batch 3 configs of the same experiment (`MODEL.INIT_WEIGHTS`,
-`INFERENCE.MODEL_PATH`). Then batch 3.
+`INFERENCE.MODEL_PATH`) and into `batch2_lab_front/RM/from_*`. Then batch 3, then the script again for
+`batch3_lab_back/RM/from_*`.
 
 To launch a whole folder at once, use the launcher's **New run → Launch a batch…** and tick the folder (e.g.
 `thesis/batch1_literature`): one round of pre-launch checks for all its configs, then one job per config, run one after

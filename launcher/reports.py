@@ -42,13 +42,15 @@ def report_name(checkpoint, model_file_name):
 
 
 def report_location(checkpoint_host, values, backend):
-    """Host folder of a checkpoint's report: next to its PreTrainedModels folder, else in the config's experiment."""
+    """Host folder of a checkpoint's report: an evaluation's own folder; for a training, next to the checkpoint's
+    PreTrainedModels folder, else in the config's experiment."""
     checkpoint = Path(checkpoint_host)
     name = report_name(checkpoint, values.get("TRAIN.MODEL_FILE_NAME") or "")
-    if checkpoint.parent.name == (values.get("MODEL.MODEL_DIR") or "PreTrainedModels"):
+    training = values.get("TOOLBOX_MODE") == "train_and_test"
+    if training and checkpoint.parent.name == (values.get("MODEL.MODEL_DIR") or "PreTrainedModels"):
         return checkpoint.parent.parent / REPORT_DIR / name
     outputs = validation.output_paths(values, backend)
-    folder = outputs.get("model_dir_host" if values.get("TOOLBOX_MODE") == "train_and_test" else "test_outputs_host")
+    folder = outputs.get("model_dir_host" if training else "test_outputs_host")
     if not folder:
         raise ValueError("The report folder of this config is not on this machine (check the Docker mounts).")
     return Path(folder).parent / REPORT_DIR / name

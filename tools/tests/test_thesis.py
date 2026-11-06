@@ -361,8 +361,8 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_config_loads_and_the_splits_never_mix(self):
         runs, waiting = thesis_configs.build_runs(self.setup, self.splits)
-        self.assertEqual(len(runs), 140)
-        self.assertEqual(len(waiting), 24)
+        self.assertEqual(len(runs), 188)
+        self.assertEqual(len(waiting), 48)                         # batch 2 of baseline, JZC; their fine-tunings
         output = self.root / "configs"
         thesis_configs.write_runs(runs, output)
         for path in sorted(output.rglob("*.yaml")):
@@ -414,6 +414,86 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(runs["batch3_lab_back/JZC/finetune/physnet_face.yaml"]["MODEL"]["INIT_WEIGHTS"].startswith("<"))
         self.assertEqual(finetune["TRAIN"]["DATA"]["VHRM"]["VIEWS"], ["back-left", "back-right"])
         self.assertEqual(finetune["TEST"]["DATA"]["VHRM"]["VIEWS"], ["front", "back-left", "back-right"])
+
+    def make_run(self, batch_folder, name, epoch):
+        log = self.root / "runs" / batch_folder / name / "cache"
+        (log / "PreTrainedModels").mkdir(parents=True)
+        (log / "PreTrainedModels" / f"{name}_Epoch{epoch}.pth").write_bytes(b"")
+        (log / "saved_test_outputs").mkdir()
+        with open(log / "saved_test_outputs" / f"{name}_outputs.pickle", "wb") as handle:
+            pickle.dump({"meta": {"epoch": epoch}}, handle)
+
+    def test_rm_is_tested_with_the_models_of_the_other_experiments(self):
+        self.make_run("batch2_lab_front", "b2_baseline_physnet_face", 7)
+        self.make_run("batch2_lab_front", "b2_jzc_physnet_face", 5)
+        self.make_run("batch3_lab_back", "b3_jzc_ft_physnet_face", 3)
+        runs, waiting = thesis_configs.build_runs(self.setup, self.splits)
+        model_path = lambda relative: runs[relative]["INFERENCE"]["MODEL_PATH"]
+        self.assertTrue(model_path("batch2_lab_front/RM/from_baseline/physnet_face.yaml")
+                        .endswith("b2_baseline_physnet_face_Epoch7.pth"))
+        self.assertTrue(model_path("batch2_lab_front/RM/from_JZC/physnet_face.yaml")
+                        .endswith("b2_jzc_physnet_face_Epoch5.pth"))
+        self.assertTrue(model_path("batch3_lab_back/RM/from_JZC/physnet_face.yaml")
+                        .endswith("b3_jzc_ft_physnet_face_Epoch3.pth"))          # the fine-tuned model
+        self.assertEqual(model_path("batch3_lab_back/RM/from_baseline/physnet_face.yaml"),
+                         "<run batch3_lab_back/baseline/finetune/physnet_face.yaml, then tools/thesis_configs.py>")
+        self.assertIn("b3_baseline_ft_physnet_face", waiting)
+        self.assertEqual(len(waiting), len(set(waiting)))
+
+        tests = {relative: config for relative, config in runs.items() if "/RM/from_" in relative}
+        self.assertEqual(len(tests), 48)
+        people = {"RM06", "RM12", "RM15", "RM16", "RM17", "RM20"}
+        training = set()
+        for person in self.splits["lab"]["persons"].values():
+            if person["split"] != "test":
+                training.update(session.split("/", 1)[1] for session in person["sessions"])
+        for relative, config in tests.items():
+            with self.subTest(config=relative):
+                self.assertEqual(config["TOOLBOX_MODE"], "only_test")
+                self.assertNotIn("EPOCHS", config["TRAIN"])
+                self.assertNotIn("DATA", config["TRAIN"])
+                vhrm = config["TEST"]["DATA"]["VHRM"]
+                self.assertEqual(set(vhrm["PARTICIPANTS"]), people)
+                self.assertFalse(people & training)                              # nobody the models trained on
+                self.assertEqual(vhrm["EXPERIMENTS"], ["RM"])
+                self.assertEqual(vhrm["LABELS"], ["Squat"])
+                self.assertEqual(vhrm["VIEWS"], ["front"] if relative.startswith("batch2")
+                                 else ["front", "back-left", "back-right"])
+                self.assertEqual(vhrm["PREDICTION_IS_DIFF"], "/physnet_" in relative)
+                self.assertTrue(config["REPORT"]["ENABLED"])
+                self.assertEqual(set(config["REPORT"]["PARTICIPANTS"]), people)  # not the people the models saw
+        self.assertEqual(runs["batch3_lab_back/baseline/zeroshot/physnet_face.yaml"]["REPORT"]["PARTICIPANTS"], [])
+        logs =[config["LOG"]["PATH"] for config in runs.values()]
+        self.assertEqual(len(logs), len(set(logs)))                              # no two runs share a folder
+
+    def test_rm_tests_reuse_the_test_cache_of_the_rm_training_configs(self):
+        runs, _ = thesis_configs.build_runs(self.setup, self.splits)
+        output = self.root / "configs"
+        thesis_configs.write_runs(runs, output)
+        with contextlib.redirect_stdout(io.StringIO()):
+            trained = get_config(argparse.Namespace(config_file=str(output / "batch2_lab_front/RM/physnet_face.yaml")))
+            tested = get_config(argparse.Namespace(
+                config_file=str(output / "batch2_lab_front/RM/from_baseline/physnet_face.yaml")))
+        self.assertEqual(tested.TEST.DATA.CACHED_PATH, trained.TEST.DATA.CACHED_PATH)
+        self.assertEqual(tested.TEST.DATA.FILE_LIST_PATH, trained.TEST.DATA.FILE_LIST_PATH)
+
+    def test_tests_of_one_checkpoint_report_in_their_own_folders(self):
+        from evaluation.vhrm_report import report_folder
+        checkpoint = self.root / "runs/batch2_lab_front/b2_baseline_physnet_face/x/PreTrainedModels/b2_baseline_physnet_face_Epoch7.pth"
+        runs, _ = thesis_configs.build_runs(self.setup, self.splits)
+        output = self.root / "configs"
+        thesis_configs.write_runs(runs, output)
+        folders = {}
+        for relative in ("batch2_lab_front/RM/from_baseline/physnet_face.yaml",
+                         "batch3_lab_back/baseline/zeroshot/physnet_face.yaml"):
+            with contextlib.redirect_stdout(io.StringIO()):
+                config = get_config(argparse.Namespace(config_file=str(output / relative)))
+            folders[relative] = report_folder(config, checkpoint)
+            self.assertEqual(folders[relative].parent.parent, Path(config.TEST.OUTPUT_SAVE_DIR).parent)
+        self.assertEqual(len(set(folders.values())), 2)
+        with contextlib.redirect_stdout(io.StringIO()):
+            trained = get_config(argparse.Namespace(config_file=str(output / "batch2_lab_front/baseline/physnet_face.yaml")))
+        self.assertEqual(report_folder(trained, checkpoint), checkpoint.parent.parent / "report" / "Epoch7")
 
     def test_each_batch_keeps_its_own_folders(self):
         self.setup["cache"]["batch1"] = "D:/cache"

@@ -15,9 +15,12 @@ whole body; POS runs on every participant, the neural models train on the traini
                                    fine-tuned on its back-left + back-right videos of the training people, tested on the
                                    three views; zeroshot/: the batch 2 model tested on the three views as it is; POS on
                                    the back views (batch 2 has the front).
+    <batch folder>/RM/from_<source>/ Tests only, no training on RM: the RM test people through the source experiment's
+                                   model. Batch 2: its front-camera model, on the front camera. Batch 3: its fine-tuned
+                                   model, on the three views.
 
-Batch 3 starts from the batch 2 checkpoints: run batch 2, then run this script again. It reads the epoch each batch 2
-run tested (its saved_test_outputs) and writes that checkpoint into MODEL.INIT_WEIGHTS / INFERENCE.MODEL_PATH.
+Batch 3 and the from_<source> tests start from checkpoints of other runs: run those, then run this script again. It reads
+the epoch each run tested (its saved_test_outputs) and writes that checkpoint into MODEL.INIT_WEIGHTS / INFERENCE.MODEL_PATH.
 The runs of batches 2 and 3 write the analysis report after their test (REPORT): of the tested checkpoint, or of POS.
 Generated files start with a header line; files with that header that are no longer generated are removed.
 """
@@ -63,7 +66,10 @@ LITERATURE = {"UBFC-rPPG": {"short": "UBFC", "fs": 30}, "PURE": {"short": "PURE"
 LAB_EXPERIMENTS = {"batch2": ["baseline", "JZC", "RM"], "batch3": ["baseline", "JZC"]}
 # Segment labels kept per experiment (VHRM.LABELS) in every split; an experiment not listed keeps every label.
 LAB_LABELS = {"RM": ["Squat"]}
-FACE_CROP = {"DO_CROP_FACE": True, "BACKEND": "Y5F", "USE_LARGE_FACE_BOX": True, "LARGE_BOX_COEF": 1.5,
+# Experiment tested with the models of other experiments, without training on it.
+PRETRAINED_TESTS = {"RM": ["baseline", "JZC"]}
+THREE_VIEWS = ["front", "back-left", "back-right"]
+FACE_CROP ={"DO_CROP_FACE": True, "BACKEND": "Y5F", "USE_LARGE_FACE_BOX": True, "LARGE_BOX_COEF": 1.5,
              "DETECTION": {"DO_DYNAMIC_DETECTION": True, "DYNAMIC_DETECTION_FREQUENCY": 30,
                            "USE_MEDIAN_FACE_BOX": False}}
 # Back cameras: the face is searched inside the largest person (the participant) only, so that the experimenter facing
@@ -193,7 +199,7 @@ def common_blocks(setup, batch, name, description, tags):
 
 
 def neural_config(setup, batch, name, description, tags, model_key, blocks, mode="train_and_test", init="",
-                  model_path="", epochs=EPOCHS, lr=None):
+                  model_path="", epochs=EPOCHS, lr=None, report_participants=()):
     """A train_and_test (blocks: train, valid, test) or only_test (blocks: test) config of one model."""
     model = MODELS[model_key]
     options = setup.get("options") or {}
@@ -218,7 +224,7 @@ def neural_config(setup, batch, name, description, tags, model_key, blocks, mode
         extra["INFERENCE"]["MODEL_PATH"] = model_path
     config.update(extra)
     if blocks["test"]["DATASET"] == "vHRM":
-        config["REPORT"] = report_block()
+        config["REPORT"] = report_block(report_participants)
     return config
 
 
@@ -235,9 +241,12 @@ def pos_config(setup, batch, name, description, tags, block):
     return config
 
 
-def report_block():
-    """Analysis report (evaluation/vhrm_report) of the tested checkpoint or of POS, after the run; it needs vHRM data."""
-    return {"ENABLED": True, "LABELS": [], "PARTICIPANTS": [], "EXPORT_CSV": True}
+def report_block(participants=()):
+    """Analysis report (evaluation/vhrm_report) of the tested checkpoint or of POS, after the run; it needs vHRM data.
+
+    Without participants it covers every participant of the experiment.
+    """
+    return {"ENABLED": True, "LABELS": [], "PARTICIPANTS": list(participants), "EXPORT_CSV": True}
 
 
 def batch_folder(batch):
@@ -267,8 +276,55 @@ def best_checkpoint(log_path, name):
     return None
 
 
+def source_checkpoint(setup, batch, source, config_path, waiting):
+    """Checkpoint a run of this batch tested, or a placeholder naming its config (and the run joins waiting)."""
+    checkpoint = best_checkpoint(f"{setup['runs']}/{batch_folder(batch)}/{source}", source)
+    if checkpoint is not None:
+        return checkpoint
+    if source not in waiting:
+        waiting.append(source)
+    return f"<run {config_path}, then tools/thesis_configs.py>"
+
+
+def pretrained_tests(setup, batch, splits, waiting):
+    """{relative config path: only_test config}: PRETRAINED_TESTS, the test people through each source's model."""
+    runs = {}
+    camera = {"batch2": "front", "batch3": "back"}[batch]
+    views = {"batch2": ["front"], "batch3": THREE_VIEWS}[batch]
+    where = {"batch2": "on the front camera", "batch3": "on the three views (by_view.csv)"}[batch]
+    for experiment, sources in PRETRAINED_TESTS.items():
+        persons = lab_folders(splits, "test", experiment)
+        people = lab_people(splits, "test", experiment)
+        only = f" {', '.join(LAB_LABELS[experiment])} segments only." if experiment in LAB_LABELS else ""
+        for source in sources:
+            origin = {"batch2": f"the batch 2 front-camera model of {source}",
+                      "batch3": f"the batch 3 model of {source}, fine-tuned on its back-left + back-right videos"}[batch]
+            for input_key in BATCH_INPUTS["batch2"]:
+                label = INPUTS[input_key]["label"]
+                for model_key, model in MODELS.items():
+                    weights = {"batch2": (f"b2_{source.lower()}_{model_key}_{input_key}",
+                                          f"batch2_lab_front/{source}/{model_key}_{input_key}.yaml"),
+                               "batch3": (f"b3_{source.lower()}_ft_{model_key}_{input_key}",
+                                          f"batch3_lab_back/{source}/finetune/{model_key}_{input_key}.yaml")}[batch]
+                    checkpoint = source_checkpoint(setup, batch, weights[0], weights[1], waiting)
+                    name = f"b{batch[-1]}_{experiment.lower()}_from_{source.lower()}_{model_key}_{input_key}"
+                    test = data_block(setup, "lab", input_key, model, "test", lab={
+                        "experiments": [experiment], "participants": persons, "views": views,
+                        "prediction_is_diff": model["label_type"] == "DiffNormalized"})
+                    description = (f"Batch {batch[-1]} - {model['name']} on {experiment}, {label}: {origin}, tested as "
+                                   f"it is.\n"
+                                   f"No training on {experiment}: tested on its {people} test people, {where}. First "
+                                   f"{MAX_DURATION_SEC:g} s of each recording.{only}")
+                    relative = f"{batch_folder(batch)}/{experiment}/from_{source}/{model_key}_{input_key}.yaml"
+                    runs[relative] = neural_config(
+                        setup, batch, name, description, [experiment, camera, f"from_{source}", model_key, input_key],
+                        model_key, {"test": test}, mode="only_test", model_path=checkpoint,
+                        report_participants=persons)  # an only_test report has no splits: keep it to the unseen people
+    return runs
+
+
 def build_runs(paths, splits):
-    """{relative config path: config}, and the batch 2 runs whose checkpoint batch 3 still waits for."""
+    """{relative config path: config}, and the runs whose tested checkpoint other configs still wait for."""
     runs, waiting = {}, []
 
     # Batch 1: literature datasets, one training per dataset.
@@ -321,23 +377,20 @@ def build_runs(paths, splits):
             runs[f"batch2_lab_front/{experiment}/pos_{input_key}.yaml"] = pos_config(
                 setup, "batch2", name, description, [experiment, "front", "pos", input_key],
                 data_block(setup, "lab", input_key, POS, "test", lab={**lab2, "participants": []}))
+    runs.update(pretrained_tests(setup, "batch2", splits, waiting))
 
     # Batch 3: lab data, back cameras, one fine-tuning per experiment from its batch 2 model.
-    batch2_runs = setup["runs"]
+    batch2_setup = setup
     setup = batch_setup(paths, "batch3")
-    back, views = ["back-left", "back-right"], ["front", "back-left", "back-right"]
+    back, views = ["back-left", "back-right"], THREE_VIEWS
     for experiment in LAB_EXPERIMENTS["batch3"]:
         persons = {split: lab_folders(splits, split, experiment) for split in SPLITS}
         short = experiment.lower()
         for input_key in BATCH_INPUTS["batch2"]:
             label = INPUTS[input_key]["label"]
             for model_key, model in MODELS.items():
-                source = f"b2_{short}_{model_key}_{input_key}"
-                checkpoint = best_checkpoint(f"{batch2_runs}/{batch_folder('batch2')}/{source}", source)
-                if checkpoint is None:
-                    waiting.append(source)
-                    checkpoint = (f"<run batch2_lab_front/{experiment}/{model_key}_{input_key}.yaml, "
-                                  f"then tools/thesis_configs.py>")
+                checkpoint = source_checkpoint(batch2_setup, "batch2", f"b2_{short}_{model_key}_{input_key}",
+                                               f"batch2_lab_front/{experiment}/{model_key}_{input_key}.yaml", waiting)
                 is_diff = model["label_type"] == "DiffNormalized"
                 name = f"b3_{short}_ft_{model_key}_{input_key}"
                 blocks = {split: data_block(setup, "lab", input_key, model, split, lab={
@@ -369,6 +422,7 @@ def build_runs(paths, splits):
                 setup, "batch3", name, description, [experiment, "back", "pos", input_key],
                 data_block(setup, "lab", input_key, POS, "test", lab={
                     "experiments": [experiment], "participants": [], "views": back}))
+    runs.update(pretrained_tests(setup, "batch3", splits, waiting))
     return runs, waiting
 
 
@@ -687,7 +741,7 @@ def main(argv=None):
     print(f"Wrote {len(runs)} configs to {args.output} ({', '.join(f'{n} {b}' for b, n in batches.items())})"
           + (f"; removed {removed} stale ones" if removed else "") + ".")
     if waiting:
-        print(f"Batch 3 waits for {len(waiting)} batch 2 checkpoints (run batch 2, then this script again): "
+        print(f"Configs wait for the checkpoints of {len(waiting)} runs (run them, then this script again): "
               + ", ".join(waiting))
     return 0
 

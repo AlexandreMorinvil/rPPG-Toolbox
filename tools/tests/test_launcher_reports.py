@@ -116,6 +116,13 @@ class ReportFolderTests(unittest.TestCase):
         self.assertEqual(reports.report_name("x/UBFC-rPPG_PhysNet.pth", "toy"), "UBFC-rPPG_PhysNet")
         checkpoint = self.experiment / "PreTrainedModels" / "toy_Epoch3.pth"
         self.assertEqual(reports.report_location(checkpoint, vhrm_values(), "local"), self.experiment / "report" / "Epoch3")
+        # An evaluation reports in its own folder, not in the run that trained its checkpoint.
+        evaluation = vhrm_values(**{"TOOLBOX_MODE": "only_test", "LOG.PATH": str(self.root / "evaluation")})
+        location = reports.report_location(checkpoint, evaluation, "local")
+        self.assertEqual(location.parent.parent, Path(validation.output_paths(evaluation, "local")["test_outputs_host"]).parent)
+        self.assertEqual(location.name, "Epoch3")
+        self.assertIn("evaluation", location.parts)
+        self.assertNotIn("toy", location.parts)
 
     def test_reports_are_listed_with_their_headline(self):
         found = {item["name"]: item for item in reports.list_reports(self.experiment)}
