@@ -34,6 +34,9 @@ EXCEPTION = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)|Kil
 # Analysis report (evaluation/vhrm_report): after the test of main.py, or a report job.
 REPORT_DONE = re.compile(r"^\[report\] Done in [^:]+:\s*(.+?)[\\/]REPORT\.md$")
 REPORT_FAILED = re.compile(r"^\[report\] FAILED:\s*(.*)$")
+# Lines of launcher/runner.py around each step of a job.
+RUNNER_STEP = re.compile(r"^\[launcher\] \S+ step (\d+)/(\d+): (.*)$")
+RUNNER_STEP_DONE = re.compile(r"^\[launcher\] \S+ step finished with exit code (-?\d+)")
 
 HINTS = (
     ("CUDA out of memory", "GPU memory exhausted: lower the batch size, INFERENCE.FRAME_BATCH_SIZE or the input size."),
@@ -163,6 +166,21 @@ class LogParser:
         if not stripped:
             return
         self.state["last_line"] = stripped[:300]
+
+        # Before the traceback state: a step's process is over even when its traceback was cut off.
+        match = RUNNER_STEP.match(stripped)
+        if match:
+            self.in_traceback = False
+            self.state["step"] = {"index": int(match.group(1)), "total": int(match.group(2)),
+                                  "title": match.group(3)[:200]}
+            self.state["bar"] = None
+            self._workers.clear()
+            return
+        match = RUNNER_STEP_DONE.match(stripped)
+        if match:
+            self.in_traceback = False
+            self.state.setdefault("step_codes", []).append(int(match.group(1)))
+            return
 
         if self.in_traceback:
             self.state["traceback"].append(text[:500])

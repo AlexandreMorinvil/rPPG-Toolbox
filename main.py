@@ -41,6 +41,9 @@ def add_args(parser):
     """Adds arguments for parser."""
     parser.add_argument('--config_file', required=False,
                         default="configs/train_configs/PURE_PURE_UBFC-rPPG_TSCAN_BASIC.yaml", type=str, help="The name of the model.")
+    parser.add_argument('--preprocess_only', action='store_true',
+                        help="Preprocess the splits whose DO_PREPROCESS is True, then exit without training, testing "
+                             "or W&B (used by the launcher to preprocess a batch before its trainings).")
     '''Neural Method Sample YAML LIST:
       SCAMPS_SCAMPS_UBFC-rPPG_TSCAN_BASIC.yaml
       SCAMPS_SCAMPS_UBFC-rPPG_DEEPPHYS_BASIC.yaml
@@ -180,7 +183,13 @@ if __name__ == "__main__":
     print('Configuration:')
     print(config, end='\n\n')
 
-    data_loader_dict = dict() # dictionary of data loaders 
+    data_loader_dict = dict() # dictionary of data loaders
+    preprocessed = []  # splits preprocessed by this run (reported by --preprocess_only)
+
+    def wanted(data):
+        """With --preprocess_only, only the splits that preprocess build a loader (the others may not be cached yet)."""
+        return data.DO_PREPROCESS or not args.preprocess_only
+
     if config.TOOLBOX_MODE == "train_and_test":
         # train_loader
         if config.TRAIN.DATA.DATASET == "UBFC-rPPG":
@@ -215,13 +224,15 @@ if __name__ == "__main__":
 
         # Create and initialize the train dataloader given the correct toolbox mode,
         # a supported dataset name, and a valid dataset paths
-        if (config.TRAIN.DATA.DATASET and config.TRAIN.DATA.DATA_PATH):
+        if (config.TRAIN.DATA.DATASET and config.TRAIN.DATA.DATA_PATH and wanted(config.TRAIN.DATA)):
 
             train_data_loader = train_loader(
                 name="train",
                 data_path=config.TRAIN.DATA.DATA_PATH,
                 config_data=config.TRAIN.DATA,
                 device=config.DEVICE)
+            if config.TRAIN.DATA.DO_PREPROCESS:
+                preprocessed.append("train")
             data_loader_dict['train'] = DataLoader(
                 dataset=train_data_loader,
                 num_workers=config.TRAIN.DATA_LOADER_WORKERS,
@@ -270,12 +281,15 @@ if __name__ == "__main__":
         
         # Create and initialize the valid dataloader given the correct toolbox mode,
         # a supported dataset name, and a valid dataset path
-        if (config.VALID.DATA.DATASET and config.VALID.DATA.DATA_PATH and not config.TEST.USE_LAST_EPOCH):
+        if (config.VALID.DATA.DATASET and config.VALID.DATA.DATA_PATH and not config.TEST.USE_LAST_EPOCH
+                and wanted(config.VALID.DATA)):
             valid_data = valid_loader(
                 name="valid",
                 data_path=config.VALID.DATA.DATA_PATH,
                 config_data=config.VALID.DATA,
                 device=config.DEVICE)
+            if config.VALID.DATA.DO_PREPROCESS:
+                preprocessed.append("valid")
             data_loader_dict["valid"] = DataLoader(
                 dataset=valid_data,
                 num_workers=config.TRAIN.DATA_LOADER_WORKERS,
@@ -324,12 +338,14 @@ if __name__ == "__main__":
 
         # Create and initialize the test dataloader given the correct toolbox mode,
         # a supported dataset name, and a valid dataset path
-        if config.TEST.DATA.DATASET and config.TEST.DATA.DATA_PATH:
+        if config.TEST.DATA.DATASET and config.TEST.DATA.DATA_PATH and wanted(config.TEST.DATA):
             test_data = test_loader(
                 name="test",
                 data_path=config.TEST.DATA.DATA_PATH,
                 config_data=config.TEST.DATA,
                 device=config.DEVICE)
+            if config.TEST.DATA.DO_PREPROCESS:
+                preprocessed.append("test")
             data_loader_dict["test"] = DataLoader(
                 dataset=test_data,
                 num_workers=config.INFERENCE.DATA_LOADER_WORKERS,
@@ -365,22 +381,29 @@ if __name__ == "__main__":
             raise ValueError("Unsupported dataset! Currently supporting UBFC-rPPG, PURE, MMPD, \
                              SCAMPS, BP4D+, UBFC-PHYS and iBVP.")
         
-        unsupervised_data = unsupervised_loader(
-            name="unsupervised",
-            data_path=config.UNSUPERVISED.DATA.DATA_PATH,
-            config_data=config.UNSUPERVISED.DATA,
-            device=config.DEVICE)
-        data_loader_dict["unsupervised"] = DataLoader(
-            dataset=unsupervised_data,
-            num_workers=config.TRAIN.DATA_LOADER_WORKERS,
-            batch_size=1,
-            shuffle=False,
-            worker_init_fn=seed_worker,
-            generator=general_generator
-        )
+        if wanted(config.UNSUPERVISED.DATA):
+            unsupervised_data = unsupervised_loader(
+                name="unsupervised",
+                data_path=config.UNSUPERVISED.DATA.DATA_PATH,
+                config_data=config.UNSUPERVISED.DATA,
+                device=config.DEVICE)
+            data_loader_dict["unsupervised"] = DataLoader(
+                dataset=unsupervised_data,
+                num_workers=config.TRAIN.DATA_LOADER_WORKERS,
+                batch_size=1,
+                shuffle=False,
+                worker_init_fn=seed_worker,
+                generator=general_generator
+            )
+            if config.UNSUPERVISED.DATA.DO_PREPROCESS:
+                preprocessed.append("unsupervised")
 
     else:
         raise ValueError("Unsupported toolbox_mode! Currently support train_and_test or only_test or unsupervised_method.")
+
+    if args.preprocess_only:
+        print(f"[preprocess] Done: {', '.join(preprocessed) or 'no split has DO_PREPROCESS: True'}.", flush=True)
+        raise SystemExit(0)
 
     # Initialise Weights & Biases once per process. No-op when WANDB.ENABLED is False.
     wandb_logger.init(config, extra_config={"random_seed": RANDOM_SEED})

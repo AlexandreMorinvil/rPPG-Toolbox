@@ -65,7 +65,7 @@ Runs save compact per-frame signals; every plot is drawn on demand, so nothing i
 - **Validation probes:** for a training run, open the best-validation source. Probe recordings get an epoch selector and an MAE-by-epoch chart from `probe_history.npz`.
 
 What runs save is set in the run editor under **Visualization outputs** (`VISUALIZE.*`): the highlight PNGs, the best-epoch validation set, and the probe interval and selection. Docker users must rebuild the toolbox image before using configs that contain these keys.
-- **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, and extra results/preprocessed-data folders to browse.
+- **Settings** — local Python executable, Docker `.env` values (mount folders, default GPU, shared memory, image), environment tests, default GPU policy (queue or parallel), maximum simultaneous jobs, default preprocessing of a batch and maximum simultaneous preprocessing jobs (see [Preprocessing first](#preprocessing-first)), and extra results/preprocessed-data folders to browse.
 
 ## Batches
 
@@ -80,6 +80,9 @@ What runs save is set in the run editor under **Visualization outputs** (`VISUAL
      relaunch a folder after some runs finished).
    - *Existing caches*: reuse or preprocess again.
    - *Weights & Biases login*, *GPU* and *Docker image*.
+   - *Preprocessing*: in each job just before its training (default), or all of it first, before the first training:
+     one cache folder at a time, up to the preprocessing limit of Settings at once, or as many at once as the computer
+     can take. See [Preprocessing first](#preprocessing-first).
    - *Run order*: one after another on the GPU (default), or up to the job limit of Settings at once.
 
    An answer only changes the configs that asked the question, as if each config were launched alone: a config without
@@ -123,6 +126,46 @@ What runs save is set in the run editor under **Visualization outputs** (`VISUAL
   example preprocessing settings), the output path, W&B settings and the mode are refused: cancel the job and launch it
   again for those.
 - **Continue finished jobs:** see [Continue a training that early stopping ended](#continue-a-training-that-early-stopping-ended).
+
+### Preprocessing first
+
+Preprocessing uses the GPU much less than training, so several caches can be preprocessed at once. With a
+*Preprocessing* answer other than *In each job*, the batch starts with a preprocessing stage. Its trainings start when
+the stage is over, in the *Run order* of the batch.
+
+- **What it preprocesses:** each data split with preprocessing on, once:
+  - A file list (`DataFileLists/<name>.csv`) is one task. When the splits of several configs write the same file list
+    with the same settings, the first config preprocesses it for all of them.
+  - Splits whose cache already exists and is reused (*Existing caches*) are skipped.
+  - vHRM caches are incremental, so only new or changed recordings are decoded.
+- **Jobs:** one preprocessing job per cache folder, named `Preprocess · <cache folder>`. It runs
+  `main.py --preprocess_only` once for each config that has splits to preprocess into the folder; that run builds those
+  splits and exits before training, testing and W&B. A failed step does not stop the next one.
+- **One writer per folder:** two runs never fill the same cache folder at the same time, even across batches. Different
+  folders are preprocessed side by side.
+- **How many at once:**
+  - *One cache folder at a time*.
+  - *Up to N at once*: N is **Settings → Jobs → Maximum simultaneous preprocessing jobs**. It is separate from the
+    training limit.
+  - *As many as this computer can take* (automatic): the launcher measures CPU use, free memory, and the memory and use
+    of the job's GPU while the jobs run. It starts the first job at once. It starts another one when the last one has
+    run for a minute and the load leaves room for a job as large as the largest it measured, plus a reserve
+    (4 GB or 10 % of the memory, 1 GB or 10 % of the GPU memory). The CPU must also be below 85 % and the GPU below 90 %.
+    It never stops a running job: when the load rises (a training elsewhere, another user), it only waits. The batch
+    detail shows the readings and the reason it is waiting. The readings cover the whole computer. Docker Desktop's
+    virtual machine can have a lower memory limit of its own.
+- **Then the trainings:**
+  - Each training reuses the caches made for it: `DO_PREPROCESS` is turned off in its config snapshot when the stage
+    ends.
+  - Trainings sharing a cache no longer take turns.
+  - A split whose preprocessing failed or was stopped is preprocessed by its training, as without this option.
+  - Splits that write one file list with different settings are always preprocessed by their own job, for example two
+    vHRM label types, which the list name does not include. For incremental vHRM caches the stage still decodes their
+    videos, so this is quick.
+- **Jobs tab:** the batch row shows the stage while it runs, with its preprocessing jobs listed first. The batch detail
+  has a *Preprocessing* card with one row per cache folder. Preprocessing jobs never make a training wait for the GPU,
+  and they do not count against the training job limit.
+- **Docker:** rebuild the toolbox image before using this option, so that the image has `main.py --preprocess_only`.
 
 ## Cross-validation (vHRM)
 

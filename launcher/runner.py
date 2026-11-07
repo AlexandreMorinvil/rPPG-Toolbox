@@ -17,11 +17,14 @@ def _now():
 
 
 def main(job_dir):
+    """Run the steps in order. A failed step ends the job, unless it has continue_on_error (independent steps, such as
+    the preprocessing of separate configs): the job then goes on and fails at the end with the first failure's code."""
     job_dir = Path(job_dir)
     steps = json.loads((job_dir / "steps.json").read_text(encoding="utf-8"))
     log_path = job_dir / "output.log"
     returncode = 0
     failed_step = None
+    codes = []
     with log_path.open("ab", buffering=0) as log:
         for index, step in enumerate(steps):
             log.write(f"\n[launcher] {_now()} step {index + 1}/{len(steps)}: {step['title']}\n".encode())
@@ -37,11 +40,16 @@ def main(job_dir):
                 returncode = 127
             log.write(f"[launcher] {_now()} step finished with exit code {returncode} "
                       f"after {time.time() - started:.0f}s\n".encode())
+            codes.append(returncode)
             if returncode != 0:
-                failed_step = index
-                break
+                if failed_step is None:
+                    failed_step = index
+                if not step.get("continue_on_error"):
+                    break
+    if failed_step is not None:
+        returncode = codes[failed_step]
     (job_dir / "exit.json").write_text(json.dumps({
-        "returncode": returncode, "failed_step": failed_step, "finished": _now(),
+        "returncode": returncode, "failed_step": failed_step, "step_codes": codes, "finished": _now(),
     }), encoding="utf-8")
     return returncode
 

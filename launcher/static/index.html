@@ -172,6 +172,15 @@
             </select>
           </label>
           <label>Maximum simultaneous jobs <input id="setMaxJobs" type="number" min="1" max="16"></label>
+          <label>Default preprocessing of a batch
+            <select id="setPrepPolicy">
+              <option value="with_jobs">In each job, just before its training</option>
+              <option value="queue">First, one cache folder at a time</option>
+              <option value="parallel">First, several cache folders at once (limit below)</option>
+              <option value="auto">First, as many at once as this computer can take</option>
+            </select>
+          </label>
+          <label>Maximum simultaneous preprocessing jobs (batches that preprocess first) <input id="setMaxPrep" type="number" min="1" max="16"></label>
           <label>Default backend
             <select id="setBackend"><option value="docker">Docker</option><option value="local">Local Python</option></select>
           </label>

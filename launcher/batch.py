@@ -11,7 +11,7 @@ from collections import Counter
 
 import yaml
 
-from . import configs, preflight, schema, settings
+from . import configs, preflight, preprocess_first, schema, settings
 
 MAX_CONFIGS = 400
 # Questions answered once for the batch, in display order; "cache" stands for the cache:<split> question of every split.
@@ -118,7 +118,7 @@ def _check_config(entry, path, backend, answers, secrets, manager):
     outputs = derived.get("outputs", {})
     entry["log_path"] = outputs.get("log_path_host") or effective.get("LOG.PATH")
     run = {"values": effective, "extras": data["extras"], "outputs": outputs, "answers": result["answers"],
-           "caches": caches_of(effective, derived)}
+           "caches": caches_of(effective, derived), "splits": preprocess_first.preprocess_splits(effective, derived)}
     return result["checks"], run
 
 
@@ -237,7 +237,9 @@ def run_checks(config_paths, backend, answers, secrets, manager, exclude=()):
     for key in SHARED_QUESTIONS:
         if shared.get(key):
             checks.items.append(_shared_question(key, shared[key], answers, total))
-    _order_question(checks, launchable, runs, backend, answers, prefs, manager)
+    plan = _preprocess_question(checks, launchable, runs, backend, answers, prefs)
+    _order_question(checks, launchable, runs, backend, answers, prefs, manager,
+                    first=preprocess_first_chosen(answers, plan) is not None)
     if answers.get("wandb") == "key":
         checks.add("wandb_memory", "W&B key kept in memory", "warn",
                    "The key typed here is never written to disk: if the launcher restarts before the last job has "
@@ -265,18 +267,65 @@ def run_checks(config_paths, backend, answers, secrets, manager, exclude=()):
         "name": default_name(folder),
         "answers": answers,
         "runs": runs,
+        "plan": plan,
     }
 
 
-def _order_question(checks, launchable, runs, backend, answers, prefs, manager):
-    """How the jobs of the batch share the GPU: one after another (default) or several at once."""
+def preprocess_first_chosen(answers, plan):
+    """The policy of the batch's preprocessing stage, or None when every job preprocesses its own data."""
+    choice = answers.get("preprocess")
+    if not plan or not plan["caches"] or choice not in settings.PREPROCESS_POLICIES or choice == "with_jobs":
+        return None
+    return choice
+
+
+def _preprocess_question(checks, launchable, runs, backend, answers, prefs):
+    """When the batch preprocesses: in each job (as for a single run), or all of it first, before the trainings."""
+    entries = [{"path": entry["path"], "name": entry["name"], "values": runs[entry["path"]]["values"],
+                "splits": runs[entry["path"]].get("splits") or {}} for entry in launchable]
+    plan = preprocess_first.plan(entries)
+    if not plan["caches"]:
+        return plan
+    counts, limit = plan["counts"], prefs["max_parallel_preprocess"]
+    message = (f"{counts['splits']} data split(s) to preprocess, into {len(plan['caches'])} cache folder(s): "
+               f"{counts['lists']} file list(s)")
+    message += f" ({counts['duplicates']} split(s) shared by several configs are preprocessed once)." \
+        if counts["duplicates"] else "."
+    if counts["in_jobs"]:
+        message += (f" {counts['in_jobs']} split(s) share a file list with different settings: their jobs "
+                    "preprocess them in any case.")
+    if backend == "docker":
+        message += " Docker: an image built before this option must be rebuilt for the preprocessing stage."
+    details = [f"{cache['name']}: {cache['lists']} file list(s) for {len(cache['configs'])} config(s)"
+               for cache in plan["caches"]]
+    options = [
+        {"value": "with_jobs", "label": "In each job, just before its training",
+         "description": "As for a single run. Jobs that fill the same cache folder take turns."},
+        {"value": "queue", "label": "First, one cache folder at a time",
+         "description": "Every cache is preprocessed before the first training starts."},
+        {"value": "parallel", "label": f"First, up to {limit} cache folders at once (Settings → Jobs)",
+         "description": "Each folder is filled by one job at a time; folders are preprocessed side by side."},
+        {"value": "auto", "label": "First, as many at once as this computer can take",
+         "description": "Starts one more job each time the CPU, memory and GPU measured while the jobs run leave "
+                        "room for it, and waits otherwise."},
+    ]
+    checks.question("preprocess", "Preprocessing", message, options, answers,
+                    default=prefs.get("preprocess_policy", "with_jobs"), details=details)
+    return plan
+
+
+def _order_question(checks, launchable, runs, backend, answers, prefs, manager, first=False):
+    """How the jobs of the batch share the GPU: one after another (default) or several at once.
+
+    first: the batch preprocesses first, so its trainings start after the preprocessing stage."""
     if not launchable:
         return
     run = runs[launchable[0]["path"]]
     gpu = preflight.gpu_index(run["values"], backend, run["answers"])
     limit = prefs["max_parallel_jobs"]
     where = f"GPU {gpu}" if gpu is not None else "the CPU"
-    message = f"{len(launchable)} job(s) to queue on {where}, in the listed order."
+    message = f"{len(launchable)} job(s) to queue on {where}, in the listed order" + \
+        (", once the preprocessing is done." if first else ".")
     busy = manager.jobs_on_gpu(gpu) if manager is not None and gpu is not None else []
     if busy:
         message += f" Already using this GPU: {', '.join(job['name'] for job in busy[:5])}" + \
@@ -286,8 +335,8 @@ def _order_question(checks, launchable, runs, backend, answers, prefs, manager):
                {"value": "parallel", "label": f"Up to {limit} at once (Settings → Jobs)",
                 "description": "Jobs share the GPU memory and can run out of VRAM."}]
     checks.question("policy", "Run order", message, options, answers, default=prefs["gpu_policy"])
-    if answers.get("policy") != "parallel":
-        return
+    if answers.get("policy") != "parallel" or first:
+        return  # preprocessed first, the jobs only read the caches
     owners = {}
     for entry in launchable:
         for cache in runs[entry["path"]]["caches"]:
@@ -303,4 +352,4 @@ def _order_question(checks, launchable, runs, backend, answers, prefs, manager):
 
 def public(result):
     """The checks as sent to the client (without the effective configs)."""
-    return {key: value for key, value in result.items() if key != "runs"}
+    return {key: value for key, value in result.items() if key not in ("runs", "plan")}
