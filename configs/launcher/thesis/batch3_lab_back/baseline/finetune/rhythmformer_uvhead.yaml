@@ -2,7 +2,7 @@
 BASE: ['']
 TOOLBOX_MODE: train_and_test
 DESCRIPTION: |-
-  Batch 3 - RhythmFormer on baseline, UV map of the head only: the batch 2 front-camera model of baseline fine-tuned on the back-left + back-right videos of the training people, best epoch on the validation people, tested on the three views of the test people (by_view.csv).
+  Batch 3 - RhythmFormer on baseline, UV map of the head only: the batch 2 front-camera model of baseline fine-tuned on the back-left + back-right videos of the training people, best epoch on the validation people, tested on the back-left + back-right videos of the test people (by_view.csv).
   10 epochs at 0.1 x the learning rate.
 MODEL:
   NAME: RhythmFormer
@@ -177,7 +177,7 @@ TEST:
       EXCLUDE_PARTICIPANTS: []
       LABELS: []
       EXCLUDE_LABELS: []
-      VIEWS: [front, back-left, back-right]
+      VIEWS: [back-left, back-right]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
       MIN_FACE_FRACTION: 0.0
       FACE_SEARCH_WIDTH: 1.0
@@ -217,8 +217,8 @@ WANDB:
   JOB_TYPE: ''
   TAGS: [thesis, batch3, baseline, back, finetune, rhythmformer, uvhead]
   NOTES: 'Batch 3 - RhythmFormer on baseline, UV map of the head only: the batch 2 front-camera model of baseline fine-tuned
-    on the back-left + back-right videos of the training people, best epoch on the validation people, tested on the three
-    views of the test people (by_view.csv).'
+    on the back-left + back-right videos of the training people, best epoch on the validation people, tested on the back-left
+    + back-right videos of the test people (by_view.csv).'
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
 REPORT:

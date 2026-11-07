@@ -3,7 +3,7 @@ BASE: ['']
 TOOLBOX_MODE: only_test
 DESCRIPTION: |-
   Batch 3 - RhythmFormer on RM, UV map of the head only: the batch 3 model of baseline, fine-tuned on its back-left + back-right videos, tested as it is.
-  No training on RM: tested on its 6 test people, on the three views (by_view.csv). First 120 s of each recording. Squat segments only.
+  No training on RM: tested on its 6 test people, on the back-left + back-right cameras (by_view.csv). First 120 s of each recording. Squat segments only.
 MODEL:
   NAME: RhythmFormer
   DROP_RATE: 0.2
@@ -53,7 +53,7 @@ TEST:
       EXCLUDE_PARTICIPANTS: []
       LABELS: [Squat]
       EXCLUDE_LABELS: []
-      VIEWS: [front, back-left, back-right]
+      VIEWS: [back-left, back-right]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
       MIN_FACE_FRACTION: 0.0
       FACE_SEARCH_WIDTH: 1.0

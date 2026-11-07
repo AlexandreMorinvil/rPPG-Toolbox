@@ -2,7 +2,7 @@
 BASE: ['']
 TOOLBOX_MODE: unsupervised_method
 DESCRIPTION: Batch 3 - POS on baseline, back-left and back-right cameras, UV map of every body part except the head, every
-  participant (batch 2 has the front camera).
+  participant.
 LOG:
   PATH: C:/Run/thesis/batch3_lab_back/b3_baseline_pos_uvbody
 DEVICE: cuda:0
@@ -85,8 +85,7 @@ WANDB:
   GROUP: thesis-batch3
   JOB_TYPE: ''
   TAGS: [thesis, batch3, baseline, back, pos, uvbody]
-  NOTES: Batch 3 - POS on baseline, back-left and back-right cameras, UV map of every body part except the head, every participant
-    (batch 2 has the front camera).
+  NOTES: Batch 3 - POS on baseline, back-left and back-right cameras, UV map of every body part except the head, every participant.
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
 REPORT:

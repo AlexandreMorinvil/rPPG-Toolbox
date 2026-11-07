@@ -31,11 +31,11 @@ Inputs: `face` = face crop, `uvhead` = UV map of the head chart, `uvbody` = ever
 |---|---|---|
 | `batch1_literature/<UBFC, PURE, COHFACE>/` | 27 + 9 POS | One training per dataset, model and input (face, uvhead, uvfull) |
 | `batch2_lab_front/<baseline, JZC, RM>/` | 36 + 12 POS | Front camera, one training per experiment, model and input (face, uvhead, uvbody, uvfull) |
-| `batch3_lab_back/<baseline, JZC>/finetune/` | 24 | The experiment's batch 2 model fine-tuned on its back-left + back-right videos, tested on the three views |
-| `batch3_lab_back/<baseline, JZC>/zeroshot/` | 24 | The experiment's batch 2 model tested on the three views as it is (the reference for the fine-tuning) |
+| `batch3_lab_back/<baseline, JZC>/finetune/` | 24 | The experiment's batch 2 model fine-tuned on its back-left + back-right videos, tested on the back views |
+| `batch3_lab_back/<baseline, JZC>/zeroshot/` | 24 | The experiment's batch 2 model tested on the back views as it is (the reference for the fine-tuning) |
 | `batch3_lab_back/<baseline, JZC>/` | 8 POS | POS on the back views (batch 2 has the front) |
 | `batch2_lab_front/RM/from_<baseline, JZC>/` | 24 tests | No training on RM: the batch 2 model of baseline or JZC tested on the RM test people, front camera |
-| `batch3_lab_back/RM/from_<baseline, JZC>/` | 24 tests | No training on RM: the fine-tuned batch 3 model of baseline or JZC tested on the RM test people, three views |
+| `batch3_lab_back/RM/from_<baseline, JZC>/` | 24 tests | No training on RM: the fine-tuned batch 3 model of baseline or JZC tested on the RM test people, back views |
 
 Each experiment uses its own people of the split (the same person is in the same split in every experiment). The
 JZC UV configs wait for `uv.lab.JZC`; everything else in batches 1 and 2 can run now.
