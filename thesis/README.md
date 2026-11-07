@@ -81,6 +81,14 @@ and input decodes the videos (the face crop is the slow one).
 - Lab data: first 120 s of each recording (`VHRM.MAX_DURATION_SEC`), Zephyr HR as the ground truth.
 - Evaluation: HR by FFT in 30 s windows for every dataset (the literature usually scores whole videos; the
   `window_results.csv` of a run is enough to recompute that).
+- Unsupervised methods (POS) on UBFC-rPPG, PURE and COHFACE: the incomplete window at the end of a recording is scored
+  only if it lasts at least 10 s (`MIN_TAIL_SECONDS` in `unsupervised_methods/unsupervised_predictor.py`). COHFACE
+  needed this: its recordings last about 60 s at 20 fps, which leaves tails of a few frames. A 9-frame tail crashed the
+  evaluation, and a 10-16 frame tail can only give 75 or 150 bpm.
+  Not applied to the runs of 2026-11-05: the POS runs on UBFC-rPPG and PURE and every neural run on these datasets still
+  count their shorter tails (4-9 s). Their `window_results.csv` has `start_seconds` and `end_seconds`, so dropping those
+  rows gives the same rule without a new run. State which rule each reported number uses. Lab data (vHRM) is not
+  affected.
 
 ## Analysis
 

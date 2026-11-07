@@ -17,6 +17,21 @@ from evaluation.metrics import window_row
 
 
 METHODS = ("POS", "CHROM", "ICA", "GREEN", "LGI", "PBV", "OMIT")
+FILTFILT_PADLEN = 9  # calculate_metric_per_video filters with filtfilt, which needs more samples than this
+MIN_TAIL_SECONDS = 10
+
+
+def window_skip_reason(start, length, window_frame_size, fs):
+    """Why this evaluation window is not scored, or None if it is.
+
+    The incomplete window left at the end of a recording counts only from MIN_TAIL_SECONDS: a shorter one has too few
+    FFT bins to give a heart rate, yet would weigh as much as a full window. See thesis/README.md.
+    """
+    if length <= FILTFILT_PADLEN:
+        return f"Window frame size of {length} is not longer than the minimum pad length of {FILTFILT_PADLEN}."
+    if start > 0 and length < window_frame_size and length < MIN_TAIL_SECONDS * fs:
+        return f"Last window of {length} frames is shorter than {MIN_TAIL_SECONDS} s."
+    return None
 
 
 def unsupervised_bvp(method_name, frames, fs, masked=False):
@@ -86,8 +101,9 @@ def unsupervised_predict(config, data_loader, method_name):
                 BVP_window = BVP[i:i+window_frame_size]
                 label_window = labels_input[i:i+window_frame_size]
 
-                if len(BVP_window) < 9:
-                    print(f"Window frame size of {len(BVP_window)} is smaller than minimum pad length of 9. Window ignored!")
+                skip_reason = window_skip_reason(i, len(BVP_window), window_frame_size, config.UNSUPERVISED.DATA.FS)
+                if skip_reason:
+                    print(f"{skip_reason} Window ignored!")
                     continue
 
                 if config.INFERENCE.EVALUATION_METHOD == "peak detection":
