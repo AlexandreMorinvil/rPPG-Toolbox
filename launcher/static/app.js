@@ -109,6 +109,16 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// Replaces the content of a part that the job poll rebuilds every 2 s, keeping what the user did inside it: where its
+// scroll boxes are scrolled and which <details> are open (matched by their order in the part).
+function refill(container, ...children) {
+  const boxes = [...container.querySelectorAll('.table-wrap, pre')].map(el => [el.scrollTop, el.scrollLeft]);
+  const open = [...container.querySelectorAll('details')].map(el => el.open);
+  container.replaceChildren(...children.flat().filter(Boolean));
+  container.querySelectorAll('.table-wrap, pre').forEach((el, i) => { if (boxes[i]) [el.scrollTop, el.scrollLeft] = boxes[i]; });
+  container.querySelectorAll('details').forEach((el, i) => { if (open[i]) el.open = true; });
+}
+
 function openModal(title, body, buttons = [], wide = false) {
   $('modalTitle').textContent = title;
   const container = $('modalBody');
@@ -1331,7 +1341,8 @@ async function pollJobs() {
   $('jobsBadge').classList.toggle('hidden', !active);
   $('gpuStrip').replaceChildren(...S.gpus.map(g => h('span', { class: 'gpu', title: g.name },
     `GPU${g.index} ${g.utilization}% · ${(g.memory_used / 1024).toFixed(1)}/${(g.memory_total / 1024).toFixed(0)} GB`)));
-  if ($('tab-jobs').classList.contains('active')) {
+  // Not while a mouse button is held: a row rebuilt between press and release would lose the click.
+  if ($('tab-jobs').classList.contains('active') && !S.pointerDown) {
     renderJobList();
     updateJobDetail();
   }
@@ -1528,17 +1539,13 @@ function updateJobDetail(force = false) {
     p.report_error ? ['Analysis report', h('span', { class: 'bad' }, `failed: ${p.report_error}`)] : null,
     p.last_line ? ['Last line', h('code', { class: 'clip' }, p.last_line)] : null,
   ].filter(Boolean);
-  $('jdProgress').replaceChildren(...[
+  refill($('jdProgress'), ...[
     fraction !== null ? h('div', { class: 'progress big' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` }), h('span', {}, `${(fraction * 100).toFixed(0)}%`)) : null,
     h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v))))].filter(Boolean));
-  const err = $('jdError');
-  err.replaceChildren();
-  if (job.error || p.hints?.length) {
-    err.append(h('div', { class: 'card error-card' },
-      job.error ? h('div', { class: 'msg error' }, job.error) : null,
-      ...(p.hints || []).map(hint => h('div', { class: 'msg warn' }, hint)),
-      p.traceback?.length ? h('details', {}, h('summary', {}, 'Traceback'), h('pre', { class: 'code' }, p.traceback.join('\n'))) : null));
-  }
+  refill($('jdError'), job.error || p.hints?.length ? h('div', { class: 'card error-card' },
+    job.error ? h('div', { class: 'msg error' }, job.error) : null,
+    ...(p.hints || []).map(hint => h('div', { class: 'msg warn' }, hint)),
+    p.traceback?.length ? h('details', {}, h('summary', {}, 'Traceback'), h('pre', { class: 'code' }, p.traceback.join('\n'))) : null) : null);
   const epochs = [...new Set([...Object.keys(p.train_loss || {}), ...Object.keys(p.valid_loss || {})])].map(Number).sort((a, b) => a - b);
   Charts.draw($('jdLoss'), {
     height: 200, xLabel: 'epoch', yLabel: 'loss', empty: 'No epochs yet',
@@ -1551,7 +1558,7 @@ function updateJobDetail(force = false) {
   const metrics = p.metrics || {};
   const groups = Object.keys(metrics);
   const summary = job.summary ? jsonTable(job.summary) : null;
-  $('jdMetrics').replaceChildren(...[groups.length ? h('table', { class: 'grid-table' },
+  refill($('jdMetrics'), ...[groups.length ? h('table', { class: 'grid-table' },
     h('tr', {}, h('th', {}, ''), ...['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR', 'MACC'].map(m => h('th', {}, m))),
     ...groups.map(g => h('tr', {}, h('th', {}, g), ...['MAE', 'RMSE', 'MAPE', 'Pearson', 'SNR', 'MACC'].map(m => {
       const v = metrics[g][m];
@@ -1723,14 +1730,14 @@ function updateGroupDetail(force = false) {
     ['Merged summary', mergeText],
     group.description ? ['Description', h('div', { class: 'description' }, group.description)] : null,
   ].filter(Boolean);
-  $('gdProgress').replaceChildren(...[
+  refill($('gdProgress'), ...[
     group.active ? h('div', { class: 'progress big' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` }), h('span', {}, `${(progress.fraction * 100).toFixed(0)}%`)) : null,
     h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v)))),
     ...(group.warnings || []).map(w => h('div', { class: 'msg warn' }, w)),
     merge.status === 'failed' && merge.output ? h('details', {}, h('summary', {}, 'Merge output'), h('pre', { class: 'code' }, merge.output)) : null].filter(Boolean));
 
   const cell = items => h('td', { title: items.join(', ') }, items.join(', ') || '–');
-  $('gdFolds').replaceChildren(h('h4', {}, 'Folds'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+  refill($('gdFolds'), h('h4', {}, 'Folds'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
     h('tr', {}, ...['Fold', 'Test', 'Validation', 'Training', 'Status', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
     ...group.folds.map(fold => h('tr', { onclick: fold.job ? () => selectJob(fold.job) : null, title: fold.job ? 'Open this fold job' : '' },
       h('th', {}, fold.name), cell(fold.test), cell(fold.valid), h('td', { title: fold.train.join(', ') }, String(fold.train.length)),
@@ -1748,7 +1755,7 @@ function updateGroupDetail(force = false) {
       if (summary.tables?.[name]?.length) parts.push(h('h4', {}, `By ${key.toLowerCase()}`), summaryTable(summary.tables[name], key));
     }
   }
-  $('gdSummary').replaceChildren(...parts);
+  refill($('gdSummary'), ...parts);
 }
 
 async function groupAction(group, action) {
@@ -1820,11 +1827,11 @@ function updateBatchDetail(force = false) {
     progress.eta !== null ? ['Time left', `~${fmtDuration(progress.eta)} (estimate from the finished jobs)`] : null,
     settings.length ? ['Launch answers', settings.join(' · ')] : null,
   ].filter(Boolean);
-  $('bdProgress').replaceChildren(...[
+  refill($('bdProgress'), ...[
     record.active ? h('div', { class: 'progress big' }, h('div', { style: `width:${(progress.fraction * 100).toFixed(1)}%` }), h('span', {}, `${(progress.fraction * 100).toFixed(0)}%`)) : null,
     h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v))))].filter(Boolean));
 
-  $('bdJobs').replaceChildren(h('h4', {}, 'Jobs'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+  refill($('bdJobs'), h('h4', {}, 'Jobs'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
     h('tr', {}, ...['#', 'Config', 'Status', 'Phase', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
     ...record.configs.map(entry => {
       const job = S.jobs.find(j => j.id === entry.job);
@@ -3134,6 +3141,8 @@ async function init() {
   $('testDockerGpu').addEventListener('click', () => envTest('docker_gpu', $('dockerResult')));
 
   window.addEventListener('resize', () => { clearTimeout(init.resize); init.resize = setTimeout(() => { if (S.cache.label) drawLabelChart(); updateJobDetail(); }, 200); });
+  document.addEventListener('pointerdown', () => { S.pointerDown = true; });
+  for (const type of ['pointerup', 'pointercancel']) document.addEventListener(type, () => { S.pointerDown = false; });
   setInterval(() => { if (!S.stale) pollJobs(); }, 2000);
   setInterval(() => { if (!S.stale && S.log && !S.log.done) pollLog(); }, 1500);
   pollJobs();
