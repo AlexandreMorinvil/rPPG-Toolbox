@@ -8,7 +8,7 @@ MODEL:
   NAME: FactorizePhys
   DROP_RATE: 0.1
   RESUME: ''
-  INIT_WEIGHTS: <run batch2_lab_front/baseline/factorizephys_uvfull.yaml, then tools/thesis_configs.py>
+  INIT_WEIGHTS: C:/Run/thesis/batch2_lab_front/b2_baseline_factorizephys_uvfull/vHRMUV_72x72_C160_Raw_FS30_5b100ccf/PreTrainedModels/b2_baseline_factorizephys_uvfull_Epoch6.pth
   FactorizePhys:
     CHANNELS: 3
     FRAME_NUM: 160

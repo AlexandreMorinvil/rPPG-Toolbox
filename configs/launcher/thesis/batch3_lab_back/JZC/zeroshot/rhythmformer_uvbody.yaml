@@ -78,7 +78,7 @@ INFERENCE:
   EVALUATION_WINDOW:
     USE_SMALLER_WINDOW: true
     WINDOW_SIZE: 30
-  MODEL_PATH: <run batch2_lab_front/JZC/rhythmformer_uvbody.yaml, then tools/thesis_configs.py>
+  MODEL_PATH: C:/Run/thesis/batch2_lab_front/b2_jzc_rhythmformer_uvbody/vHRMUV_128x128_C160_Standardized_FS30_fcdc4a61/PreTrainedModels/b2_jzc_rhythmformer_uvbody_Epoch7.pth
 VISUALIZE:
   HIGHLIGHTS: true
   HIGHLIGHT_WORST: 3

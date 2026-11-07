@@ -92,7 +92,7 @@ INFERENCE:
   EVALUATION_WINDOW:
     USE_SMALLER_WINDOW: true
     WINDOW_SIZE: 30
-  MODEL_PATH: <run batch2_lab_front/baseline/factorizephys_uvhead.yaml, then tools/thesis_configs.py>
+  MODEL_PATH: C:/Run/thesis/batch2_lab_front/b2_baseline_factorizephys_uvhead/vHRMUV_72x72_C160_Raw_FS30_ae435355/PreTrainedModels/b2_baseline_factorizephys_uvhead_Epoch14.pth
 VISUALIZE:
   HIGHLIGHTS: true
   HIGHLIGHT_WORST: 3
