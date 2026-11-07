@@ -17,6 +17,7 @@ from unsupervised_methods.methods import POS_WANG
 from unsupervised_methods import utils
 import math
 import multiprocessing as mp
+import time
 
 # To be used only for preparing data - for detecting face with YOLO5Face
 try:
@@ -574,6 +575,10 @@ class BaseLoader(Dataset):
                         p_.join()
                         running_num -= 1
                         pbar.update(1)
+                if process_flag:
+                    # Every worker slot is busy: wait without spinning a CPU core (several preprocessing runs can
+                    # share the machine).
+                    time.sleep(0.05)
         # join all processes
         for p_ in p_list:
             p_.join()

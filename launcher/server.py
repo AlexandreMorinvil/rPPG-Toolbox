@@ -336,7 +336,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("Not found", 404)
         elif method == "GET" and route == "/api/jobs":
             self._json({"jobs": manager.list(), "groups": manager.list_groups(), "batches": manager.list_batches(),
-                        "gpus": probes.gpus(), "restart": self.server.code_watch.notice()})
+                        "gpus": probes.gpus(), "restart": self.server.code_watch.notice(),
+                        "preprocess_auto": manager.preprocess_status()})
         elif method == "POST" and route == "/api/jobs":
             self._json({"job": manager.create(body)})
         elif method == "POST" and route == "/api/jobs/continue":

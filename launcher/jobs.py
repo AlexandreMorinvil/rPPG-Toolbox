@@ -11,14 +11,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 from neural_methods.early_stopping import EarlyStopping
 
-from . import batch, configs, crossval, logparse, paths, preflight, probes, reports, schema, settings, validation
+from . import (batch, configs, crossval, logparse, paths, preflight, preprocess_first, probes, reports, resources,
+               schema, settings, validation)
 
 ACTIVE = ("queued", "starting", "running", "pausing", "stopping")
 RUNNING = ("starting", "running", "pausing", "stopping")
 FINISHED = ("succeeded", "failed", "cancelled", "interrupted", "paused")
 STOPPING = "TRAIN.EARLY_STOPPING."
+PREPROCESS = "preprocess"  # mode of the jobs of a batch's preprocessing stage
 
 
 def _now():
@@ -95,6 +99,7 @@ class JobManager:
         self.parsers = {}
         self.offsets = {}
         self.secret_env = {}
+        self.autoscaler = resources.AutoScaler()
         self._load()
         self.thread = threading.Thread(target=self._loop, name="job-monitor", daemon=True)
         self.thread.start()
@@ -198,13 +203,25 @@ class JobManager:
                     and not any(other.get("resume_from") == job["id"] for other in self.jobs.values()))
 
     def running_count(self):
+        """Running jobs counted against the job limit (the preprocessing stage of a batch has its own limit)."""
         with self.lock:
-            return sum(1 for job in self.jobs.values() if job["status"] in ("starting", "running", "pausing", "stopping"))
+            return sum(1 for job in self.jobs.values() if job["status"] in RUNNING and job.get("mode") != PREPROCESS)
 
     def jobs_on_gpu(self, gpu):
+        """Jobs a queued job waits for on this GPU (preprocessing jobs are light and never make a training wait)."""
         with self.lock:
             return [self._public(job) for job in self.jobs.values()
-                    if job["status"] in ACTIVE and job.get("gpu") == gpu]
+                    if job["status"] in ACTIVE and job.get("gpu") == gpu and job.get("mode") != PREPROCESS]
+
+    def _scaler(self):
+        scaler = getattr(self, "autoscaler", None)
+        if scaler is None:
+            scaler = self.autoscaler = resources.AutoScaler()
+        return scaler
+
+    def preprocess_status(self):
+        """What the automatic preprocessing mode measured and decided last (None when no automatic job waits)."""
+        return self._scaler().snapshot()
 
     def checkpoint_folder_busy(self, model_dir_host):
         with self.lock:
@@ -292,27 +309,44 @@ class JobManager:
                 f"{entry['name']}: {(entry['errors'] or [entry['status']])[0]}" for entry in refused))
         batch_id = self._new_id()
         name = (payload.get("name") or "").strip()[:100] or result["name"]
+        plan = result.get("plan")
+        first = batch.preprocess_first_chosen(answers, plan)
         record = {
             "id": batch_id, "name": name, "created": _now(), "backend": backend, "folder": result["folder"],
-            "answers": {key: answers[key] for key in ("outputs", "cache", "wandb", "policy", "gpu") if key in answers},
+            "answers": {key: answers[key] for key in ("outputs", "cache", "wandb", "preprocess", "policy", "gpu")
+                        if key in answers and (key != "preprocess" or plan and plan["caches"])},
             "configs": [{"path": path, "name": entries[path]["name"], "index": index}
                         for index, path in enumerate(wanted)],
         }
+        if first:
+            record["preprocess"] = {"policy": first, "caches": len(plan["caches"]), **plan["counts"]}
         self._batch_dir(batch_id).mkdir(parents=True)
         with self.lock:
             self.batches[batch_id] = record
             self._save_batch(record)
             queued = []
             try:
+                stage = {}  # cache key -> its preprocessing job
+                for task, cache in enumerate(plan["caches"] if first else []):
+                    build = not task and answers.get("build") == "build"
+                    stage[cache["key"]] = self._queue_preprocess(
+                        cache, task, len(plan["caches"]), result["runs"], record, first, build,
+                        after_build=queued[0]["id"] if queued and answers.get("build") == "build" else None)
+                    queued.append(stage[cache["key"]])
                 for config in record["configs"]:
                     run = result["runs"][config["path"]]
                     run_answers = dict(run["answers"])
-                    if config["index"]:
+                    if config["index"] or first:
                         run_answers.pop("build", None)  # the first job builds a missing Docker image
                     member = {"id": batch_id, "name": name, "index": config["index"], "count": len(wanted)}
+                    after = None
+                    if first:
+                        after = {prefix: {"job": stage[item["cache"]]["id"], "part": item["part"],
+                                          "action": item["action"], "file_list": item["file_list"]}
+                                 for prefix, item in plan["splits"].get(config["path"], {}).items()}
                     queued.append(self._queue(run["values"], run["extras"], backend, run_answers, secrets,
                                               run["outputs"], config["name"], config["path"], None, None, member,
-                                              run["caches"]))
+                                              run["caches"], after_preprocess=after, splits=run.get("splits")))
             except Exception:
                 for job in queued:  # all jobs or none
                     self.jobs.pop(job["id"], None)
@@ -403,7 +437,7 @@ class JobManager:
         }
 
     def _queue(self, effective, extras, backend, answers, secrets, outputs, name, source, resume_from, group=None,
-               member=None, caches=None):
+               member=None, caches=None, after_preprocess=None, splits=None):
         job_id = self._new_id()
         job_dir = self._dir(job_id)
         job_dir.mkdir(parents=True)
@@ -452,6 +486,10 @@ class JobManager:
         if member:
             job["batch"] = member
             job["caches"] = caches or []
+        if after_preprocess:
+            # Splits preprocessed in the batch's preprocessing stage: see _use_preprocessed.
+            job["after_preprocess"] = after_preprocess
+            job["split_caches"] = {prefix: os.path.normcase(split["cache"]) for prefix, split in (splits or {}).items()}
         with self.lock:
             if mode == "train_and_test" and any(
                     j["status"] in ACTIVE and j.get("outputs", {}).get("model_dir_host") == outputs.get("model_dir_host")
@@ -460,6 +498,62 @@ class JobManager:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 raise ValueError("Another active training job writes to this checkpoint folder. "
                                  "Wait for it to finish or choose a different output folder.")
+            self.jobs[job_id] = job
+            self._save(job)
+        return job
+
+    def _queue_preprocess(self, cache, task, count, runs, record, policy, build=False, after_build=None):
+        """Queue the preprocessing job of one cache folder in a batch's preprocessing stage.
+
+        One step per config that has splits to preprocess into the folder: main.py --preprocess_only with a config
+        where only those splits preprocess. A failed step does not stop the next ones (another config's splits)."""
+        job_id = self._new_id()
+        job_dir = self._dir(job_id)
+        job_dir.mkdir(parents=True)
+        (job_dir / "output.log").touch()
+        backend, root = record["backend"], str(paths.TOOLBOX_ROOT)
+        first = runs[cache["steps"][0]["config"]]
+        gpu = preflight.gpu_index(first["values"], backend, first["answers"])
+        compose = ["docker", "compose", "--project-directory", root, "-f", str(paths.TOOLBOX_ROOT / "compose.yaml")]
+        steps, parts, containers = [], [], []
+        if build:
+            steps.append({"title": "Build Docker image", "cwd": root, "argv": compose + ["build", "toolbox"]})
+        python = settings.load()["local_python"]
+        for number, step in enumerate(cache["steps"], start=1):
+            run = runs[step["config"]]
+            config_path = job_dir / f"preprocess-{number}.yaml"
+            values = preprocess_first.step_values(run["values"], step["splits"])
+            config_path.write_text(configs.dump_yaml(configs.build_tree(values, run["extras"])), encoding="utf-8")
+            title = f"Preprocess {step['name']}: {preprocess_first.section_names(step['splits'])}"
+            if backend == "local":
+                argv = [python, "-u", "main.py", "--config_file", str(config_path), "--preprocess_only"]
+            else:
+                container = f"rppg-launcher-{job_id}-{number}"
+                containers.append(container)
+                mounted = f"{paths.JOB_CONFIG_MOUNT}/{job_id}-{number}.yaml"
+                argv = compose + ["run", "--rm", "-T", "--name", container, "-v",
+                                  f"{config_path.as_posix()}:{mounted}:ro", "toolbox", "--config_file", mounted,
+                                  "--preprocess_only"]
+            parts.append({"config": step["config"], "name": step["name"], "splits": step["splits"],
+                          "step": len(steps), "returncode": None})
+            steps.append({"title": title, "cwd": root, "argv": argv, "continue_on_error": True})
+        dataset = first["values"].get(cache["steps"][0]["splits"][0] + ".DATASET")
+        job = {
+            "id": job_id, "name": f"Preprocess · {cache['name']}"[:120], "description": "", "created": _now(),
+            "started": None, "finished": None, "status": "queued", "backend": backend, "mode": PREPROCESS,
+            "model": None, "datasets": {"train": None, "test": dataset}, "epochs_total": None, "gpu": gpu,
+            "policy": PREPROCESS, "preprocess_policy": policy,
+            "env": {"GPU_DEVICE_ID": str(gpu if gpu is not None else 0)} if backend == "docker" else {},
+            "needs_secret": False, "wandb": {"enabled": False, "mode": None}, "source_config": None, "outputs": {},
+            "steps": steps, "pid": None, "container": None, "containers": containers, "returncode": None,
+            "error": None, "progress": {}, "training_recovery": False, "resume_checkpoint_host": None,
+            "resume_checkpoint": None, "resume_from": None,
+            "batch": {"id": record["id"], "name": record["name"], "stage": PREPROCESS, "task": task, "count": count},
+            "caches": [cache["key"]],
+            "preprocess": {"cache": cache["cache"], "name": cache["name"], "lists": cache["lists"],
+                           "configs": cache["configs"], "parts": parts, "after_build": after_build},
+        }
+        with self.lock:
             self.jobs[job_id] = job
             self._save(job)
         return job
@@ -566,8 +660,14 @@ class JobManager:
                 "text": data.decode("utf-8", errors="replace")}
 
     def config_text(self, job_id):
-        if job_id not in self.jobs:
+        job = self.jobs.get(job_id)
+        if job is None:
             raise KeyError(job_id)
+        if job.get("mode") == PREPROCESS:  # one config per step
+            return "\n".join(f"# ---- Step {number}: {part['name']} "
+                             f"({preprocess_first.section_names(part['splits'])})\n" +
+                             (self._dir(job_id) / f"preprocess-{number}.yaml").read_text(encoding="utf-8")
+                             for number, part in enumerate(job["preprocess"]["parts"], start=1))
         return (self._dir(job_id) / "config.yaml").read_text(encoding="utf-8")
 
     def cancel(self, job_id):
@@ -752,8 +852,10 @@ class JobManager:
                 raise KeyError(job_id)
             status = job["status"]
         row = {"job": job_id, "name": job["name"], "status": "error", "before": {}, "after": {}, "errors": []}
-        if status != "queued" or job["mode"] == "report":
-            row["errors"].append("Already started." if status != "queued" else "A report job has no such parameters.")
+        if status != "queued" or job["mode"] in ("report", PREPROCESS):
+            row["errors"].append("Already started." if status != "queued" else
+                                 f"A {'report' if job['mode'] == 'report' else 'preprocessing'} job has no such "
+                                 "parameters.")
             return row, None
         data = configs.load_config(configs.relative(self._dir(job_id) / "config.yaml"))
         values = data["values"]
@@ -811,8 +913,10 @@ class JobManager:
             return self._public(job)
 
     def _terminate(self, job):
-        if job.get("container"):
-            probes.run(["docker", "stop", "-t", "20", job["container"]], timeout=60)
+        # A preprocessing job runs one container per step, one at a time; stopping the others does nothing.
+        containers = job.get("containers") or ([job["container"]] if job.get("container") else [])
+        if containers:
+            probes.run(["docker", "stop", "-t", "20", *containers], timeout=60)
         probes.kill_tree(job.get("pid"))
 
     def remove(self, job_id):
@@ -931,7 +1035,10 @@ class JobManager:
 
     def _batch_public(self, record):
         data = dict(record)
-        attempts = self._batch_jobs(record["id"])
+        members = self._batch_jobs(record["id"])
+        attempts = [job for job in members if job["batch"].get("stage") != PREPROCESS]
+        stage = sorted((job for job in members if job["batch"].get("stage") == PREPROCESS),
+                       key=lambda job: job["batch"]["task"])
         entries = []
         for config in record["configs"]:
             tries = sorted((job for job in attempts if job["batch"]["index"] == config["index"]),
@@ -946,6 +1053,19 @@ class JobManager:
         statuses = [entry["status"] for entry in entries]
         data["status"] = _collective_status(statuses)
         data["active"] = any(status in ACTIVE for status in statuses)
+        if record.get("preprocess"):
+            jobs = [{"job": job["id"], "name": job["preprocess"]["name"], "status": job["status"],
+                     "phase": (job.get("progress") or {}).get("phase"), "lists": job["preprocess"]["lists"],
+                     "configs": len(job["preprocess"]["configs"]), "steps": len(job["preprocess"]["parts"]),
+                     "done": sum(part["returncode"] == 0 for part in job["preprocess"]["parts"]),
+                     "failed": sum(part["returncode"] not in (None, 0) for part in job["preprocess"]["parts"]),
+                     "started": job.get("started"), "finished": job.get("finished")} for job in stage]
+            active = any(job["status"] in ACTIVE for job in jobs)
+            data["preprocess"] = {**record["preprocess"], "jobs": jobs, "active": active,
+                                  "removed": record["preprocess"]["caches"] - len(jobs)}
+            data["active"] = data["active"] or active
+            if active and data["status"] == "queued" and any(job["status"] != "queued" for job in jobs):
+                data["status"] = "running"  # the preprocessing stage has started
         return data
 
     def list_batches(self):
@@ -1006,7 +1126,96 @@ class JobManager:
     def _position(job):
         """Queue order: creation time, then the place in its cross-validation or batch (queued in the same second)."""
         member = job.get("group") or job.get("batch") or {}
-        return job["created"], member.get("index", 0)
+        return job["created"], member.get("index", member.get("task", 0))
+
+    # ------------------------------------------------- preprocessing stage
+    def _stage_active(self, batch_id):
+        """A preprocessing job of this batch is queued or running."""
+        return any(job["status"] in ACTIVE and job.get("mode") == PREPROCESS and job["batch"]["id"] == batch_id
+                   for job in self.jobs.values())
+
+    def _preprocess_waits(self, job, preparing, prefs):
+        """Whether a queued preprocessing job must wait (preparing: the preprocessing jobs running)."""
+        after = job["preprocess"].get("after_build")
+        if after and (self.jobs.get(after) or {}).get("status") in ACTIVE:
+            return True  # the first job of the stage builds the Docker image
+        # One run fills a cache folder at a time, whichever batch it belongs to.
+        caches = set(job.get("caches") or ())
+        for other in self.jobs.values():
+            if other is job or other["status"] not in RUNNING or not caches & set(other.get("caches") or ()):
+                continue
+            if other.get("mode") == PREPROCESS or (other.get("progress") or {}).get("phase") in (
+                    None, "starting", "preprocessing"):
+                return True
+        policy = job.get("preprocess_policy")
+        if policy == "queue":
+            return bool(preparing)
+        if policy == "parallel":
+            return len(preparing) >= prefs.get("max_parallel_preprocess", 1)
+        allowed, _ = self._scaler().decide(preparing, job.get("gpu"))
+        return not allowed
+
+    def _use_preprocessed(self, job):
+        """Once its batch's preprocessing stage is over, a training reuses the caches preprocessed for it.
+
+        A split whose preprocessing succeeded and whose file list was written turns DO_PREPROCESS off in the job's
+        config snapshot; it no longer counts as filling its cache folder. A split that did not get there, or that
+        shares its file list with other settings ("refresh"), is preprocessed by the training, as without this option.
+        """
+        reused, kept = [], []
+        for prefix, item in job["after_preprocess"].items():
+            stage = self.jobs.get(item["job"]) or {}
+            parts = (stage.get("preprocess") or {}).get("parts") or []
+            part = parts[item["part"]] if item["part"] < len(parts) else {}
+            done = stage.get("status") in FINISHED and part.get("returncode") == 0
+            if done and item["action"] == "reuse" and Path(item["file_list"]).is_file():
+                reused.append(prefix)
+            else:
+                kept.append(prefix)
+        if reused:
+            target = self._dir(job["id"]) / "config.yaml"
+            tree = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+            for prefix in reused:
+                node = tree
+                for part in prefix.split("."):
+                    node = node.setdefault(part, {})
+                node["DO_PREPROCESS"] = False
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(configs.dump_yaml(tree), encoding="utf-8")
+            os.replace(temporary, target)
+            # A cache folder stays the job's while another of its splits still preprocesses into it.
+            split_caches = job.get("split_caches") or {}
+            dropped = {split_caches.get(prefix) for prefix in reused} - {
+                cache for prefix, cache in split_caches.items() if prefix not in reused}
+            job["caches"] = [cache for cache in job.get("caches") or () if cache not in dropped]
+        job["preprocessed"] = {"reused": reused, "kept": kept}
+        self._save(job)
+
+    def _after_preprocessing(self):
+        """The queued trainings whose batch has finished its preprocessing stage take the caches it built."""
+        for job in self.jobs.values():
+            if job["status"] == "queued" and job.get("after_preprocess") and "preprocessed" not in job and \
+                    not self._stage_active(job["batch"]["id"]):
+                try:
+                    self._use_preprocessed(job)
+                except (OSError, ValueError, yaml.YAMLError) as error:
+                    job["preprocessed"] = {"reused": [], "kept": list(job["after_preprocess"]),
+                                           "error": f"Could not switch to the preprocessed caches: {error}"}
+                    self._save(job)
+
+    def _finish_preprocess(self, job, result):
+        """Record which steps of a finished preprocessing job succeeded (exit.json, else the runner's log lines)."""
+        codes = result.get("step_codes")
+        if codes is None:
+            codes = (job.get("progress") or {}).get("step_codes") or []
+        parts = job["preprocess"]["parts"]
+        for part in parts:
+            part["returncode"] = codes[part["step"]] if part["step"] < len(codes) else None
+        failed = [part["name"] for part in parts if part["returncode"] != 0]
+        if failed and job["status"] in ("failed", "interrupted"):
+            job["error"] = (f"{len(failed)} of {len(parts)} step(s) did not finish ({', '.join(failed[:5])}"
+                            f"{' …' if len(failed) > 5 else ''}): their trainings preprocess their data themselves. "
+                            + (job.get("error") or ""))
 
     def _group_waits(self, job):
         """Folds of one cross-validation run one at a time, in fold order; an unresumed paused fold holds the rest."""
@@ -1040,26 +1249,55 @@ class JobManager:
         for job in jobs:
             if job["status"] in ("starting", "running", "pausing", "stopping"):
                 self._follow(job)
+        # The automatic preprocessing mode measures the load while one of its jobs waits.
+        if any(job["status"] == "queued" and job.get("preprocess_policy") == "auto" for job in jobs):
+            self._scaler().sample()
+        else:
+            self._scaler().idle()
         self._start_queued()
 
     def _start_queued(self):
+        """Start the queued jobs that may start, in queue order.
+
+        Trainings and other jobs: at most max_parallel_jobs at once, plus the GPU order (queue or parallel), the
+        order of cross-validation folds and the shared caches of a batch. A batch that preprocesses first starts its
+        trainings once its preprocessing stage is over. Preprocessing jobs have their own limit (one at a time, up to
+        max_parallel_preprocess, or automatic) and never fill a cache folder that another run is filling.
+        """
         prefs = settings.load()
         with self.lock:
+            self._after_preprocessing()
             queued = sorted((j for j in self.jobs.values() if j["status"] == "queued"), key=self._position)
+            running = [j for j in self.jobs.values() if j["status"] in RUNNING]
+            preparing = [j for j in running if j.get("mode") == PREPROCESS]
+            others = len(running) - len(preparing)
             for job in queued:
-                running = [j for j in self.jobs.values() if j["status"] in ("starting", "running", "pausing", "stopping")]
-                if len(running) >= prefs["max_parallel_jobs"]:
-                    return
+                if job.get("mode") == PREPROCESS:
+                    if self._preprocess_waits(job, preparing, prefs):
+                        continue
+                    self._launch(job)
+                    if job["status"] in RUNNING:
+                        preparing.append(job)
+                        if job.get("preprocess_policy") == "auto":
+                            self._scaler().started(job)
+                    continue
+                if others >= prefs["max_parallel_jobs"]:
+                    continue
+                if job.get("after_preprocess") and "preprocessed" not in job:
+                    continue  # its batch is still preprocessing
                 if self._group_waits(job) or self._batch_waits(job):
                     continue
                 if job["policy"] != "parallel" and job.get("gpu") is not None:
-                    earlier = [j for j in self.jobs.values() if j is not job and j.get("gpu") == job["gpu"] and (
-                        j["status"] in ("starting", "running", "pausing", "stopping") or
+                    earlier = [j for j in self.jobs.values() if j is not job and j.get("gpu") == job["gpu"] and
+                               j.get("mode") != PREPROCESS and (
+                        j["status"] in RUNNING or
                         (j["status"] == "queued" and self._position(j) < self._position(job) and
                          j["policy"] != "parallel"))]
                     if earlier:
                         continue
                 self._launch(job)
+                if job["status"] in RUNNING:
+                    others += 1
 
     def _launch(self, job):
         job_dir = self._dir(job["id"])
@@ -1096,6 +1334,8 @@ class JobManager:
     @staticmethod
     def _summary(job):
         """vHRM evaluations report metrics in summary.json instead of the console; reports in their tables."""
+        if job.get("mode") == PREPROCESS:
+            return None
         if job.get("mode") == "report":
             return reports.job_summary(job["outputs"]["report_dir_host"])
         for folder in output_dirs_for(job):
@@ -1180,6 +1420,8 @@ class JobManager:
                 if job["status"] in FINISHED:
                     job.get("progress", {})["phase"] = job["status"]
                     job["summary"] = self._summary(job)
+                if job.get("mode") == PREPROCESS:
+                    self._finish_preprocess(job, result)
                 self.processes.pop(job["id"], None)
                 self.parsers.pop(job["id"], None)
                 self._save(job)

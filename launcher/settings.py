@@ -9,6 +9,9 @@ from . import paths
 
 SETTINGS_FILE = paths.STATE_DIR / "settings.json"
 POLICIES = ("queue", "parallel")
+# Preprocessing of a batch: in each job (with_jobs), or first, before the trainings: one cache at a time (queue), up to
+# max_parallel_preprocess at once (parallel), or as many as the computer can take (auto, launcher/resources.py).
+PREPROCESS_POLICIES = ("with_jobs", "queue", "parallel", "auto")
 _lock = threading.Lock()
 
 DEFAULTS = {
@@ -16,9 +19,21 @@ DEFAULTS = {
     "default_backend": "docker",
     "gpu_policy": "queue",
     "max_parallel_jobs": 2,
+    "preprocess_policy": "with_jobs",
+    "max_parallel_preprocess": 4,
     "results_roots": [],
     "cache_roots": [],
 }
+
+
+def _limit(updates, key, label):
+    try:
+        value = int(updates[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be an integer") from None
+    if not 1 <= value <= 16:
+        raise ValueError(f"{label} must be between 1 and 16")
+    return value
 
 
 def load():
@@ -65,13 +80,13 @@ def save(updates):
             raise ValueError("gpu_policy must be queue or parallel")
         current["gpu_policy"] = updates["gpu_policy"]
     if "max_parallel_jobs" in updates:
-        try:
-            value = int(updates["max_parallel_jobs"])
-        except (TypeError, ValueError):
-            raise ValueError("max_parallel_jobs must be an integer") from None
-        if not 1 <= value <= 16:
-            raise ValueError("max_parallel_jobs must be between 1 and 16")
-        current["max_parallel_jobs"] = value
+        current["max_parallel_jobs"] = _limit(updates, "max_parallel_jobs", "max_parallel_jobs")
+    if "preprocess_policy" in updates:
+        if updates["preprocess_policy"] not in PREPROCESS_POLICIES:
+            raise ValueError("preprocess_policy must be one of " + ", ".join(PREPROCESS_POLICIES))
+        current["preprocess_policy"] = updates["preprocess_policy"]
+    if "max_parallel_preprocess" in updates:
+        current["max_parallel_preprocess"] = _limit(updates, "max_parallel_preprocess", "max_parallel_preprocess")
     if "results_roots" in updates:
         current["results_roots"] = _clean_roots(updates["results_roots"], "Results folders")
     if "cache_roots" in updates:

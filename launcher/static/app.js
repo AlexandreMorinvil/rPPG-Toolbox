@@ -1298,6 +1298,11 @@ const PHASES = { starting: 'Starting', preprocessing: 'Preprocessing', training:
 function jobFraction(job) {
   const p = job.progress || {};
   if (job.status === 'succeeded') return 1;
+  if (job.mode === 'preprocess' && p.step?.total) {
+    // Steps done, plus the share of the current step given by its overall bar (videos preprocessed).
+    const inner = p.bar?.total ? p.bar.n / p.bar.total : 0;
+    return Math.min(1, (p.step.index - 1 + inner) / p.step.total);
+  }
   if (p.phase === 'training' && job.epochs_total && p.epoch !== null && p.epoch !== undefined) {
     const inner = p.bar && /^train epoch/i.test(p.bar.desc) && p.bar.total ? p.bar.n / p.bar.total : 0;
     return Math.min(1, (p.epoch + inner) / job.epochs_total);
@@ -1334,6 +1339,7 @@ async function pollJobs() {
     S.groups = data.groups || [];
     S.batches = data.batches || [];
     S.gpus = data.gpus;
+    S.preprocessAuto = data.preprocess_auto || null;
     showRestartNotice(data.restart);
   } catch (error) { return; }
   const active = S.jobs.filter(j => ['queued', 'starting', 'running', 'pausing', 'stopping'].includes(j.status)).length;
@@ -1450,13 +1456,28 @@ function groupItem(group) {
   });
 }
 
+// The preprocessing jobs of a batch come first, in stage order, then its jobs in batch order.
+const batchOrder = job => job.batch.stage === 'preprocess' ? job.batch.task - 1e6 : job.batch.index;
+
+// Caches done / total of a batch's preprocessing stage, while it runs (null otherwise).
+function stageProgress(record) {
+  const stage = record.preprocess;
+  if (!stage?.active) return null;
+  const done = stage.jobs.filter(j => !ACTIVE_STATUSES.includes(j.status)).length;
+  const running = stage.jobs.filter(j => ['starting', 'running', 'stopping'].includes(j.status)).length;
+  return { done, running, total: stage.jobs.length };
+}
+
 function batchItem(record) {
   const progress = batchProgress(record);
+  const stage = stageProgress(record);
   return groupRow({
     id: record.id, kind: 'jobs', name: record.name, status: record.status, active: record.active, selected: record.id === S.selectedBatch,
-    onSelect: () => selectBatch(record.id), fraction: progress.fraction, collapsedByDefault: !record.active || record.configs.length > 12,
-    sub: `batch · ${progress.done}/${record.configs.length} done` + progressText(progress, record.status),
-    members: S.jobs.filter(j => j.batch?.id === record.id).sort((a, b) => a.batch.index - b.batch.index || a.created.localeCompare(b.created)),
+    onSelect: () => selectBatch(record.id), fraction: stage ? stage.done / Math.max(1, stage.total) : progress.fraction,
+    collapsedByDefault: !record.active || record.configs.length > 12,
+    sub: stage ? `batch · preprocessing ${stage.done}/${stage.total} caches${stage.running ? ` (${stage.running} running)` : ''} · ${record.configs.length} jobs wait`
+      : `batch · ${progress.done}/${record.configs.length} done` + progressText(progress, record.status),
+    members: S.jobs.filter(j => j.batch?.id === record.id).sort((a, b) => batchOrder(a) - batchOrder(b) || a.created.localeCompare(b.created)),
   });
 }
 
@@ -1483,41 +1504,55 @@ function updateJobDetail(force = false) {
   const job = S.jobs.find(j => j.id === S.selectedJob);
   const panel = $('jobDetail');
   if (!job) { panel.replaceChildren(h('p', { class: 'muted' }, 'Select a job.')); return; }
+  const preprocessing = job.mode === 'preprocess';
   if (force || panel.dataset.job !== job.id) {
     panel.dataset.job = job.id;
-    panel.replaceChildren(
-      h('div', { id: 'jdHead' }), h('div', { id: 'jdDescription', class: 'card' }), h('div', { id: 'jdProgress', class: 'card' }), h('div', { id: 'jdError' }),
-      h('div', { class: 'two-col' }, h('div', { class: 'card' }, h('h4', {}, 'Loss per epoch'), h('canvas', { id: 'jdLoss', class: 'chart' })),
+    // A preprocessing job has no description, loss or metrics (replaceChildren would show a null as text).
+    panel.replaceChildren(...[
+      h('div', { id: 'jdHead' }), preprocessing ? null : h('div', { id: 'jdDescription', class: 'card' }), h('div', { id: 'jdProgress', class: 'card' }), h('div', { id: 'jdError' }),
+      preprocessing ? null : h('div', { class: 'two-col' }, h('div', { class: 'card' }, h('h4', {}, 'Loss per epoch'), h('canvas', { id: 'jdLoss', class: 'chart' })),
         h('div', { class: 'card' }, h('h4', {}, 'Results'), h('div', { id: 'jdMetrics' }))),
       h('div', { class: 'card' }, h('div', { class: 'log-head' }, h('h4', {}, 'Console output'),
         h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'logFollow', checked: true }), 'Follow')),
-        h('pre', { id: 'jobLog', class: 'log' })));
+        h('pre', { id: 'jobLog', class: 'log' }))].filter(Boolean));
     S.log = { jobId: job.id, next: null, lines: [], partial: '', done: false };
     S.editingDescription = null;
     pollLog();
   }
-  if (S.editingDescription !== job.id) renderJobDescription(job);
+  if (!preprocessing && S.editingDescription !== job.id) renderJobDescription(job);
   const p = job.progress || {};
   const actions = [];
   if (job.can_pause) actions.push(h('button', { type: 'button', onclick: () => pauseJob(job) }, 'Pause after epoch'));
   if (job.can_resume) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => resumeJob(job) }, job.recovery?.training_complete ? 'Retry plots / test' : 'Resume training'));
   if (job.can_continue) actions.push(h('button', { type: 'button', class: 'primary', title: 'Train for more epochs from where early stopping ended this job', onclick: () => continueDialog([job]) }, 'Continue training…'));
-  if (job.status === 'queued' && job.mode !== 'report') actions.push(h('button', { type: 'button', onclick: () => editQueuedDialog([job]) }, 'Edit parameters…'));
+  if (job.status === 'queued' && !['report', 'preprocess'].includes(job.mode)) actions.push(h('button', { type: 'button', onclick: () => editQueuedDialog([job]) }, 'Edit parameters…'));
   if (['queued', 'running', 'starting', 'pausing'].includes(job.status)) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => cancelJob(job) }, job.status === 'queued' ? 'Cancel' : 'Stop now'));
-  actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, 'View config'));
-  actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
+  actions.push(h('button', { type: 'button', onclick: () => viewJobConfig(job) }, preprocessing ? 'View configs' : 'View config'));
+  if (!preprocessing) actions.push(h('button', { type: 'button', onclick: () => editJobConfig(job) }, 'Open in editor'));
   if ((job.outputs || {}).log_path_host) actions.push(h('button', { type: 'button', onclick: () => openResultsForJob(job) }, 'Results'));
   if ((job.mode === 'report' && job.status === 'succeeded') || p.report_path) actions.push(h('button', { type: 'button', class: 'primary', onclick: () => openResultsForJob(job, 'Report') }, 'Open report'));
   if (!['queued', 'running', 'starting', 'pausing', 'stopping'].includes(job.status)) actions.push(h('button', { type: 'button', onclick: () => removeJob(job) }, 'Remove'));
+  const gpuText = job.gpu !== null && job.gpu !== undefined ? ' · GPU ' + job.gpu : '';
   $('jdHead').replaceChildren(
     h('div', { class: 'detail-head' }, h('div', {}, h('h2', {}, job.name),
-      h('div', { class: 'muted' }, `${job.mode} · ${job.model || ''} · ${[job.datasets?.train, job.datasets?.test].filter(Boolean).join(' → ')} · ${job.backend}${job.gpu !== null && job.gpu !== undefined ? ' · GPU ' + job.gpu : ''} · created ${fmtDate(job.created)}`)),
+      h('div', { class: 'muted' }, preprocessing
+        ? `Preprocessing stage of a batch · ${job.datasets?.test || ''} · ${job.backend}${gpuText} · ${PREPROCESS_POLICY[job.preprocess_policy] || job.preprocess_policy} · created ${fmtDate(job.created)}`
+        : `${job.mode} · ${job.model || ''} · ${[job.datasets?.train, job.datasets?.test].filter(Boolean).join(' → ')} · ${job.backend}${gpuText} · created ${fmtDate(job.created)}`)),
       h('div', { class: 'actions' }, ...actions)));
   const fraction = jobFraction(job);
   const bar = p.bar;
+  const stage = job.preprocess;
   const rows = [
     ['Status', h('span', { class: 'status ' + job.status }, job.status)],
     ['Phase', PHASES[p.phase] || p.phase || '–'],
+    preprocessing && p.step ? ['Step', `${p.step.index} of ${p.step.total}: ${p.step.title}`] : null,
+    preprocessing ? ['Cache folder', h('code', {}, stage.cache)] : null,
+    preprocessing ? ['Steps', h('div', {}, ...stage.parts.map((part, i) => h('div', {},
+      `${i + 1}. ${part.name}: ${part.splits.map(s => SPLIT_SECTIONS[s] || s).join(', ')} — `,
+      h('span', { class: part.returncode === 0 ? 'ok' : (part.returncode === null || part.returncode === undefined ? 'muted' : 'bad') },
+        part.returncode === 0 ? 'done' : (part.returncode === null || part.returncode === undefined ? (job.status === 'running' && p.step?.index === part.step + 1 ? 'running' : 'not run') : `failed (exit code ${part.returncode})`)))))] : null,
+    preprocessing ? ['Used by', `${stage.lists} file list${stage.lists > 1 ? 's' : ''} for ${countOf(stage.configs.length, 'config')}: ${stage.configs.slice(0, 8).join(', ')}${stage.configs.length > 8 ? ' …' : ''}`] : null,
+    job.after_preprocess ? ['Preprocessing', preprocessedText(job)] : null,
     job.epochs_total ? ['Epoch', p.epoch !== null && p.epoch !== undefined ? `${p.epoch + 1} / ${job.epochs_total}` : `– / ${job.epochs_total}`] : null,
     bar ? ['Current step', `${bar.desc || (p.phase === 'preprocessing' ? 'Videos preprocessed (this split)' : 'progress')}: ${bar.n}/${bar.total}${bar.eta ? ' · ETA ' + bar.eta : ''}`] : null,
     p.workers?.length ? ['Videos in progress', h('div', {}, ...p.workers.map(w => h('div', {},
@@ -1530,7 +1565,8 @@ function updateJobDetail(force = false) {
     job.group ? ['Cross-validation', h('a', { href: '#', onclick: e => { e.preventDefault(); selectGroup(job.group.id); } },
       `${job.group.name} — fold ${job.group.fold} (${job.group.index + 1} of ${job.group.count})`)] : null,
     job.batch ? ['Batch', h('a', { href: '#', onclick: e => { e.preventDefault(); selectBatch(job.batch.id); } },
-      `${job.batch.name} — job ${job.batch.index + 1} of ${job.batch.count}`)] : null,
+      job.batch.stage === 'preprocess' ? `${job.batch.name} — preprocessing job ${job.batch.task + 1} of ${job.batch.count}`
+        : `${job.batch.name} — job ${job.batch.index + 1} of ${job.batch.count}`)] : null,
     job.wandb?.enabled ? ['W&B', p.wandb_url ? h('a', { href: p.wandb_url, target: '_blank', rel: 'noopener' }, p.wandb_url) : job.wandb.mode] : null,
     (job.outputs || {}).log_path_host ? ['Output folder', h('code', {}, job.outputs.log_path_host)] : null,
     job.report ? ['Checkpoint', h('code', {}, job.report.checkpoint)] : null,
@@ -1546,6 +1582,7 @@ function updateJobDetail(force = false) {
     job.error ? h('div', { class: 'msg error' }, job.error) : null,
     ...(p.hints || []).map(hint => h('div', { class: 'msg warn' }, hint)),
     p.traceback?.length ? h('details', {}, h('summary', {}, 'Traceback'), h('pre', { class: 'code' }, p.traceback.join('\n'))) : null) : null);
+  if (preprocessing) return;  // no loss or metrics
   const epochs = [...new Set([...Object.keys(p.train_loss || {}), ...Object.keys(p.valid_loss || {})])].map(Number).sort((a, b) => a - b);
   Charts.draw($('jdLoss'), {
     height: 200, xLabel: 'epoch', yLabel: 'loss', empty: 'No epochs yet',
@@ -1781,12 +1818,38 @@ async function editGroupConfig(group) {
 }
 
 // ------------------------------------------------------------------ batch jobs
+const PREPROCESS_POLICY = { with_jobs: 'in each job', queue: 'first, one cache folder at a time', parallel: 'first, several cache folders at once', auto: 'first, as many at once as the computer can take' };
 const BATCH_ANSWERS = {
   outputs: ['Existing results', { new_folder: 'new sub-folder', overwrite: 'overwritten', skip: 'configs skipped' }],
   cache: ['Existing caches', { reuse: 'reused', rebuild: 'preprocessed again' }],
   wandb: ['W&B', { existing: 'saved API key', key: 'key typed at launch', offline: 'offline', disable: 'disabled' }],
+  preprocess: ['Preprocessing', PREPROCESS_POLICY],
   policy: ['Run order', { queue: 'one after another', parallel: 'several at once' }],
 };
+const SPLIT_SECTIONS = { 'TRAIN.DATA': 'Training data', 'VALID.DATA': 'Validation data', 'TEST.DATA': 'Test data', 'UNSUPERVISED.DATA': 'Unsupervised data' };
+const sectionList = splits => splits.map(s => SPLIT_SECTIONS[s] || s).join(', ');
+
+// How a job of a batch that preprocesses first gets its data.
+function preprocessedText(job) {
+  const done = job.preprocessed;
+  if (!done) return 'In the batch\'s preprocessing stage: this job starts once the stage is over.';
+  const parts = [];
+  if (done.reused.length) parts.push(`reuses the caches of the preprocessing stage: ${sectionList(done.reused)}`);
+  if (done.kept.length) parts.push(`preprocesses itself: ${sectionList(done.kept)} (not finished in the stage, or a file list shared with other settings)`);
+  return h('span', {}, parts.join(' · ') || '–', done.error ? h('span', { class: 'bad' }, ' · ' + done.error) : null);
+}
+
+// The load the automatic preprocessing mode measured, and its last decision.
+function autoStatusText(status) {
+  if (!status) return 'Measuring the load…';
+  const load = status.load;
+  const measured = load ? [load.cpu !== null && load.cpu !== undefined ? `CPU ${Math.round(load.cpu)}%` : null,
+    load.ram_free !== null && load.ram_free !== undefined ? `${(load.ram_free / 2 ** 30).toFixed(1)} GB memory free` : null,
+    load.gpu ? `GPU ${load.gpu.index} ${Math.round(load.gpu.use ?? 0)}%, ${((load.gpu.total - load.gpu.used) / 2 ** 30).toFixed(1)} GB free` : null].filter(Boolean).join(', ') : '';
+  const estimate = status.estimate;
+  return h('span', {}, `${status.running} running. ${status.reason}`,
+    h('small', { class: 'muted' }, ` ${measured ? 'Load: ' + measured + '. ' : ''}Per job: ~${estimate.ram_gb} GB memory, ~${estimate.vram_gb} GB GPU memory, ~${estimate.cpu}% CPU (checked ${fmtDate(status.checked)}).`));
+}
 
 function updateBatchDetail(force = false) {
   const record = (S.batches || []).find(b => b.id === S.selectedBatch);
@@ -1794,8 +1857,9 @@ function updateBatchDetail(force = false) {
   if (!record) { panel.replaceChildren(h('p', { class: 'muted' }, 'This batch was removed.')); return; }
   if (force || panel.dataset.job !== 'batch:' + record.id) {
     panel.dataset.job = 'batch:' + record.id;
-    panel.replaceChildren(h('div', { id: 'bdHead' }), h('div', { id: 'bdProgress', class: 'card' }), h('div', { id: 'bdJobs', class: 'card' }));
+    panel.replaceChildren(h('div', { id: 'bdHead' }), h('div', { id: 'bdProgress', class: 'card' }), h('div', { id: 'bdStage', class: 'card' }), h('div', { id: 'bdJobs', class: 'card' }));
   }
+  renderBatchStage(record);
   const progress = batchProgress(record);
   const unfinished = record.configs.filter(c => ['failed', 'cancelled', 'interrupted', 'removed'].includes(c.status));
   const members = record.configs.map(c => S.jobs.find(j => j.id === c.job)).filter(Boolean);
@@ -1846,6 +1910,44 @@ function updateBatchDetail(force = false) {
         h('td', {}, num(headlineMae(job))),
         h('td', {}, duration));
     }))));
+}
+
+// The preprocessing stage of a batch that preprocesses first: one job per cache folder.
+function renderBatchStage(record) {
+  const card = $('bdStage');
+  const stage = record.preprocess;
+  card.classList.toggle('hidden', !stage);
+  if (!stage) { card.replaceChildren(); return; }
+  const count = statuses => stage.jobs.filter(j => statuses.includes(j.status)).length;
+  const finished = stage.jobs.filter(j => !ACTIVE_STATUSES.includes(j.status)).length;
+  const failed = stage.jobs.filter(j => j.failed || ['failed', 'interrupted', 'cancelled'].includes(j.status)).length;
+  const limit = stage.policy === 'parallel' ? ` (up to ${S.boot?.settings?.max_parallel_preprocess ?? '?'})` : '';
+  const rows = [
+    ['Stage', [`${finished} of ${stage.jobs.length} cache folder${stage.jobs.length > 1 ? 's' : ''} done`,
+      count(['starting', 'running', 'stopping']) ? `${count(['starting', 'running', 'stopping'])} running` : '',
+      count(['queued']) ? `${count(['queued'])} queued` : '', failed ? `${failed} not completed` : '',
+      stage.removed ? `${stage.removed} removed` : ''].filter(Boolean).join(' · ') +
+      (stage.active ? ' — the jobs start when it is over' : ' — over')],
+    ['Mode', (PREPROCESS_POLICY[stage.policy] || stage.policy) + limit],
+    ['Work', `${stage.splits} data splits, ${stage.lists} file lists${stage.duplicates ? ` (${stage.duplicates} shared splits done once)` : ''}` +
+      (stage.in_jobs ? ` · ${stage.in_jobs} left to their jobs (file list shared with other settings)` : '')],
+    stage.policy === 'auto' && stage.active && count(['queued']) ? ['Automatic mode', autoStatusText(S.preprocessAuto)] : null,
+    failed ? ['If a step fails', 'The jobs that needed it preprocess that data themselves, as without this option.'] : null,
+  ].filter(Boolean);
+  card.replaceChildren(h('h4', {}, 'Preprocessing'), h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v)))),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
+      h('tr', {}, ...['#', 'Cache folder', 'Status', 'Steps', 'Used by', 'Duration'].map(t => h('th', {}, t))),
+      ...stage.jobs.map((entry, i) => {
+        const job = S.jobs.find(j => j.id === entry.job);
+        const step = job?.progress?.step;
+        const duration = entry.started ? fmtDuration(((entry.finished ? new Date(entry.finished) : new Date()) - new Date(entry.started)) / 1000) : '–';
+        return h('tr', { onclick: () => selectJob(entry.job), title: 'Open this preprocessing job' },
+          h('td', {}, String(i + 1)), h('td', {}, h('code', {}, entry.name)),
+          h('td', {}, h('span', { class: 'status ' + entry.status }, entry.status)),
+          h('td', {}, `${entry.done}/${entry.steps}${entry.failed ? ` · ${entry.failed} failed` : ''}${entry.status === 'running' && step ? ` · step ${step.index}/${step.total}` : ''}`),
+          h('td', {}, `${countOf(entry.lists, 'file list')}, ${countOf(entry.configs, 'config')}`),
+          h('td', {}, duration));
+      }))));
 }
 
 async function batchAction(record, action) {
@@ -3005,6 +3107,8 @@ async function renderSettings() {
   $('setPython').value = s.local_python;
   $('setPolicy').value = s.gpu_policy;
   $('setMaxJobs').value = s.max_parallel_jobs;
+  $('setPrepPolicy').value = s.preprocess_policy || 'with_jobs';
+  $('setMaxPrep').value = s.max_parallel_preprocess || 4;
   $('setBackend').value = s.default_backend;
   $('setResultsRoots').value = s.results_roots.join('\n');
   $('setCacheRoots').value = s.cache_roots.join('\n');
@@ -3032,6 +3136,7 @@ async function saveSettings() {
   try {
     const result = await api('/api/settings', { method: 'POST', body: {
       settings: { local_python: $('setPython').value, gpu_policy: $('setPolicy').value, max_parallel_jobs: +$('setMaxJobs').value,
+        preprocess_policy: $('setPrepPolicy').value, max_parallel_preprocess: +$('setMaxPrep').value,
         default_backend: $('setBackend').value, results_roots: lines('setResultsRoots'), cache_roots: lines('setCacheRoots') },
       docker_env: dockerEnv,
     } });
