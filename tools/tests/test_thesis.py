@@ -413,7 +413,9 @@ class GeneratorTests(unittest.TestCase):
                          finetune["MODEL"]["INIT_WEIGHTS"])
         self.assertTrue(runs["batch3_lab_back/JZC/finetune/physnet_face.yaml"]["MODEL"]["INIT_WEIGHTS"].startswith("<"))
         self.assertEqual(finetune["TRAIN"]["DATA"]["VHRM"]["VIEWS"], ["back-left", "back-right"])
-        self.assertEqual(finetune["TEST"]["DATA"]["VHRM"]["VIEWS"], ["front", "back-left", "back-right"])
+        self.assertEqual(finetune["TEST"]["DATA"]["VHRM"]["VIEWS"], ["back-left", "back-right"])
+        zeroshot = runs["batch3_lab_back/baseline/zeroshot/physnet_face.yaml"]
+        self.assertEqual(zeroshot["TEST"]["DATA"]["VHRM"]["VIEWS"], ["back-left", "back-right"])
 
     def make_run(self, batch_folder, name, epoch):
         log = self.root / "runs" / batch_folder / name / "cache"
@@ -458,7 +460,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(vhrm["EXPERIMENTS"], ["RM"])
                 self.assertEqual(vhrm["LABELS"], ["Squat"])
                 self.assertEqual(vhrm["VIEWS"], ["front"] if relative.startswith("batch2")
-                                 else ["front", "back-left", "back-right"])
+                                 else ["back-left", "back-right"])
                 self.assertEqual(vhrm["PREDICTION_IS_DIFF"], "/physnet_" in relative)
                 self.assertTrue(config["REPORT"]["ENABLED"])
                 self.assertEqual(set(config["REPORT"]["PARTICIPANTS"]), people)  # not the people the models saw

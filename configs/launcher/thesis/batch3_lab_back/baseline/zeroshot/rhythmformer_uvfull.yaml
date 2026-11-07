@@ -2,7 +2,7 @@
 BASE: ['']
 TOOLBOX_MODE: only_test
 DESCRIPTION: 'Batch 3 - RhythmFormer on baseline, UV map of the whole body: the batch 2 front-camera model of baseline tested
-  as it is on the three views of the test people (by_view.csv), the reference for the fine-tuned model.'
+  as it is on the back-left + back-right videos of the test people (by_view.csv), the reference for the fine-tuned model.'
 MODEL:
   NAME: RhythmFormer
   DROP_RATE: 0.2
@@ -55,7 +55,7 @@ TEST:
       EXCLUDE_PARTICIPANTS: []
       LABELS: []
       EXCLUDE_LABELS: []
-      VIEWS: [front, back-left, back-right]
+      VIEWS: [back-left, back-right]
       CROP_MODE_BY_VIEW: [front=face, back-left=person_face, back-right=person_face]
       MIN_FACE_FRACTION: 0.0
       FACE_SEARCH_WIDTH: 1.0
@@ -97,7 +97,7 @@ WANDB:
   JOB_TYPE: ''
   TAGS: [thesis, batch3, baseline, back, zeroshot, rhythmformer, uvfull]
   NOTES: 'Batch 3 - RhythmFormer on baseline, UV map of the whole body: the batch 2 front-camera model of baseline tested
-    as it is on the three views of the test people (by_view.csv), the reference for the fine-tuned model.'
+    as it is on the back-left + back-right videos of the test people (by_view.csv), the reference for the fine-tuned model.'
   LOG_BATCH_LOSS: true
   LOG_FREQ: 50
 REPORT:

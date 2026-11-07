@@ -13,11 +13,11 @@ whole body; POS runs on every participant, the neural models train on the traini
                                    (one training per experiment), and POS.
     batch3_lab_back/<experiment>/  baseline, JZC separately, back cameras. finetune/: the experiment's batch 2 model
                                    fine-tuned on its back-left + back-right videos of the training people, tested on the
-                                   three views; zeroshot/: the batch 2 model tested on the three views as it is; POS on
-                                   the back views (batch 2 has the front).
+                                   back views; zeroshot/: the batch 2 model tested on the back views as it is; POS on
+                                   the back views. No front view: batch 2 has it.
     <batch folder>/RM/from_<source>/ Tests only, no training on RM: the RM test people through the source experiment's
                                    model. Batch 2: its front-camera model, on the front camera. Batch 3: its fine-tuned
-                                   model, on the three views.
+                                   model, on the back views.
 
 Batch 3 and the from_<source> tests start from checkpoints of other runs: run those, then run this script again. It reads
 the epoch each run tested (its saved_test_outputs) and writes that checkpoint into MODEL.INIT_WEIGHTS / INFERENCE.MODEL_PATH.
@@ -68,7 +68,8 @@ LAB_EXPERIMENTS = {"batch2": ["baseline", "JZC", "RM"], "batch3": ["baseline", "
 LAB_LABELS = {"RM": ["Squat"]}
 # Experiment tested with the models of other experiments, without training on it.
 PRETRAINED_TESTS = {"RM": ["baseline", "JZC"]}
-THREE_VIEWS = ["front", "back-left", "back-right"]
+# Batch 3 trains and tests on the back cameras only: batch 2 has the front camera results of the same models and people.
+BACK_VIEWS = ["back-left", "back-right"]
 FACE_CROP ={"DO_CROP_FACE": True, "BACKEND": "Y5F", "USE_LARGE_FACE_BOX": True, "LARGE_BOX_COEF": 1.5,
              "DETECTION": {"DO_DYNAMIC_DETECTION": True, "DYNAMIC_DETECTION_FREQUENCY": 30,
                            "USE_MEDIAN_FACE_BOX": False}}
@@ -290,8 +291,8 @@ def pretrained_tests(setup, batch, splits, waiting):
     """{relative config path: only_test config}: PRETRAINED_TESTS, the test people through each source's model."""
     runs = {}
     camera = {"batch2": "front", "batch3": "back"}[batch]
-    views = {"batch2": ["front"], "batch3": THREE_VIEWS}[batch]
-    where = {"batch2": "on the front camera", "batch3": "on the three views (by_view.csv)"}[batch]
+    views = {"batch2": ["front"], "batch3": BACK_VIEWS}[batch]
+    where = {"batch2": "on the front camera", "batch3": "on the back-left + back-right cameras (by_view.csv)"}[batch]
     for experiment, sources in PRETRAINED_TESTS.items():
         persons = lab_folders(splits, "test", experiment)
         people = lab_people(splits, "test", experiment)
@@ -382,7 +383,7 @@ def build_runs(paths, splits):
     # Batch 3: lab data, back cameras, one fine-tuning per experiment from its batch 2 model.
     batch2_setup = setup
     setup = batch_setup(paths, "batch3")
-    back, views = ["back-left", "back-right"], THREE_VIEWS
+    back = BACK_VIEWS
     for experiment in LAB_EXPERIMENTS["batch3"]:
         persons = {split: lab_folders(splits, split, experiment) for split in SPLITS}
         short = experiment.lower()
@@ -395,11 +396,11 @@ def build_runs(paths, splits):
                 name = f"b3_{short}_ft_{model_key}_{input_key}"
                 blocks = {split: data_block(setup, "lab", input_key, model, split, lab={
                     "experiments": [experiment], "participants": persons[split],
-                    "views": views if split == "test" else back}) for split in SPLITS}
+                    "views": back}) for split in SPLITS}
                 description = (f"Batch 3 - {model['name']} on {experiment}, {label}: the batch 2 front-camera model "
                                f"of {experiment} fine-tuned on the back-left + back-right videos of the training "
-                               f"people, best epoch on the validation people, tested on the three views of the test "
-                               f"people (by_view.csv).\n"
+                               f"people, best epoch on the validation people, tested on the back-left + back-right "
+                               f"videos of the test people (by_view.csv).\n"
                                f"{FINETUNE['epochs']} epochs at {FINETUNE['lr_factor']:g} x the learning rate.")
                 runs[f"batch3_lab_back/{experiment}/finetune/{model_key}_{input_key}.yaml"] = neural_config(
                     setup, "batch3", name, description, [experiment, "back", "finetune", model_key, input_key],
@@ -407,17 +408,17 @@ def build_runs(paths, splits):
                     lr=model["lr"] * FINETUNE["lr_factor"])
                 name = f"b3_{short}_zs_{model_key}_{input_key}"
                 test = data_block(setup, "lab", input_key, model, "test", lab={
-                    "experiments": [experiment], "participants": persons["test"], "views": views,
+                    "experiments": [experiment], "participants": persons["test"], "views": back,
                     "prediction_is_diff": is_diff})
                 description = (f"Batch 3 - {model['name']} on {experiment}, {label}: the batch 2 front-camera model "
-                               f"of {experiment} tested as it is on the three views of the test people (by_view.csv), "
-                               f"the reference for the fine-tuned model.")
+                               f"of {experiment} tested as it is on the back-left + back-right videos of the test "
+                               f"people (by_view.csv), the reference for the fine-tuned model.")
                 runs[f"batch3_lab_back/{experiment}/zeroshot/{model_key}_{input_key}.yaml"] = neural_config(
                     setup, "batch3", name, description, [experiment, "back", "zeroshot", model_key, input_key],
                     model_key, {"test": test}, mode="only_test", model_path=checkpoint)
             name = f"b3_{short}_pos_{input_key}"
             description = (f"Batch 3 - POS on {experiment}, back-left and back-right cameras, {label}, every "
-                           f"participant (batch 2 has the front camera).")
+                           f"participant.")
             runs[f"batch3_lab_back/{experiment}/pos_{input_key}.yaml"] = pos_config(
                 setup, "batch3", name, description, [experiment, "back", "pos", input_key],
                 data_block(setup, "lab", input_key, POS, "test", lab={
