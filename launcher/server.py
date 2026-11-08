@@ -344,6 +344,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(manager.continue_jobs(body))
         elif method == "POST" and route == "/api/jobs/edit":
             self._json(manager.edit_queued(body))
+        elif method == "POST" and route == "/api/jobs/policy":
+            self._json(manager.set_policy(body))
         elif route.startswith("/api/jobs/"):
             parts = route.split("/")
             job_id = parts[3] if len(parts) > 3 else ""

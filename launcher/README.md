@@ -125,6 +125,13 @@ What runs save is set in the run editor under **Visualization outputs** (`VISUAL
   files, so a later relaunch from those files uses the old values. Changes that would move the output folder (for
   example preprocessing settings), the output path, W&B settings and the mode are refused: cancel the job and launch it
   again for those.
+- **Run order of queued jobs:** each queued job either *queues* (it starts when no other job uses its GPU and the jobs
+  queued before it have started) or runs in *parallel* (it starts beside them while fewer jobs than **maximum
+  simultaneous jobs** run). The job list tags each queued job with **↧ queue** or **⇉ parallel**, and the batch's
+  job table shows it in the **Order** column. **Run in parallel instead** / **Queue instead** in a job's **Run order**
+  row switches one job; **Run order…** on a batch or a cross-validation switches several at once, with a preview per
+  job. Only queued jobs can change: the queue never looks at the order of a job that has started. Jobs on the CPU only
+  follow the job limit, and the folds of a cross-validation still run one at a time.
 - **Continue finished jobs:** see [Continue a training that early stopping ended](#continue-a-training-that-early-stopping-ended).
 
 ### Preprocessing first

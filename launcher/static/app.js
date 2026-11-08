@@ -1406,7 +1406,12 @@ function groupProgress(group) {
   return membersProgress(group.folds, group.active);
 }
 
-const batchConcurrency = record => record.answers?.policy === 'parallel' ? S.boot?.settings?.max_parallel_jobs || 1 : 1;
+// The jobs still to run decide it (their run order can change after the launch), else the answer at launch.
+function batchConcurrency(record) {
+  const left = record.configs.map(c => S.jobs.find(j => j.id === c.job)).filter(j => j && ACTIVE_STATUSES.includes(j.status));
+  const parallel = left.length ? left.some(j => j.policy === 'parallel') : record.answers?.policy === 'parallel';
+  return parallel ? S.boot?.settings?.max_parallel_jobs || 1 : 1;
+}
 const batchProgress = record => membersProgress(record.configs, record.active, batchConcurrency(record));
 
 // The headline MAE of a finished job: vHRM summary.json, else the first MAE the console reported.
@@ -1418,13 +1423,82 @@ function headlineMae(job) {
   return null;
 }
 
+// ------------------------------------------------ run order (GPU sharing)
+// A queued job either waits for the other jobs of its GPU (queue) or starts beside them within the job limit
+// (parallel). Preprocessing jobs follow the preprocessing mode of their batch instead.
+const hasRunOrder = job => job.mode !== 'preprocess' && ['queue', 'parallel'].includes(job.policy);
+const maxJobs = () => S.boot?.settings?.max_parallel_jobs ?? '?';
+
+function runOrderHelp(job, policy = job.policy) {
+  if (job.gpu === null || job.gpu === undefined) return 'Runs on the CPU: only the job limit applies.';
+  return policy === 'parallel'
+    ? `Starts beside the other jobs of GPU ${job.gpu}, while fewer than ${maxJobs()} jobs run (Settings → Jobs).`
+    : `Starts when no other job uses GPU ${job.gpu} and the jobs queued before it have started.`;
+}
+
+// The tag of a queued job in the lists (the order of a started job no longer matters).
+function runOrderTag(job) {
+  if (job.status !== 'queued' || !hasRunOrder(job)) return null;
+  return h('span', { class: 'order-tag ' + job.policy, title: runOrderHelp(job) }, job.policy === 'parallel' ? '⇉ parallel' : '↧ queue');
+}
+
+async function setRunOrder(jobs, policy) {
+  try {
+    await api('/api/jobs/policy', { method: 'POST', body: { jobs: jobs.map(j => j.id), policy } });
+    toast(`${countOf(jobs.length, 'job')} set to ${policy === 'parallel' ? 'run in parallel' : 'queue'}.`, 'ok');
+    await pollJobs();
+  } catch (error) { toast(error.message, 'error', 12000); }
+}
+
+// The Run order row of a job's details, with the switch while it is queued.
+function runOrderCell(job) {
+  const label = job.policy === 'parallel' ? 'Parallel' : 'Queue';
+  if (job.status !== 'queued') return h('span', {}, label, h('span', { class: 'muted small' }, ' (only matters while a job is queued)'));
+  const other = job.policy === 'parallel' ? 'queue' : 'parallel';
+  return h('span', {}, runOrderTag(job), ' ', h('span', { class: 'muted' }, runOrderHelp(job)), ' ',
+    h('button', { type: 'button', class: 'small', title: runOrderHelp(job, other), onclick: () => setRunOrder([job], other) },
+      other === 'parallel' ? 'Run in parallel instead' : 'Queue instead'));
+}
+
+// Run order of several queued jobs (a batch or a cross-validation), with what changes for each one.
+function runOrderDialog(jobs) {
+  const r = S.changing = { ids: jobs.map(j => j.id), excluded: new Set(), rows: [], seq: 0,
+    policy: jobs.every(j => j.policy === 'parallel') ? 'queue' : 'parallel' };
+  const request = () => ({ path: '/api/jobs/policy', body: { jobs: r.ids, policy: r.policy } });
+  r.refresh = () => refreshChoice(r, request(), () => renderRunOrderRows(r));
+  const select = h('select', { 'aria-label': 'Run order' },
+    h('option', { value: 'queue' }, 'Queue: wait for the other jobs of the GPU'),
+    h('option', { value: 'parallel' }, `Parallel: start beside them (up to ${maxJobs()} jobs at once)`));
+  select.value = r.policy;
+  select.addEventListener('change', () => { r.policy = select.value; r.refresh(); });
+  openModal(`Run order of ${countOf(jobs.length, 'queued job')}`, h('div', { class: 'checks' },
+    h('p', { class: 'muted' }, 'Whether each job waits for the other jobs of its GPU before it starts, or starts beside them as long as fewer jobs than the limit in Settings → Jobs run. Parallel jobs share the GPU memory and can run out of VRAM.'),
+    h('div', { class: 'row' }, select), h('div', { id: 'changeRows' })), [
+    { label: 'Cancel', onClick: closeModal },
+    { label: 'Apply', primary: true, id: 'changeApply', disabled: true, onClick: () => applyChoice(r, request(), n => `Run order of ${countOf(n, 'job')} changed.`) }], true);
+  r.refresh();
+}
+
+function renderRunOrderRows(r) {
+  const update = () => {
+    const n = r.rows.filter(row => row.usable && !r.excluded.has(row.job)).length;
+    const button = $('changeApply');
+    button.textContent = n ? `Apply to ${countOf(n, 'job')}` : 'Apply';
+    button.disabled = !n;
+  };
+  for (const row of r.rows) row.usable = row.status === 'change';
+  $('changeRows').replaceChildren(jobChoiceTable(r, ['Now', 'After', 'Note'], row => [row.before || '–', row.after,
+    row.status === 'same' ? 'Already this order.' : row.errors.join(' ') || row.note || ''], update));
+  update();
+}
+
 function jobItem(job, nested = false) {
   const fraction = jobFraction(job);
   const phase = PHASES[job.progress?.phase] || job.status;
   return h('button', { type: 'button', class: 'item job ' + job.status + (nested ? ' fold' : '') + (job.id === S.selectedJob ? ' active' : ''), onclick: () => selectJob(job.id) },
     h('div', { class: 'item-title' }, h('span', { class: 'dot' }), nested && job.group ? `Fold ${job.group.fold}` : job.name,
       nested && job.group && job.resume_from ? h('span', { class: 'muted small' }, ' (resumed)') : null),
-    h('div', { class: 'item-sub' }, `${nested ? '' : job.backend + ' · '}${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`),
+    h('div', { class: 'item-sub' }, `${nested ? '' : job.backend + ' · '}${job.status === 'running' ? phase : job.status} · ${elapsed(job)}`, runOrderTag(job)),
     !nested && job.description ? h('div', { class: 'item-desc', title: job.description }, job.description) : null,
     fraction !== null && job.status === 'running' ? h('div', { class: 'progress' }, h('div', { style: `width:${(fraction * 100).toFixed(1)}%` })) : null);
 }
@@ -1545,6 +1619,7 @@ function updateJobDetail(force = false) {
   const rows = [
     ['Status', h('span', { class: 'status ' + job.status }, job.status)],
     ['Phase', PHASES[p.phase] || p.phase || '–'],
+    hasRunOrder(job) ? ['Run order', runOrderCell(job)] : null,
     preprocessing && p.step ? ['Step', `${p.step.index} of ${p.step.total}: ${p.step.title}`] : null,
     preprocessing ? ['Cache folder', h('code', {}, stage.cache)] : null,
     preprocessing ? ['Steps', h('div', {}, ...stage.parts.map((part, i) => h('div', {},
@@ -1746,6 +1821,8 @@ function updateGroupDetail(force = false) {
   }
   const progress = groupProgress(group);
   const actions = [];
+  const ordered = S.jobs.filter(j => j.group?.id === group.id && j.status === 'queued' && hasRunOrder(j));
+  if (ordered.length) actions.push(h('button', { type: 'button', title: 'Folds always run one at a time; this decides whether the next fold also waits for the other jobs of its GPU', onclick: () => runOrderDialog(ordered) }, 'Run order…'));
   if (group.active) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => groupAction(group, 'cancel') }, 'Stop remaining folds'));
   if (progress.done) actions.push(h('button', { type: 'button', onclick: () => groupAction(group, 'merge') }, 'Merge results now'));
   actions.push(h('button', { type: 'button', onclick: () => editGroupConfig(group) }, 'Open in editor'));
@@ -1868,6 +1945,8 @@ function updateBatchDetail(force = false) {
   const actions = [];
   if (stopped.length) actions.push(h('button', { type: 'button', class: 'primary', title: 'Train for more epochs from where early stopping ended these jobs', onclick: () => continueDialog(stopped) }, `Continue ${countOf(stopped.length, 'training')}…`));
   if (waiting.length) actions.push(h('button', { type: 'button', title: 'Change parameters of the jobs that have not started yet', onclick: () => editQueuedDialog(waiting) }, `Edit ${waiting.length} queued…`));
+  const ordered = members.filter(j => j.status === 'queued' && hasRunOrder(j));
+  if (ordered.length) actions.push(h('button', { type: 'button', title: 'Queue or run in parallel the jobs that have not started yet', onclick: () => runOrderDialog(ordered) }, 'Run order…'));
   if (record.active) actions.push(h('button', { type: 'button', class: 'danger', onclick: () => batchAction(record, 'cancel') }, 'Stop remaining jobs'));
   if (unfinished.length) {
     actions.push(h('button', { type: 'button', title: 'Check the failed, stopped or removed configs again and launch them as a new batch. To continue a training from its last epoch, use Resume training on its job instead.',
@@ -1896,7 +1975,7 @@ function updateBatchDetail(force = false) {
     h('table', { class: 'kv' }, ...rows.map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v))))].filter(Boolean));
 
   refill($('bdJobs'), h('h4', {}, 'Jobs'), h('div', { class: 'table-wrap' }, h('table', { class: 'grid-table clickable' },
-    h('tr', {}, ...['#', 'Config', 'Status', 'Phase', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
+    h('tr', {}, ...['#', 'Config', 'Status', 'Order', 'Phase', 'Epoch', 'MAE', 'Duration'].map(t => h('th', {}, t))),
     ...record.configs.map(entry => {
       const job = S.jobs.find(j => j.id === entry.job);
       const p = job?.progress || {};
@@ -1905,6 +1984,7 @@ function updateBatchDetail(force = false) {
         h('td', {}, String(entry.index + 1)),
         h('td', { title: entry.path }, entry.name),
         h('td', {}, h('span', { class: 'status ' + entry.status }, entry.status), entry.attempts > 1 ? h('span', { class: 'muted small' }, ` (${entry.attempts} attempts)`) : null),
+        h('td', {}, job && hasRunOrder(job) ? runOrderTag(job) || h('span', { class: 'muted' }, job.policy) : '–'),
         h('td', {}, entry.status === 'running' ? PHASES[p.phase] || p.phase || '–' : '–'),
         h('td', {}, job?.epochs_total ? `${p.epoch !== null && p.epoch !== undefined ? p.epoch + 1 : '–'} / ${job.epochs_total}` : '–'),
         h('td', {}, num(headlineMae(job))),

@@ -902,6 +902,48 @@ class JobManager:
             job["caches"] = caches
         self._save(job)
 
+    def set_policy(self, payload):
+        """Change the GPU order of queued jobs: queue (wait for the other jobs of its GPU) or parallel (start beside
+        them, within max_parallel_jobs).
+
+        payload: jobs, policy, dry_run (only report what would happen). All or nothing, as edit_queued. Only a queued
+        job's order matters: the queue never looks at the order of a running job.
+        """
+        policy = payload.get("policy")
+        if policy not in settings.POLICIES:
+            raise ValueError("The run order must be queue or parallel.")
+        job_ids = list(dict.fromkeys(payload.get("jobs") or []))
+        if not job_ids:
+            raise ValueError("Choose the jobs to change.")
+        with self.lock:  # the queue cannot start a job meanwhile
+            rows = []
+            for job_id in job_ids:
+                job = self.jobs.get(job_id)
+                if job is None:
+                    raise KeyError(job_id)
+                row = {"job": job_id, "name": job["name"], "before": job.get("policy"), "after": policy,
+                       "errors": [], "note": None}
+                if job.get("mode") == PREPROCESS:
+                    row["errors"].append("A preprocessing job follows the preprocessing mode of its batch.")
+                elif job["status"] != "queued":
+                    row["errors"].append("Already started.")
+                elif job.get("gpu") is None:
+                    row["note"] = "Runs on the CPU: only the job limit applies to it."
+                row["status"] = "error" if row["errors"] else ("same" if row["before"] == policy else "change")
+                rows.append(row)
+            if payload.get("dry_run"):
+                return {"results": rows}
+            refused = [row for row in rows if row["errors"]]
+            if refused:
+                raise ValueError("Some jobs cannot take this change. " + " | ".join(
+                    f"{row['name']}: {row['errors'][0]}" for row in refused) + " Nothing was changed.")
+            for row in rows:
+                if row["status"] == "change":
+                    job = self.jobs[row["job"]]
+                    job["policy"] = policy
+                    self._save(job)
+            return {"results": rows, "jobs": [self._public(self.jobs[row["job"]]) for row in rows]}
+
     def set_description(self, job_id, text):
         """Edit the notes of any job; the config snapshot keeps the description it was launched with."""
         with self.lock:
